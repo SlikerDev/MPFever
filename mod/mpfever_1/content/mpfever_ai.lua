@@ -784,8 +784,11 @@ local function manageLines(E, co, lines, vehicles, money)
 			return true
 		end
 	end
-	-- the stops of a given up line that no other line of the company uses: demolished one by one (their upkeep for nothing)
-	if A.deadGroups and period == 7200 then
+	-- the stops of a given up line that no other line of the company uses: demolished one by one (their upkeep for nothing). OFF
+	-- (MPFEVER_AIDEMOLISH=1: on): a stop demolished frees its entity, MPFever's free-id order (the smallest first) gives that id
+	-- to a new octree node a step later, and the interface's copy of the world, which still had the stop's log book under that
+	-- id, stopped both games ("LogBookSystem::EntityAdded isSupported", test rel052 of 2026-10-28)
+	if A.deadGroups and period == 7200 and os.getenv("MPFEVER_AIDEMOLISH") == "1" then
 		local used = {}
 		for _, l in ipairs(lines) do for _, g in ipairs(l.groups) do used[g] = true end end
 		for _, s in ipairs(myStops(E, co.ent)) do

@@ -6,9 +6,10 @@ MPFever - Changelog
     colour and takes them out; those of the lobby's savegame are read from it and are there from the start with their colour.
     The host's game runs them: a computer company plays as a player does, its builds and actions go to the other games as a
     player's. It builds its own bus garage, two-sided stops, town lines through a ring of stops and lines between neighbouring
-    towns, buys the year's best bus, adds buses to full lines, sells those of empty lines, gives up a line that stays empty (its
-    stops demolished), keeps money back, and goes bankrupt like a player. Buses only for now; slow to grow; not on a dedicated
-    server yet (its game plays no company).
+    towns, buys the year's best bus, adds buses to full lines, sells those of empty lines, gives up a line that stays empty, keeps
+    money back, and goes bankrupt like a player. Buses only for now; slow to grow; not on a dedicated server yet (its game plays
+    no company). Its stops of a given up line stay (demolished, a stop's freed entity went at once to an octree node, and the
+    interface's copy of the world stopped both games in its log book; MPFEVER_AIDEMOLISH=1: demolished, tests only).
     MPFever.exe --savecompanies <savegame file>: the computer companies a savegame holds (diagnostics).
   - FIX (desyncs, long sessions): the towns drifted apart after 10 to 20 minutes (script:towns first, then money, vehicles,
     persons). The engine moves its animals on its thread pool, in chunks of 128: each animal writes its model, then asks the

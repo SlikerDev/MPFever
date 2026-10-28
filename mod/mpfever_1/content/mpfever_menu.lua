@@ -823,29 +823,33 @@ local function setup()
 				for i, a in ipairs(ais) do
 					local pc = PALETTE[a.ix]
 					local n = a.n
-					local row = {
+					-- (its name and the host's « Remove » on one line, the host's palette for its colour under it)
+					local head = {
 						pc and builtin.Component{ meta = { styleSheet = style{ size = { 22, 22 }, background = { pc[1], pc[2], pc[3], 1 } } } } or icon("::/gui/menu/icons/profile.tga"),
 						gap(10, 1),
 						text(a.name ~= "" and a.name or (T("Ordinateur %s", "Computer %s"):gsub("%%s", tostring(n))), "font-scale-title-4"),
 						hfill(),
 					}
+					if isHost then head[#head + 1] = button(T("Retirer", "Remove"), function() request("aidel", tostring(n), playerName()) end, { font = "font-scale-body" }) end
+					local rows = { box(H, head) }
 					if isHost then
-						-- (its colour: the palette, the colours of the players and of the other computer companies greyed)
+						-- (the colours of the players and of the other computer companies greyed)
+						local pal = {}
 						for ix, c in ipairs(PALETTE) do
 							local sel = a.ix == ix
 							local busyC = taken[ix] and not sel
 							local pick = ix
-							row[#row + 1] = builtin.Button{
-								meta = { class = sel and "primary" or "secondary", enabled = not busyC, styleSheet = style{ size = { 24, 22 }, padding = { 3, 3, 3, 3 } } },
-								content = builtin.Component{ meta = { styleSheet = style{ size = { sel and 16 or 12, sel and 14 or 10 }, background = { c[1], c[2], c[3], busyC and 0.25 or 1 } } } },
+							pal[#pal + 1] = builtin.Button{
+								meta = { class = sel and "primary" or "secondary", enabled = not busyC, styleSheet = style{ size = { 28, 24 }, padding = { 3, 3, 3, 3 } } },
+								content = builtin.Component{ meta = { styleSheet = style{ size = { sel and 18 or 14, sel and 16 or 12 }, background = { c[1], c[2], c[3], busyC and 0.25 or 1 } } } },
 								onClick = function() request("aicolor", tostring(n) .. ":" .. tostring(pick), playerName()) end,
 							}
-							row[#row + 1] = gap(2, 1)
+							pal[#pal + 1] = gap(3, 1)
 						end
-						row[#row + 1] = gap(8, 1)
-						row[#row + 1] = button(T("Retirer", "Remove"), function() request("aidel", tostring(n), playerName()) end, { font = "font-scale-body" })
+						rows[#rows + 1] = gap(1, 4)
+						rows[#rows + 1] = box(H, pal)
 					end
-					right[#right + 1] = box(H, row, nil, { padding = { 4, 10, 4, 10 }, background = { 1, 1, 1, i % 2 == 1 and 0.06 or 0.02 }, size = { w, -1 } })
+					right[#right + 1] = box(V, rows, nil, { padding = { 6, 10, 6, 10 }, background = { 1, 1, 1, i % 2 == 1 and 0.06 or 0.02 }, size = { w, -1 } })
 				end
 				if isHost and #ais < 8 then
 					right[#right + 1] = gap(1, 6)
