@@ -45,3 +45,4 @@ GetCurrentProcessId
 TlsAlloc
 TlsGetValue
 TlsSetValue
+RtlCaptureStackBackTrace

@@ -2791,14 +2791,33 @@ typedef void (*RemoveEntityF)(void* engine, int entity, u8 flag);
 static AddEntityF g_addEntOrig = 0;
 static RemoveEntityF g_remEntOrig = 0;
 
-// MPFEVER_ENTLOG: every addition/removal in order (entseq.txt in the session folder: "<iteration> <+|-><entity> <caller>")
+// MPFEVER_ENTLOG: every addition/removal in order (entseq.txt in the session folder: "<iteration> <+|-><entity> <caller
+// rva> <engine: 0 the simulation's, 1 another (the interface's copy, which follows at its own pace)> <thread kind>")
 static bool g_entLog = false;
 static HANDLE g_entFile = INVALID_HANDLE_VALUE;
-static void EntSeq(char op, int entity, void* ret)
+static void EntSeq(char op, int entity, void* ret, int engine, long kind)
 {
     if (g_entFile == INVALID_HANDLE_VALUE) return;
     char o[2] = { op, 0 };
-    Buf l; l.dec((long)g_iter).str(" ").str(o).dec(entity).str(" ").hex((u64)((uptr)ret - g_base)).str("\r\n");
+    Buf l; l.dec((long)g_iter).str(" ").str(o).dec(entity).str(" ").hex((u64)((uptr)ret - g_base)).str(" ").dec(engine).str(" ").dec(kind);
+    // (the simulation step, read on the simulation's thread only, and the callers further up inside the game: which of its systems
+    // made the addition or removal, and at which step)
+    if (engine == 0) {
+        u32 step = kind == 1 ? StepOf((u8*)g_slot) : 0xFFFFFFFFu;
+        l.str(" @").dec((long)step);
+        // (a recursion, the octree's descent, written once)
+        void* fr[48]; unsigned short n = RtlCaptureStackBackTrace(2, 48, fr, 0);
+        l.str(" ");
+        int k = 0;
+        uptr prev = 0;
+        for (unsigned short i = 0; i < n && k < 16; i++) {
+            uptr a = (uptr)fr[i];
+            if (a < g_base || a - g_base > 0x8000000 || a == prev) continue;
+            prev = a;
+            l.str(k ? "," : "").hex((u64)(a - g_base)); k++;
+        }
+    }
+    l.str("\r\n");
     DWORD w; WriteFile(g_entFile, l.s, (DWORD)l.n, &w, 0);
 }
 
@@ -2824,7 +2843,7 @@ extern "C" int* AddEntityDetour(void* engine, int* out)
     long k = EntKind();
     _InterlockedIncrement(&g_entAdd[e][k]);
     if (e == 0 && k != 1 && g_simTid) EntOff("added", r ? *r : -1, _ReturnAddress());
-    if (g_entLog && r) EntSeq('+', *r, _ReturnAddress());
+    if (g_entLog && r) EntSeq('+', *r, _ReturnAddress(), e, k);
     return r;
 }
 
@@ -2834,7 +2853,7 @@ extern "C" void RemoveEntityDetour(void* engine, int entity, u8 flag)
     long k = EntKind();
     _InterlockedIncrement(&g_entRem[e][k]);
     if (e == 0 && k != 1 && g_simTid) EntOff("removed", entity, _ReturnAddress());
-    if (g_entLog) EntSeq('-', entity, _ReturnAddress());
+    if (g_entLog) EntSeq('-', entity, _ReturnAddress(), e, k);
     g_remEntOrig(engine, entity, flag);
 }
 
@@ -2961,6 +2980,33 @@ static void FixDepartures(SavedRegs* r) { SortEntityVector(r->rbp + 7, 3); SortE
 static void FixArrivals(SavedRegs* r) { SortEntityVector(r->rbp - 0x78, 4); }
 // 5: the vehicles at a line stop (the vector the getter returned, in rax) before the boarding loop
 static void FixVehiclesAtStop(SavedRegs* r) { SortEntityVector(r->rax, 5); }
+
+// 12 (diagnostic, with the entity log MPFEVER_ENTLOG only): the animals' moves of ecs::AnimalMoveSystem's update (vfunc 12),
+// right after its thread pool's loop: 28-byte records {index in the system's list, new place} at [rsp+0x68] (begin, end), the
+// time step spilled at [rbp-0x30], the count of animals in edi. Every update goes to animupd.txt ("u <step> <animals> <dt bits>
+// <moves> iter <n>") and each step's moves to animoves.txt as a hash of their records ("<step> <moves> <hash>"): the first step
+// whose hash differs between two games shows where the animals parted (sessions of 2026-10-28, see "animals in one piece" below).
+static void LogAnimalMoves(SavedRegs* r)
+{
+    u64 sp = OrigRsp(r);
+    if (!g_entLog || !Readable((void*)(sp + 0x68), 16)) return;
+    u64 b = *(u64*)(sp + 0x68), e = *(u64*)(sp + 0x70);
+    u64 n = (e >= b && !((e - b) % 28) && (e - b) < (64u << 20)) ? (e - b) / 28 : 0;
+    static HANDLE uf = INVALID_HANDLE_VALUE, mf = INVALID_HANDLE_VALUE;
+    if (uf == INVALID_HANDLE_VALUE) { char path[400]; PathOf(path, "animupd.txt"); uf = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ, 0, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0); }
+    if (uf != INVALID_HANDLE_VALUE && Readable((void*)(r->rbp - 0x30), 4)) {
+        Buf l; l.str("u ").dec((long)StepOf((u8*)g_slot)).str(" ").dec((long)(u32)r->rdi).str(" ").hex((u64)*(u32*)(r->rbp - 0x30))
+            .str(" ").dec((long)n).str(" iter ").dec(g_iter).str("\r\n");
+        DWORD w; WriteFile(uf, l.s, (DWORD)l.n, &w, 0);
+    }
+    if (!n || !Readable((void*)b, n * 28)) return;
+    if (mf == INVALID_HANDLE_VALUE) { char path[400]; PathOf(path, "animoves.txt"); mf = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ, 0, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0); }
+    if (mf == INVALID_HANDLE_VALUE) return;
+    u64 h = 0xcbf29ce484222325ull;
+    for (u64 q = 0; q < n * 28; q++) { h ^= ((u8*)b)[q]; h *= 0x100000001b3ull; }
+    Buf l; l.dec((long)StepOf((u8*)g_slot)).str(" ").dec((long)n).str(" ").hex(h).str("\r\n");
+    DWORD w; WriteFile(mf, l.s, (DWORD)l.n, &w, 0);
+}
 
 // 6: the platform choice (TPF3-MP's platform-order, visit site). ecs::TransportVehicleSystem::Update2 walks its node list,
 // 8-byte {entity, TransportVehicle index} records ([[r13+8]], as many as its int argument spilled at [rbp+0x5b0]), with rsi
@@ -3233,6 +3279,8 @@ static const OrderFix ORDER_FIXES[] = {
     { "tick epochs", "66 83 BF 1C 03 00 00 00 7D 1B 0F B7 05 ?? ?? ?? ?? 66 89 87 1C 03 00 00 0F B7 C5 66 89 87 1E 03 00 00 66 FF C5", 0, 8, FixTickEpoch },
     // 0.5.4: right after the freed ids were appended to the queue (the call of "freed ids" above)
     { "free id queue", "E8 ?? ?? ?? ?? 49 8B 14 24 4D 89 3C 24 48 85 D2 74 08 49 8B CC E8", 5, 8, FixFreeQueue },
+    // build 40425 (diagnostic): right after the animals' thread-pool loop (the call), "mov rdi, [rsp+0x68]" stolen
+    { "animal moves log", "E8 ?? ?? ?? ?? 4C 8B 65 90 48 8B 7C 24 68 4C 8B 74 24 70 49 3B FE", 9, 5, LogAnimalMoves },
 };
 static const int ORDER_N = (int)(sizeof(ORDER_FIXES) / sizeof(ORDER_FIXES[0]));
 
@@ -3278,6 +3326,8 @@ static void InstallOrderFixes()
         // (the free-id queue: right after the freed ids' append, r13 the engine; MPFEVER_NOFREEMIN=1 on every game: FIFO as before)
         // (its signature is unique in the game's code; the "freed ids" one cannot be searched again here, its site is spliced already)
         if (i == 11) layout = layout && GetEnvironmentVariableA("MPFEVER_NOFREEMIN", 0, 0) == 0;
+        // (the animals' moves log: with the entity log only)
+        if (i == 12) layout = layout && GetEnvironmentVariableA("MPFEVER_ENTLOG", 0, 0) > 0;
         if (i == 9) {
             static const u8 ctx[] = { 0x49, 0x8B, 0x45, 0x10, 0x48, 0x8B, 0x08, 0x42, 0x8B, 0x1C, 0xA1 };
             layout = layout && g_needsPathGetter && at && memcmp((void*)(g_base + at + 0x1ad), ctx, sizeof(ctx)) == 0
@@ -3290,6 +3340,48 @@ static void InstallOrderFixes()
     LogLine(b);
     // (the mod compares the segments' ages only where they are stamped: its check "ages")
     WriteSessionFile("native_state.txt", tickOn ? "tickepochs=1\n" : "tickepochs=0\n", 13);
+    // Test MPFEVER_NOANIMALMOVE=1 (on every game): the animals stand still, ecs::AnimalMoveSystem's update returns at once (its
+    // entry found from a unique sequence 0x36 bytes in, its prologue checked). Tells whether the towns' drifts start with them.
+    if (GetEnvironmentVariableA("MPFEVER_NOANIMALMOVE", 0, 0) > 0) {
+        u32 in = FindSigRva("C5 F8 28 FB 41 8B F8 4C 8B FA 48 8B F1 48 89 4D A0 48 8B 49 28 E8");
+        static const u8 pro[] = { 0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x20, 0x55, 0x56, 0x57 };
+        u8* f = in ? (u8*)(g_base + in - 0x36) : 0;
+        bool ok = false;
+        if (f && memcmp(f, pro, sizeof(pro)) == 0) {
+            DWORD old;
+            if (VirtualProtect(f, 1, PAGE_EXECUTE_READWRITE, &old)) {
+                f[0] = 0xC3;
+                VirtualProtect(f, 1, old, &old);
+                FlushInstructionCache(GetCurrentProcess(), f, 1);
+                ok = true;
+            }
+        }
+        Buf a; a.str(ok ? "animals stand still (MPFEVER_NOANIMALMOVE)" : "animals: their update was not found (MPFEVER_NOANIMALMOVE)"); LogLine(a);
+    }
+    // The animals in one piece (0.5.12): their moves computed on the simulation's thread. The engine hands them to its thread pool in
+    // chunks of 128 ("mov r9d, 0x80" before the pool's loop); each animal writes its model instance and then asks the octree about
+    // the others, which other threads are writing at the same time, and the chunks' random draws are seeded by where each chunk
+    // starts, which depends on the PC's threads. An animal then took another step on one game: the octree's nodes, which are
+    // entities, were made and freed otherwise, every entity made afterwards (a person, a town building) got another id, and the
+    // towns drifted some minutes later (sessions of 2026-10-28: 8 of 15 long sessions drifted, 0 of 8 with this; moves and
+    // entities the same from start to end). With a chunk size larger than any count the pool's loop takes its own one-thread path
+    // (the one it takes on a one-thread PC): the same draws and the same answers on every game. MPFEVER_NOANIMALSERIAL=1 on every
+    // game: in chunks as before.
+    if (GetEnvironmentVariableA("MPFEVER_NOANIMALSERIAL", 0, 0) == 0) {
+        u32 at = FindSigRva("41 B9 80 00 00 00 44 8B C7 48 8D 55 F0 C5 F8 77 E8");
+        bool ok = false;
+        if (at) {
+            u8* imm = (u8*)(g_base + at + 2);
+            DWORD old;
+            if (VirtualProtect(imm, 4, PAGE_EXECUTE_READWRITE, &old)) {
+                *(u32*)imm = 0x7FFFFFFFu;
+                VirtualProtect(imm, 4, old, &old);
+                FlushInstructionCache(GetCurrentProcess(), imm, 4);
+                ok = true;
+            }
+        }
+        Buf a; a.str(ok ? "animals moved in one piece on the simulation's thread" : "animals: the pool's chunk size was not found (moved in chunks)"); LogLine(a);
+    }
     // the simulation's seeds from GameTime.tickCount (the land vehicles' shuffle, a vehicle variant pick, town and street
     // development...): tickCount also counts the frames a game stands still, a different number on every game of a session;
     // those calls now read updateCount (the simulation step, the same everywhere). TPF3-MP's "paused-tick" fix does the same by

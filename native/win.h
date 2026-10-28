@@ -49,6 +49,7 @@ __declspec(dllimport) HANDLE WINAPI GetCurrentProcess();
 __declspec(dllimport) BOOL WINAPI QueryPerformanceCounter(i64*);
 __declspec(dllimport) BOOL WINAPI QueryPerformanceFrequency(i64*);
 __declspec(dllimport) DWORD WINAPI GetCurrentThreadId();
+__declspec(dllimport) unsigned short WINAPI RtlCaptureStackBackTrace(DWORD skip, DWORD count, void** frames, DWORD* hash);
 __declspec(dllimport) DWORD WINAPI TlsAlloc();
 __declspec(dllimport) void* WINAPI TlsGetValue(DWORD index);
 __declspec(dllimport) BOOL WINAPI TlsSetValue(DWORD index, void* value);
