@@ -147,6 +147,23 @@ end
 -- come from the savegame's mod descriptions; hub is its number on its Mod Hub (mod.io, Steam Workshop), from which a player
 -- who lacks it installs it (empty for a local mod).
 local MOD_ID = "mpfever_1"
+-- A mod's number on its Mod Hub, asked only for a mod installed here and once per mod: for a mod the game does not have, the
+-- engine asserts ("Could not find ModDesc in cache", ModRep.cpp:338), slowly, and every savegame tile asked again for each of
+-- its mods. A player with 370 mods and savegames made with mods since removed saw the page freeze, then the game stop, when
+-- opening it (issue #92). A mod not installed is not kept (the next tile asks whether it is, which costs nothing).
+local modHubIds = {}
+local function modHubId(m, id)
+	if modHubIds[id] ~= nil then return modHubIds[id] end
+	local okx, here = pcall(function() return app.getUserProfile():getModRep():exists(m) end)
+	if okx and not here then return "" end
+	local hub = ""
+	pcall(function()
+		local h = api.modhub.getModHubModIdForModId(m)
+		if h and h:isValid() and tostring(h.value):match("^[%w_-]+$") then hub = tostring(h.value) end
+	end)
+	modHubIds[id] = hub
+	return hub
+end
 local function modsOf(info)
 	local out, descs = {}, {}
 	pcall(function()
@@ -159,11 +176,7 @@ local function modsOf(info)
 			local id = m.name
 			if id and id ~= "" and id ~= MOD_ID then
 				local d = descs[id]
-				local hub = ""
-				pcall(function()
-					local h = api.modhub.getModHubModIdForModId(m)
-					if h and h:isValid() and tostring(h.value):match("^[%w_-]+$") then hub = tostring(h.value) end
-				end)
+				local hub = modHubId(m, id)
 				out[#out + 1] = { id = id, name = d and d.name ~= "" and d.name or id, source = d and d.modSource or "", hub = hub }
 			end
 		end

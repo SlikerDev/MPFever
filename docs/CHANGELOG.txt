@@ -1,7 +1,7 @@
 MPFever - Changelog
 ===================
 
-0.5.12 - computer companies (experimental), no more slow town drifts, no crash in the next game
+0.5.12 - computer companies (experimental), no more slow town drifts, no stuck tools, crashes fixed
   - NEW (experimental, one company per player): computer companies. The host adds them in its lobby (up to 8), gives each its
     colour and takes them out; those of the lobby's savegame are read from it and are there from the start with their colour.
     The host's game runs them: a computer company plays as a player does, its builds and actions go to the other games as a
@@ -27,6 +27,32 @@ MPFever - Changelog
     game's notifications failed ("companyState" nil), the engine stopped when it booked money on it, and in a kept session the
     new world even took it for its own company. The native module now forgets the savegame's company with a new game, as it
     already did this machine's company, until the mod says it again.
+  - FIX (tools that stopped working, issue #91): "X's build was cancelled: another player built at the same place at the same
+    moment", then that tool did nothing until the next resynchronisation (stops, bulldozer, station modules, streets, tracks).
+    A held build that another player's build or action had come before was never given to the engine (0.5.9 with one company
+    per player, 0.5.7 with one company for everybody, where it was replayed instead): the tool marks itself busy when it builds
+    (the stop tool for one) and only the engine's answer frees it. A build anywhere on the map counted, so in one report 2 of 6
+    builds were cancelled. That answer cannot be made up (the tool reads the build's result from it, and the engine asserts on a
+    build that was not applied), so the builds are no longer held back: a build is applied as its tool computed it, as before
+    0.5.7, and if two players build at the very same place in the same second and the games then differ, the host's game is
+    reloaded everywhere. MPFEVER_RESTALE=1: as in 0.5.11.
+  - FIX (crash, issue #90): editing a modular station until some of its tracks went, with no new track, crashed the host's game
+    at the next resynchronisation. The replay's script forms failed (a segment removed twice: as a track of the build and as
+    one of the old station's), then the replay in two steps built the street part alone, which took the station's own tracks
+    away, and the station itself was refused: the station kept tracks that no longer existed, every later edit of it failed the
+    same way (in the report, the third player's game also lost the session meanwhile, and the first resynchronisation never
+    started), and the next resynchronisation's save crashed. Such an edit is now replayed as
+    the tool's own proposal, as the other edits of a station (MPFEVER_OWNTRACKS=0: the script forms first, as before), and the
+    street part of a build is never built alone when it takes away the tracks of the construction the build replaces: the build
+    is reported as not reproduced and the host's game is reloaded everywhere, with no half-built station.
+  - FIX (freeze then crash on the multiplayer page, issue #92): the page asked the game for the Mod Hub number of every mod of
+    every savegame shown. For a mod the game does not have, the engine asserts, slowly ("Could not find ModDesc in cache"): a
+    player with 370 mods and savegames made with mods removed since saw the page freeze, then the game stop. The page now asks
+    only for the mods installed, once per mod.
+  - FIX (archives on Linux, issue #93): the zips had "/" in their central directory but "\" in each file's own header (the zip
+    of Windows PowerShell 5), and some Linux archive managers made flat files named "MPFever-Server\mod\mpfever_1\..." instead
+    of folders. build.bat now packs them with tools\makezip.py, "/" everywhere, checked as it writes them. INSTALL.txt: what a
+    player reports for Linux with Proton (no Linux version, untested by us).
 
 0.5.11 - sessions of separate companies run again
   - FIX (games frozen at the start, 0.5.10): a session with one company per player never ran. At the start the host's rules go

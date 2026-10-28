@@ -8,6 +8,12 @@ REQUIREMENTS (every player)
   and the same mods. MPFever is not made for other mods yet: mods that change the game by
   themselves (rename lines, assign terminals...) break the synchronisation.
 - Steam running.
+- Linux: there is no Linux version of MPFever, and we cannot test on Linux. A player
+  reports that it runs with Proton, with these Steam launch options for Transport Fever 3:
+       WINEDLLOVERRIDES="winhttp=n,b" bash -c 'exec "${@/TransportFever3.exe/MPFever.exe}"' -- %command%
+  with the files of the archive's MPFever folder extracted into the game's folder (next to
+  TransportFever3.exe), and its mod\mpfever_1 folder copied into the game's mods/release/mpfever_1
+  (MPFever's automatic update does not reach that folder: copy it again after an update).
 
 
 1. INSTALLATION (every player)

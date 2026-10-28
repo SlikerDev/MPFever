@@ -42,8 +42,9 @@ copy /y LICENSE "%DIST%\LICENSE.txt" >nul || exit /b 1
 copy /y NOTICE.txt "%DIST%\" >nul || exit /b 1
 xcopy /e /i /q /y mod\mpfever_1 "%DIST%\mod\mpfever_1" >nul || exit /b 1
 if exist "release\MPFever-%VERSION%.zip" del "release\MPFever-%VERSION%.zip"
-rem standard zip entries (forward slashes), unlike Compress-Archive of Windows PowerShell 5
-powershell -NoProfile -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; [IO.Compression.ZipFile]::CreateFromDirectory((Resolve-Path 'release\dist\MPFever'), (Join-Path (Resolve-Path 'release') 'MPFever-%VERSION%.zip'), 'Optimal', $true)" || exit /b 1
+rem standard zip entries (forward slashes in the central directory and in every local header: ZipFile.CreateFromDirectory of
+rem Windows PowerShell 5 left backslashes in the local headers, and some Linux archive managers made flat files of them, issue #93)
+python tools\makezip.py release\dist\MPFever release\MPFever-%VERSION%.zip || exit /b 1
 echo BUILD OK: release\MPFever-%VERSION%.zip
 
 rem the dedicated server's archive: the same MPFever, plus start-server.bat, SERVER.txt and server-edition.txt (its MPFever.exe
@@ -55,7 +56,7 @@ copy /y docs\SERVER.txt "%SDIST%\" >nul || exit /b 1
 copy /y docs\server-edition.txt "%SDIST%\" >nul || exit /b 1
 copy /y launcher\start-server.bat "%SDIST%\" >nul || exit /b 1
 if exist "release\MPFever-%VERSION%-server.zip" del "release\MPFever-%VERSION%-server.zip"
-powershell -NoProfile -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; [IO.Compression.ZipFile]::CreateFromDirectory((Resolve-Path 'release\dist-server\MPFever-Server'), (Join-Path (Resolve-Path 'release') 'MPFever-%VERSION%-server.zip'), 'Optimal', $true)" || exit /b 1
+python tools\makezip.py release\dist-server\MPFever-Server release\MPFever-%VERSION%-server.zip || exit /b 1
 echo BUILD OK: release\MPFever-%VERSION%-server.zip
 
 rem the public server list service: MPFeverServerList.exe, its install scripts and README
@@ -66,5 +67,5 @@ copy /y serverlist\bin\Release\MPFeverServerList.exe "%LDIST%\" >nul || exit /b 
 copy /y serverlist\bin\Release\MPFeverServerList.exe.config "%LDIST%\" >nul || exit /b 1
 for %%f in (install-service.bat uninstall-service.bat README.md) do copy /y serverlist\%%f "%LDIST%\" >nul || exit /b 1
 if exist "release\MPFever-ServerList-%VERSION%.zip" del "release\MPFever-ServerList-%VERSION%.zip"
-powershell -NoProfile -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; [IO.Compression.ZipFile]::CreateFromDirectory((Resolve-Path 'release\dist-serverlist\MPFever-ServerList'), (Join-Path (Resolve-Path 'release') 'MPFever-ServerList-%VERSION%.zip'), 'Optimal', $true)" || exit /b 1
+python tools\makezip.py release\dist-serverlist\MPFever-ServerList release\MPFever-ServerList-%VERSION%.zip || exit /b 1
 echo BUILD OK: release\MPFever-ServerList-%VERSION%.zip

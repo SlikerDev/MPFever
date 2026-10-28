@@ -4273,6 +4273,32 @@ local function editsConstruction(m)
 	return type(m) == "table" and #(m.toRemove or {}) > 0 and hasConstructionSegments(m) and os.getenv("MPFEVER_EDITFORMS") ~= "1"
 end
 
+-- Whether a build takes away segments that are the own (frozen) tracks of a construction it replaces (m: translated to this
+-- game's entities). A modular station edited until tracks went and no new one came (issue #90: no new segment, so not seen by
+-- hasConstructionSegments nor editsConstruction) was rebuilt by the script forms, which the engine refused (a segment removed
+-- twice, once as the old station's own), then in two steps: the street part took the station's tracks away, the construction
+-- was then refused, the station kept tracks that no longer existed (assertion 'it != components.end()' on them), and the
+-- resynchronisation's save crashed the host's game. Every later edit of that station failed the same way.
+G.ownTracksRemoved = function(m)
+	-- (a construction replaced, not only taken away: a station bulldozed has its own removal, see removalPlan)
+	if type(m) ~= "table" or type(m.proposal) ~= "table" or #(m.toRemove or {}) == 0 or #(m.toAdd or {}) == 0
+		or #(m.proposal.removedSegments or {}) == 0 then return false end
+	local own = {}
+	for _, c in ipairs(m.toRemove) do
+		local id = type(c) == "table" and c.entity or c
+		if type(id) == "number" and id >= 0 then
+			pcall(function()
+				local con = api.engine.getComponent(id, api.type.ComponentType.CONSTRUCTION)
+				if con then for i = 1, #con.frozenEdges do own[con.frozenEdges[i]] = true end end
+			end)
+		end
+	end
+	for _, sg in ipairs(m.proposal.removedSegments) do
+		if type(sg) == "table" and own[sg.entity] then return true end
+	end
+	return false
+end
+
 local STREET_FORMS = {
 	{ v = "minimal", raw = true, ctx = "terrainNoCleanup" }, { v = "minimal", raw = true, ctx = "terrain" },
 	{ v = "minimal", raw = true, ctx = "plain" }, { v = "full", raw = true, ctx = "terrain" },
@@ -4363,7 +4389,7 @@ end
 
 local function replayNativeConstruction(a)
 	local m0 = a.args[1]
-	if not hasConstructionSegments(m0) and not a.industryEdit then return false end
+	if not hasConstructionSegments(m0) and not a.industryEdit and not a.ownTracks then return false end
 	local cArgs = C.deser(C.ser(a.args))
 	local miss = R.translateIn(cArgs, G.bind)
 	if #miss > 0 then log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: unresolved " .. table.concat(miss, ",")) return false end
@@ -5343,6 +5369,9 @@ function replayTwoStep(a)
 	local cArgs = C.deser(C.ser(a.args))
 	local miss = R.translateIn(cArgs, G.bind)
 	if #miss > 0 then log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: unresolved " .. table.concat(miss, ",")) return false end
+	-- (the street part alone would take away the own tracks of the construction it replaces: never built apart, see
+	-- G.ownTracksRemoved; tried only with the construction in the same proposal)
+	local ownTracks = a.ownTracks or G.ownTracksRemoved(cArgs[1])
 
 	local function buildConstruction()
 		local okr, args, n = pcall(C.rebuildArgs, a.fn, C.deser(C.ser(cArgs)), { seed = 7919, variant = "minimal", raw = true, ctx = "terrainNoCleanup", noStreet = true })
@@ -5369,6 +5398,11 @@ function replayTwoStep(a)
 	local function streetStep(k, together)
 		local form = STREET_FORMS[k]
 		if not form then
+			if together and ownTracks then
+				log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: not the street part alone, it would take away the tracks of the construction it replaces (desync)")
+				replayFailed(a, "station edit not replayed")
+				return
+			end
 			if together then return streetStep(1, false) end
 			log("NATIVE REPLAY " .. tostring(a.uid) .. " two steps: street part refused by every form (desync)")
 			replayFailed(a, "street part refused")
@@ -5608,10 +5642,17 @@ local function replayNative(a, formIndex)
 			end
 		end
 		-- a construction with its street connection: not replayable as one rebuilt proposal (see replayTwoStep)
-		if hasConstructionSegments(a.args[1]) then
+		-- (and the edit of a station that takes some of its own tracks away and adds none: the script forms always fail there, a
+		-- segment removed twice; the tool's proposal as for any other edit of it, see G.ownTracksRemoved. MPFEVER_OWNTRACKS=0: the
+		-- script forms first, as before, but never the street part alone)
+		if #missing == 0 and not hasConstructionSegments(a.args[1]) and os.getenv("MPFEVER_OWNTRACKS") ~= "0" and G.ownTracksRemoved(m1) then
+			a.ownTracks = true
+			log("NATIVE REPLAY " .. tostring(a.uid) .. ": the edit takes away tracks of the construction it replaces: the tool's proposal")
+		end
+		if hasConstructionSegments(a.args[1]) or a.ownTracks then
 			if replayNativeConstruction(a) then return end
 			if replayTwoStep(a) then return end
-			if editsConstruction(a.args[1]) then
+			if editsConstruction(a.args[1]) or a.ownTracks then
 				log("NATIVE REPLAY " .. tostring(a.uid) .. ": the edit of an existing station could not be replayed as the tool's proposal: not rebuilt otherwise")
 				replayFailed(a, "station edit not replayed")
 				return
@@ -6274,7 +6315,14 @@ end
 -- game replays it too, by the same way as the others (as the edits from a window, G.uiEdit): every game computes it at the same
 -- moment from the same data. Not in the separate companies mode, where the tool's proposal names the savegame's company (the
 -- native module gives its build this player's company, not a replay). MPFEVER_RESTALE=0: as before.
-G.restaleOn = os.getenv("MPFEVER_RESTALE") ~= "0"
+-- OFF by default since 0.5.12 (MPFEVER_RESTALE=1 turns it on): the tool's own command is then never given to the engine, and the
+-- tool waits for its answer for ever. The stop tool, for one, marks itself busy when it sends a build and only that answer frees
+-- it: the tool stayed dead until the next reload (issue #91, one company per player: "build cancelled" then no more stops,
+-- bulldozer, modules, streets; in one report 2 of 6 builds were cancelled, by builds anywhere on the map). The answer cannot be
+-- made up either: the tool reads the build's result from it and the engine asserts on a build that was not applied. A build
+-- made where another player built in the same second is applied as the tool computed it, as before 0.5.7, and if the games then
+-- differ, the host's game is reloaded everywhere.
+G.restaleOn = os.getenv("MPFEVER_RESTALE") == "1"
 G.othersAt = {}
 G.worldFrame = 0
 -- the tool's event when it applies a build ({proposal, data} by position or by name): its compact form, for G.restale
@@ -6357,7 +6405,8 @@ G.restaleBody = function(r, at)
 	-- One company per player: the tool's copy names the savegame's company (the native module gives the build this player's
 	-- company at the tool's command only), so it cannot be replayed. The build is left out on every game instead, as a refused
 	-- one (the others stop holding for it, its turn of a pause is skipped), and the chat tells its player to make it again:
-	-- before, it was applied as computed and the games reloaded. MPFEVER_RESTALESEP=0: as before.
+	-- before, it was applied as computed and the games reloaded. MPFEVER_RESTALESEP=0: as before. (Only with MPFEVER_RESTALE=1
+	-- since 0.5.12: the tool of the build left out stayed busy, see G.restaleOn)
 	if G.cmode == "separate" then
 		if os.getenv("MPFEVER_RESTALESEP") == "0" then return false end
 		local whyS = G.restaleWhy(r, at)
@@ -8053,7 +8102,7 @@ end
 -- street segments meet at one junction; both games upgrade one of them at once (the engine's own upgrade proposal, as the
 -- street upgrade tool makes it), the host the first and the client the second, each held the usual two seconds. Both change
 -- the junction: the one released second was computed before the other was there (MPFEVER_RESTALETEST=1: it is made again at
--- its release, see G.restale; MPFEVER_RESTALE=0: as before 0.5.7).
+-- its release, see G.restale, with MPFEVER_RESTALE=1 since 0.5.12; without it: as before 0.5.7).
 H.restale = function(from, p)
 	if p.role ~= C.ROLE or AUTO.running then return end
 	AUTO.running = true
