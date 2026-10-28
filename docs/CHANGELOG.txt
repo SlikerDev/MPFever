@@ -1,7 +1,24 @@
 MPFever - Changelog
 ===================
 
-0.5.12 - no crash in the next game after a session of separate companies
+0.5.12 - computer companies (experimental), no more slow town drifts, no crash in the next game
+  - NEW (experimental, one company per player): computer companies. The host adds them in its lobby (up to 8), gives each its
+    colour and takes them out; those of the lobby's savegame are read from it and are there from the start with their colour.
+    The host's game runs them: a computer company plays as a player does, its builds and actions go to the other games as a
+    player's. It builds its own bus garage, two-sided stops, town lines through a ring of stops and lines between neighbouring
+    towns, buys the year's best bus, adds buses to full lines, sells those of empty lines, gives up a line that stays empty (its
+    stops demolished), keeps money back, and goes bankrupt like a player. Buses only for now; slow to grow; not on a dedicated
+    server yet (its game plays no company).
+    MPFever.exe --savecompanies <savegame file>: the computer companies a savegame holds (diagnostics).
+  - FIX (desyncs, long sessions): the towns drifted apart after 10 to 20 minutes (script:towns first, then money, vehicles,
+    persons). The engine moves its animals on its thread pool, in chunks of 128: each animal writes its model, then asks the
+    octree about the others, which other threads are writing at that moment, and each chunk's random draws depend on where it
+    starts, which depends on the PC's threads. An animal then took another step on one game; the octree's nodes, which are
+    entities, were made and freed otherwise, every entity made afterwards (persons, town buildings) got another id, and the
+    towns parted. The native module now has the animals moved in one piece (the engine's own one-thread path): the same moves on
+    every game, whatever the PC. The animals move as before. MPFEVER_NOANIMALSERIAL=1 on every game: as before.
+    Found with a new entity log (MPFEVER_ENTWATCH=1 MPFEVER_ENTLOG=1: each addition and removal with its engine, step and the
+    game's call stack, and the animals' moves of each step) and persons in the state dumps (MPFEVER_SDUMP_PERSONS=1).
   - FIX (crash, issue #88): after a session with one company per player, a new game (or another savegame) started without
     restarting Transport Fever 3 crashed after about 30 s, whether the session had been left or kept. The native module sends
     the simulation's readings of the player to the savegame's company, and it kept that company from one game to the next: the

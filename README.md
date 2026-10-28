@@ -66,6 +66,7 @@ Players can also join a game already running, and a lost connection reconnects b
   - Several players can run one company together: ask to join another company (its chief accepts), leave yours, or merge two companies.
   - A company in debt for too long (3 to 24 months, set by the host in the lobby) goes bankrupt: its lines, stations and depots are auctioned to the others, and its players start again.
   - Fees and tolls show in the finance window. Companies can give each other money, and the MPFever window ranks them.
+  - **Computer companies (experimental, 0.5.12)**: the host adds them in the lobby (up to 8), each with its colour; a savegame's computer companies come back with it. Run by the host's game under the same rules as the players, they build their own bus garages, stops and bus lines in and between towns. Buses only for now.
 
 ### Everything is replicated
 
