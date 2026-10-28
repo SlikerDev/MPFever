@@ -110,7 +110,10 @@ end
 -- first line), so that a drift of script:towns... reported by a player comes with both games' states (MPFEVER_SDUMP=0:
 -- off; =1: the first 40 checks, each in its own file)
 -- (one table: the main chunk is close to the game's limit of local variables, 0.3.16 went over it and did not load)
-local SDUMP = { on = os.getenv("MPFEVER_SDUMP") ~= "0", all = os.getenv("MPFEVER_SDUMP") == "1", n = 0 }
+-- (MPFEVER_SDUMP_PERSONS=1: every person too, where it is and where it goes: the first person that differs between two
+-- games' files shows where a drift of the towns' happiness started)
+local SDUMP = { on = os.getenv("MPFEVER_SDUMP") ~= "0", all = os.getenv("MPFEVER_SDUMP") == "1", n = 0,
+	persons = os.getenv("MPFEVER_SDUMP_PERSONS") == "1" }
 local function flatten(v, path, out, d)
 	if type(v) == "table" and d < 16 then
 		for k, x in pairs(v) do flatten(x, path .. "." .. tostring(k), out, d + 1) end
@@ -196,6 +199,58 @@ local function extendedParts(parts)
 			end
 			for f, n in pairs(kinds) do dump[#dump + 1] = "~constructions " .. f .. " = " .. n end
 		end)
+		if SDUMP.persons then
+			pcall(function()
+				local CT = api.type.ComponentType
+				local function ids(list)
+					local out = {}
+					pcall(function() for i = 1, #list do out[#out + 1] = tostring(list[i]) end end)
+					return table.concat(out, ",")
+				end
+				for _, p in ipairs(R.entitiesWith("SIM_PERSON")) do
+					local sp = api.engine.getComponent(p, CT.SIM_PERSON)
+					if sp then
+						local st = "-"
+						local v = api.engine.getComponent(p, CT.SIM_ENTITY_AT_VEHICLE)
+						local t = not v and api.engine.getComponent(p, CT.SIM_ENTITY_AT_TERMINAL)
+						local m = not v and not t and api.engine.getComponent(p, CT.SIM_ENTITY_MOVING)
+						if v then
+							st = string.format("vehicle %s line %s %s>%s", tostring(v.vehicle), tostring(v.line), tostring(v.lineStop0), tostring(v.lineStop1))
+						elseif t then
+							st = string.format("terminal line %s %s>%s since %.6g", tostring(t.line), tostring(t.lineStop0), tostring(t.lineStop1), t.arrivalTime or -1)
+						elseif m then
+							st = string.format("moving line %s %s>%s partial %s", tostring(m.line), tostring(m.lineStop0), tostring(m.lineStop1), tostring(m.partialPath))
+						elseif api.engine.getComponent(p, CT.SIM_ENTITY_AT_BUILDING) then
+							st = "building"
+						elseif api.engine.getComponent(p, CT.SIM_ENTITY_IDLE) then
+							st = "idle"
+						end
+						local tt = {}
+						pcall(function() for i = 1, #sp.travelTimes do tt[#tt + 1] = string.format("%.6g", sp.travelTimes[i]) end end)
+						dump[#dump + 1] = string.format("~person %d = happy %.6g at %s dest %s modes %s last %s times %s upd %s pick %s %s",
+							p, sp.happiness or -1, tostring(sp.targetOrAtEntity), ids(sp.destinations), ids(sp.moveModes),
+							tostring(sp.lastMoveMode), table.concat(tt, ","), tostring(sp.lastDestinationUpdate), tostring(sp.pickupTime), st)
+					end
+				end
+				-- the town buildings with their capacities (the persons' destinations) and their place: a building numbered
+				-- otherwise in the two games shows with the same place and time under two numbers
+				for _, b in ipairs(R.entitiesWith("TOWN_BUILDING")) do
+					local tb = api.engine.getComponent(b, CT.TOWN_BUILDING)
+					if tb then
+						local cap = tb.personCapacity and tb.personCapacity >= 0 and api.engine.getComponent(tb.personCapacity, CT.PERSON_CAPACITY)
+						local where = "-"
+						pcall(function()
+							local cc = api.engine.getComponent(tb.construction, CT.CONSTRUCTION)
+							local mp = R.matPos(cc.transf)
+							where = string.format("%.1f,%.1f", mp.x, mp.y)
+						end)
+						dump[#dump + 1] = string.format("~townbuilding %d = cap %s type %s n %s level %s built %s con %s stock %s town %s @%s", b,
+							tostring(tb.personCapacity), cap and tostring(cap.type) or "-", cap and tostring(cap.capacity) or "-", tostring(tb.level),
+							tostring(tb.timeBuilt), tostring(tb.construction), tostring(tb.stockList), tostring(tb.town), where)
+					end
+				end
+			end)
+		end
 		SDUMP.n = SDUMP.n + 1
 		table.sort(dump)
 		pcall(function()
@@ -3293,6 +3348,8 @@ H.chat = function(from, p) log("chat " .. tostring(from) .. ": " .. tostring(p.t
 
 H.session = function(from, p)
 	if p.cmode ~= nil then G.cmode = p.cmode; G.coStart = p.cstart; G.coOwner = p.owner; G.coBankrupt = p.bankrupt end
+	-- (the computer companies the host chose in its lobby, "n:colour,...": run by the host's game, see mpfever_ai.lua)
+	if p.cmode ~= nil then G.coAi = p.ai end
 	G.session.started = p.started == true
 	-- a resynchronisation is under way (see G.resyncRefuse); MPFEVER_RESYNCBUILDS=1: builds are not refused then (as before 0.5.0)
 	local rs = p.resync == true and os.getenv("MPFEVER_RESYNCBUILDS") ~= "1"
@@ -7553,7 +7610,7 @@ local function stampHeld()
 			local now = gameTime()
 			G.oseq = G.oseq + 1
 			local paused = G.session.pauseAt ~= nil and now >= G.session.pauseAt and gameSpeed() == 0
-			local a = { tok = p.tok, id = p.id, fn = p.fn, args = p.args, origin = G.me, oseq = G.oseq, co = G.myCo,
+			local a = { tok = p.tok, id = p.id, fn = p.fn, args = p.args, origin = G.me, oseq = G.oseq, co = tonumber(p.co) or G.myCo,
 				uid = G.me .. ":" .. G.oseq, at = paused and pausedStamp(now) or stampFor(now), paused = paused or nil }
 			-- (the edit of a construction from a window: replayed here too, as the others' builds are, see G.uiEdit)
 			local edit = G.uiEdit(a)
@@ -7749,6 +7806,8 @@ local function shipNativeBuilds(st)
 				end
 			if G.natCtx and G.natCtx[a.natId] then a.ctx = G.natCtx[a.natId]; G.natCtx[a.natId] = nil end
 			if G.natRefund and G.natRefund[a.natId] then a.refund = G.natRefund[a.natId]; G.natRefund[a.natId] = nil end
+			-- (a build of a game company, see mpfever_ai.lua: the other games build it for that company)
+			if G.aiNatCo and G.aiNatCo[a.natId] then a.co = G.aiNatCo[a.natId]; G.aiNatCo[a.natId] = nil end
 				local rest = {}
 				for i = k + 1, #G.natShipIds do rest[#rest + 1] = G.natShipIds[i] end
 				G.natShipIds = rest
@@ -14952,6 +15011,54 @@ G.previewTick = function()
 	end
 end
 
+-- game companies (mpfever_ai.lua): what the module needs from here, then its step on the host. MPFEVER_AIDEV=<folder>: the module
+-- is read again from that folder whenever it changes, and ai_probe.lua there runs once each time it changes (tests)
+G.aiEnv = function()
+	return { api = api, G = G, C = C, R = R, CO = CO, log = log, send = send, queueLocal = queueLocal, toSim = toSim,
+		stampFor = stampFor, pausedStamp = pausedStamp, gameTime = gameTime, gameSpeed = gameSpeed, deferredSend = deferredSend,
+		replaySend = replaySend, nodePosition = nodePosition, groundZ = groundZ, vec = vec, shortErr = shortErr, nativeCtl = nativeCtl,
+		playerContext = playerContext, withActor = withActor, STEP = STEP, BS = BS, NL = NL, H = H }
+end
+G.aiStep = function(st)
+	local dev = os.getenv("MPFEVER_AIDEV")
+	local function loadFile(path)
+		local f = C.IO.open(path, "rb")
+		if not f then return nil end
+		local src = f:read("*a")
+		f:close()
+		return src
+	end
+	if dev and G.frames % 30 == 0 then
+		for _, name in ipairs({ "mpfever_ai.lua", "ai_probe.lua" }) do
+			local src = loadFile(dev .. BS .. name)
+			local key = src and (#src .. ":" .. (src:sub(1, 64)) .. (src:sub(-64)))
+			G.aiSrcSeen = G.aiSrcSeen or {}
+			if src and G.aiSrcSeen[name] ~= key then
+				G.aiSrcSeen[name] = key
+				local chunk, err = load(src, "=" .. name, "t", _ENV)
+				if not chunk then log("AI " .. name .. ": " .. tostring(err))
+				elseif name == "mpfever_ai.lua" then
+					local okm, m = pcall(chunk)
+					if okm and type(m) == "table" then G.aiMod = m; log("AI module (re)loaded from " .. dev) else log("AI module: " .. tostring(m)) end
+				else
+					local okp, errp = pcall(chunk, G.aiEnv(), st)
+					log("AI probe ran: " .. (okp and "ok" or tostring(errp)))
+				end
+			end
+		end
+	end
+	if not G.aiMod and not dev and not G.aiTried then
+		G.aiTried = true
+		local okm, m = pcall(ug_require, "mpfever_ai.lua")
+		if not okm then okm, m = pcall(ug_require, "mpfever_1::/mpfever_ai.lua") end
+		if okm and type(m) == "table" then G.aiMod = m else log("AI module not loaded: " .. tostring(m)) end
+	end
+	if G.aiMod and G.aiMod.tick then
+		local okt, errt = pcall(G.aiMod.tick, G.aiEnv(), st)
+		if not okt and G.frames - (G.aiErrAt or -10000) > 600 then G.aiErrAt = G.frames; log("AI step failed: " .. tostring(errt)) end
+	end
+end
+
 local function guiUpdate(userParams, state, guiState)
 	if not C.ACTIVE then return end
 	G.frames = G.frames + 1
@@ -15015,6 +15122,8 @@ local function guiUpdate(userParams, state, guiState)
 	G.co = st.co
 	local okco, errco = pcall(coGui, st)
 	if not okco then log("companies (gui): " .. tostring(errco)) end
+	-- the computer companies (the host's game only: the host chose them in its lobby; MPFEVER_AI=1 / MPFEVER_AIDEV for the tests)
+	if C.ROLE == "host" and ((G.coAi and G.coAi ~= "") or os.getenv("MPFEVER_AI") or os.getenv("MPFEVER_AIDEV")) then pcall(G.aiStep, st) end
 	if st.late and st.late > (G.lateSeen or 0) then
 		G.lateSeen = st.late
 		G.aheadLocked = true

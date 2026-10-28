@@ -32,6 +32,13 @@ namespace MPFever
                 foreach (var row in Mods.ScanReport()) Console.WriteLine(row);
                 return 0;
             }
+            // --savecompanies <savegame file>: the computer companies a savegame holds, as the host's lobby takes them (diagnostics)
+            if (args.Length > 1 && args[0] == "--savecompanies")
+            {
+                Log.Init(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "logs"));
+                foreach (var c in SaveInfo.AiCompanies(args[1])) Console.WriteLine("ai:" + c.Number + " colour " + c.Color + " " + c.Name);
+                return 0;
+            }
             if (args.Length > 0 && args[0] == "--selftest")
             {
                 Log.Init(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "logs"));
@@ -91,6 +98,14 @@ namespace MPFever
         // the host and sent with the lobby; a player who joins sees them as lobbyColors ("name:index,...") and the host's mode
         readonly Dictionary<string, int> lobbyColorOf = new Dictionary<string, int>();
         string lobbyColors = "", lobbyMode = "";
+        // one company per player: the computer companies of the host's lobby (experimental, 0.5.12), by number n of their key
+        // "ai:<n>" in the companies' registry: their colour (palette index) and name (a savegame's, "" for a new one). Those of the
+        // lobby's savegame are there from the start (SaveInfo.AiCompanies); the host adds, removes and colours them. Sent to the
+        // games with the session (ai= "n:colour,..."), the host's game runs them (mpfever_ai.lua); a player who joins the lobby
+        // sees them (lobbyAiText, "n:colour:name;...")
+        sealed class LobbyAi { public int Color; public string Name = ""; }
+        readonly SortedDictionary<int, LobbyAi> lobbyAi = new SortedDictionary<int, LobbyAi>();
+        string lobbyAiText = "";
         // the mods of the lobby's savegame ("id|name|origin" entries separated by ";;", see mpfever_menu.lua): written by the
         // host's menu (host_mods.txt), sent to the players of the lobby, shown by their menu with those missing on their PC
         string lobbyMods = "";
@@ -1179,6 +1194,7 @@ namespace MPFever
                     ["colors"] = lobbyOpen ? LobbyColors() : lobbyColors,
                     ["cmode"] = lobbyOpen ? companyMode : lobbyMode,
                     ["bankrupt"] = lobbyOpen ? BankruptMonths() : "",
+                    ["ai"] = lobbyOpen ? (companyMode == "separate" ? LobbyAiView() : "") : lobbyAiText,
                     ["myMods"] = SafeMineView(),
                     ["autoMods"] = st.TryGetValue("automods", out var am) && am == "0" ? "0" : "1",
                     ["modAsk"] = lobbyOpen ? ModAskView() : "",
@@ -1362,6 +1378,9 @@ namespace MPFever
                 catch (Exception e) { menuPhase = "error"; menuText = T("Impossible d'héberger : ", "Cannot host: ") + e.Message; MenuStatus(); return; }
                 // the lobby opens: the savegame is loaded once the host starts the game (see StartLobbyGame), by every game at once
                 lobbySave = arg; lobbyOpen = true; lobbyStarting = false;
+                // (one company per player: the savegame's computer companies, in the lobby from the start)
+                lock (lobbyAi) lobbyAi.Clear();
+                if (companyMode == "separate") LoadLobbyAi(arg);
                 // its fingerprint, for the players who already have it (copied by hand before joining: nothing to send them)
                 lobbySaveSha = ""; lobbySaveSize = 0;
                 lock (saveHave) saveHave.Clear();
@@ -1450,6 +1469,11 @@ namespace MPFever
                 if (!int.TryParse(arg, NumberStyles.Integer, CultureInfo.InvariantCulture, out int ix) || ix < 1 || ix > 12) return;
                 if (lobbyOpen && hostName != null) { SetLobbyColor(BaseName(hostName), ix); }
                 else foreach (var cl in clients.ToList()) { try { cl.Send(Msg.Make("lobbycolor", name, "{[\"ix\"]=" + ix + "}")); } catch { } }
+            }
+            else if (cmd == "aiadd" || cmd == "aidel" || cmd == "aicolor")
+            {
+                // (the host, one company per player) the lobby's computer companies
+                LobbyAiRequest(cmd.Substring(2), arg);
             }
             else if (cmd == "bankrupt")
             {
@@ -1662,6 +1686,8 @@ namespace MPFever
             joinPending = false;
             lock (lobbyColorOf) lobbyColorOf.Clear();
             lobbyColors = ""; lobbyMode = "";
+            lock (lobbyAi) lobbyAi.Clear();
+            lobbyAiText = "";
             lobbyOpen = lobbyStarting = false; lobbySave = ""; lobbyPlayers = ""; lobbyPublic = ""; lobbyLocal = ""; lobbyMods = ""; modCheck = null;
             lock (modIssues) modIssues.Clear();
             joinedAddr = null;
@@ -1691,9 +1717,10 @@ namespace MPFever
             return string.Join(", ", names.Where(x => x != ""));
         }
 
-        /// <summary>A player of the lobby takes a colour for its company, unless another player has it.</summary>
+        /// <summary>A player of the lobby takes a colour for its company, unless another player or a computer company has it.</summary>
         void SetLobbyColor(string who, int ix)
         {
+            lock (lobbyAi) if (lobbyAi.Values.Any(a => a.Color == ix)) return;
             lock (lobbyColorOf)
             {
                 foreach (var kv in lobbyColorOf) if (kv.Value == ix && kv.Key != who) return;
@@ -1711,6 +1738,109 @@ namespace MPFever
             lock (lobbyColorOf) return string.Join(",", lobbyColorOf.Where(kv => here.Contains(kv.Key)).Select(kv => kv.Key + ":" + kv.Value));
         }
 
+        /// <summary>The lobby's computer companies for the menus: "n:colour:name;..." (names without ';' and ':').</summary>
+        string LobbyAiView()
+        {
+            lock (lobbyAi) return string.Join(";", lobbyAi.Select(kv => kv.Key.ToString(CultureInfo.InvariantCulture) + ":" + kv.Value.Color.ToString(CultureInfo.InvariantCulture)
+                + ":" + (kv.Value.Name ?? "").Replace(";", " ").Replace(":", " ")));
+        }
+
+        /// <summary>The computer companies the host's game runs: "n:colour,..." (the session's ai=), "" without any.</summary>
+        string AiPayload()
+        {
+            if (companyMode != "separate") return "";
+            lock (lobbyAi)
+            {
+                // (the tests, without a lobby: MPFEVER_AI="n:colour,..." stands for the host's choice)
+                var env = Environment.GetEnvironmentVariable("MPFEVER_AI") ?? "";
+                if (lobbyAi.Count == 0 && env.Contains(":")) return env;
+                return string.Join(",", lobbyAi.Select(kv => kv.Key.ToString(CultureInfo.InvariantCulture) + ":" + kv.Value.Color.ToString(CultureInfo.InvariantCulture)));
+            }
+        }
+
+        /// <summary>The first palette index no player of the lobby and no other computer company has (0: none left).</summary>
+        int FreeLobbyColor(int exceptAi)
+        {
+            var used = new HashSet<int>();
+            lock (lobbyColorOf) foreach (var v in lobbyColorOf.Values) used.Add(v);
+            lock (lobbyAi) foreach (var kv in lobbyAi) if (kv.Key != exceptAi) used.Add(kv.Value.Color);
+            // (from the end of the palette: the players' first picks are its first colours)
+            for (int i = 12; i >= 1; i--) if (!used.Contains(i)) return i;
+            return 0;
+        }
+
+        /// <summary>(the host, one company per player) the lobby's computer companies: "add", "del" n, "color" "n:index".</summary>
+        void LobbyAiRequest(string what, string arg)
+        {
+            if (!lobbyOpen || companyMode != "separate") return;
+            if (what == "add")
+            {
+                int n;
+                lock (lobbyAi)
+                {
+                    if (lobbyAi.Count >= 8) return;
+                    n = 1;
+                    while (lobbyAi.ContainsKey(n)) n++;
+                }
+                int ix = FreeLobbyColor(n);
+                if (ix == 0) return;
+                lock (lobbyAi) lobbyAi[n] = new LobbyAi { Color = ix };
+                Log.W(F("Entreprise de l'ordinateur {0} ajoutée (couleur {1})", "Computer company {0} added (colour {1})", n, ix));
+            }
+            else if (what == "del")
+            {
+                if (!int.TryParse(arg, NumberStyles.Integer, CultureInfo.InvariantCulture, out int n)) return;
+                lock (lobbyAi) if (!lobbyAi.Remove(n)) return;
+                Log.W(F("Entreprise de l'ordinateur {0} retirée", "Computer company {0} removed", n));
+            }
+            else if (what == "color")
+            {
+                var parts = (arg ?? "").Split(':');
+                if (parts.Length != 2 || !int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out int n)
+                    || !int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out int ix) || ix < 1 || ix > 12) return;
+                lock (lobbyColorOf) if (lobbyColorOf.Values.Contains(ix)) return;
+                lock (lobbyAi)
+                {
+                    if (!lobbyAi.TryGetValue(n, out var a) || lobbyAi.Any(kv => kv.Key != n && kv.Value.Color == ix)) return;
+                    a.Color = ix;
+                }
+            }
+            BroadcastLobby();
+            MenuStatus();
+        }
+
+        /// <summary>(the host, one company per player) the computer companies of the lobby's savegame, read from it: in the lobby from
+        /// the start, with their colour (another free one when a player has it).</summary>
+        void LoadLobbyAi(string save)
+        {
+            new Thread(() =>
+            {
+                try
+                {
+                    var f = GameInstall.FindSave(save);
+                    if (f == null) return;
+                    var t0 = DateTime.UtcNow;
+                    var list = SaveInfo.AiCompanies(f);
+                    if (lobbySave != save || !lobbyOpen) return;
+                    foreach (var c in list)
+                    {
+                        lock (lobbyAi) { if (lobbyAi.ContainsKey(c.Number)) continue; lobbyAi[c.Number] = new LobbyAi { Color = 0, Name = c.Name }; }
+                        int ix = c.Color;
+                        bool taken;
+                        lock (lobbyColorOf) taken = lobbyColorOf.Values.Contains(ix);
+                        lock (lobbyAi) taken = taken || ix < 1 || lobbyAi.Any(kv => kv.Key != c.Number && kv.Value.Color == ix);
+                        if (taken) ix = FreeLobbyColor(c.Number);
+                        lock (lobbyAi) lobbyAi[c.Number].Color = ix;
+                    }
+                    if (list.Count > 0)
+                        Log.W(F("Sauvegarde : {0} entreprise(s) de l'ordinateur reprise(s) ({1:0.0} s)", "Savegame: {0} computer company(ies) taken again ({1:0.0} s)", list.Count, (DateTime.UtcNow - t0).TotalSeconds));
+                    BroadcastLobby();
+                    MenuStatus();
+                }
+                catch (Exception e) { Log.W("savegame companies: " + e.Message); }
+            }) { IsBackground = true, Name = "Savegame companies" }.Start();
+        }
+
         /// <summary>Tells the players in the lobby who is there (shown in their MPFever window).</summary>
         void BroadcastLobby()
         {
@@ -1718,7 +1848,8 @@ namespace MPFever
             relay.Broadcast(Msg.Make("lobby", hostName, "{[\"players\"]=" + LuaLit.Quote(LobbyList()) + ",[\"save\"]=" + LuaLit.Quote(lobbySave)
                 + (lobbySaveSha != "" ? ",[\"sha\"]=" + LuaLit.Quote(lobbySaveSha) + ",[\"size\"]=" + lobbySaveSize : "")
                 + ",[\"host\"]=" + LuaLit.Quote(BaseName(hostName ?? "")) + ",[\"mods\"]=" + LuaLit.Quote(lobbyMods)
-                + ",[\"colors\"]=" + LuaLit.Quote(LobbyColors()) + ",[\"cmode\"]=" + LuaLit.Quote(companyMode) + "}"));
+                + ",[\"colors\"]=" + LuaLit.Quote(LobbyColors()) + ",[\"cmode\"]=" + LuaLit.Quote(companyMode)
+                + ",[\"ai\"]=" + LuaLit.Quote(companyMode == "separate" ? LobbyAiView() : "") + "}"));
         }
 
         /// <summary>The host starts the game from its lobby: every player in it receives the host's savegame and every game
@@ -2268,6 +2399,7 @@ namespace MPFever
                             lobbyPlayers = S("players");
                             lobbyColors = S("colors");
                             lobbyMode = S("cmode");
+                            lobbyAiText = S("ai");
                             SetHostMods(S("mods"), client, name);
                             // the host's savegame: maybe on this PC already (copied by hand): then nothing to download
                             if (S("sha") != "" && long.TryParse(S("size"), NumberStyles.Integer, CultureInfo.InvariantCulture, out long hsz)) CheckHostSave(S("sha"), hsz, S("save"), client, name);
@@ -2696,6 +2828,8 @@ namespace MPFever
                        (pauseAt.HasValue ? ",[\"pauseAt\"]=" + pauseAt.Value : "") +
                        ",[\"cmode\"]=\"" + companyMode + "\"" +
                        (companyMode == "separate" ? ",[\"cstart\"]=" + StartMoney() + ",[\"bankrupt\"]=" + BankruptMonths() : "") +
+                       // the computer companies the host's game runs (its lobby's choice, "n:colour,...")
+                       (AiPayload() != "" ? ",[\"ai\"]=" + LuaLit.Quote(AiPayload()) : "") +
                        // a dedicated server plays no company: the savegame's company goes to its owner (owner=, else nobody)
                        (companyMode == "separate" && server != null ? ",[\"owner\"]=" + LuaLit.Quote(OwnerKey()) : "") +
                        // a resynchronisation is under way: every game refuses its player's builds until it ends (issue #81: a player
