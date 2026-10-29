@@ -559,6 +559,8 @@ namespace MPFever
         }
 
         public bool GameRunning => proc != null && !proc.HasExited;
+        /// <summary>The game's main window (0 when unknown): the autotests move the mouse over it.</summary>
+        public IntPtr Window { get { try { if (proc == null || proc.HasExited) return IntPtr.Zero; proc.Refresh(); return proc.MainWindowHandle; } catch { return IntPtr.Zero; } } }
 
         /// <summary>The game of a dedicated server (MPFever.exe --server): the mod knows it from MPFEVER_SERVER=1 and plays
         /// no company of its own there.</summary>

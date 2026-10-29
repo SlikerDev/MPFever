@@ -7411,6 +7411,18 @@ H.resync_save = function(from, p)
 	save()
 end
 
+-- autotest "toshared": back to the game's main menu (the pause menu's "Return to Main Menu"), where mpfever_auto.lua loads the
+-- test's savegame again in this same run of the game (auto_reload.txt)
+H.tomenu = function(from, p)
+	if os.getenv("MPFEVER_SAVE") == nil then return end
+	C.appendFile(C.DIR .. BS .. "auto_reload.txt", tostring(p.seq or 1))
+	log("AUTOTEST tomenu: back to the main menu, the test savegame loaded again from there")
+	G.waits[#G.waits + 1] = { at = G.frames + 10, fn = function()
+		local ok, err = pcall(app.stopGame)
+		if not ok then log("AUTOTEST tomenu: " .. tostring(err)) end
+	end }
+end
+
 H.resync_load = function(from, p)
 	if not claimResync("resync_load", p.id) then return end
 	local ns = app.SaveGameNamespace.getSavegame()

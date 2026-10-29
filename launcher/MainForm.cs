@@ -1967,6 +1967,17 @@ namespace MPFever
 
         void AutoLine(string s) { lock (autoReport) autoReport.Add(s); Log.W("AUTOTEST " + s); }
 
+        [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
+        [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out WinRect r);
+        struct WinRect { public int L, T, R, B; }
+        /// <summary>(autotests) the mouse over a game window, a little elsewhere each second, as a player looking around.</summary>
+        static void AutoHover(IntPtr w, int s)
+        {
+            if (w == IntPtr.Zero || !GetWindowRect(w, out var r) || r.R - r.L < 100) return;
+            int cx = (r.L + r.R) / 2, cy = (r.T + r.B) / 2;
+            SetCursorPos(cx + ((s * 37) % 200) - 100, cy + ((s * 53) % 160) - 80);
+        }
+
         bool WaitUntil(Func<bool> cond, double seconds)
         {
             var end = Now + seconds;
@@ -2081,6 +2092,36 @@ namespace MPFever
                             lock (autoDone) AutoLine("client build during the resynchronisation: " + (cd ? autoDone["client"] : "TIMEOUT"));
                             rt.Join(TimeSpan.FromMinutes(10));
                             Thread.Sleep(8000);
+                        }
+                        continue;
+                    }
+                    if (scenario == "toshared")
+                    {
+                        // (crash 2026-10-28: a game that played one company per player, then a session with one company for
+                        // everybody in the same run of the game) both games back to the game's main menu, the test's savegame loaded
+                        // again from there, a shared session; the mouse over the client's world for a minute (the crash came from
+                        // the interface's tool that shows what the mouse is over)
+                        if (role == "host")
+                        {
+                            AutoLine("company mode " + companyMode + " -> shared: both games back to the main menu, '" + GameLink.AutoSave + "' loaded again");
+                            resyncing = true;
+                            lock (players) players.Clear();
+                            lock (clocks) clocks.Clear();
+                            lock (sessionGate) { started = false; pauseAt = null; speed = 0; }
+                            HostSend(Msg.Make("tomenu", hostName, "{[\"seq\"]=" + DateTime.Now.Ticks + "}"));
+                            companyMode = "shared";
+                            bool back = WaitUntil(() => { int n; lock (players) n = players.Count;
+                                lock (clocks) return n >= 2 && clocks.Count >= 2 && clocks.Values.Select(c => c.T).Distinct().Count() == 1; }, 600);
+                            resyncing = false;
+                            AutoLine(back ? "both games back with the savegame: shared session" : "FAILED: the games did not come back from the main menu");
+                            if (back)
+                            {
+                                Thread.Sleep(3000);
+                                StartSession();
+                                var cw = games.FirstOrDefault(x => x.Role == "client")?.Window ?? IntPtr.Zero;
+                                for (int s = 0; s < 60 && ClosedGames() == ""; s++) { AutoHover(cw, s); Thread.Sleep(1000); }
+                            }
+                            AutoLine("after the switch: " + (ClosedGames() == "" ? "both games running" : "CLOSED " + ClosedGames()));
                         }
                         continue;
                     }

@@ -218,6 +218,20 @@ local function menuLoad()
 	if not ok then log("menu load failed: " .. tostring(err)) end
 end
 
+-- (autotest "toshared") the game was sent back to the main menu to load the test's savegame again (auto_reload.txt, written by
+-- the bridge's H.tomenu): true once, the file emptied
+local function takeReload()
+	if not (DIR and IO) then return false end
+	local f = IO.open(DIR .. BS .. "auto_reload.txt", "rb")
+	if not f then return false end
+	local s = f:read("*a") or ""
+	f:close()
+	if s == "" then return false end
+	local w = IO.open(DIR .. BS .. "auto_reload.txt", "wb")
+	if w then w:close() end
+	return true
+end
+
 -- the loaded game waits for a key press: start it once loading is complete
 local function startWhenReady()
 	local ok, waiting = pcall(app.isWaitForStartReadyGame)
@@ -235,10 +249,15 @@ function data()
 	return {
 		handleEvent = function(id, name, param)
 			if name == "mainMenuReady" then S.menuReady = true end
-			if name == "mainMenuReady" and SAVE and not S.requested then
-				S.requested = true
-				local ok, err = pcall(loadSave)
-				if not ok then log("load failed: " .. tostring(err)) end
+			if name == "mainMenuReady" and SAVE then
+				local again = takeReload()
+				if not S.requested or again then
+					S.requested = true
+					S.readyStarted = false
+					if again then log("back on the main menu: the test savegame loaded again") end
+					local ok, err = pcall(loadSave)
+					if not ok then log("load failed: " .. tostring(err)) end
+				end
 			end
 		end,
 		update = function()
