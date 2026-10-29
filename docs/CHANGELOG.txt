@@ -7,7 +7,9 @@ MPFever - Changelog
     that takes that cargo, checks with the game's path finding that a truck can drive there, opens the line with that cargo
     loaded at the producer, and buys its first two trucks at once: the year's best truck for that cargo (a truck more when
     cargo waits at the producer). It also delivers the towns: a producer's cargo to a stop near the shops or the works that want more of it (a
-    stop of the company already there is taken). A round picks up a second producer of the same cargo on the way, and an
+    stop of the company already there is taken). Its trucks use the garages already there (it builds none near an industry,
+    and builds a garage on level ground only: one built on a slope froze the games in a test). A round picks up a second
+    producer of the same cargo on the way, and an
     industry no truck reaches gets a street to the nearest town street (straight, a dry run first). MPFEVER_AIFREIGHT=0:
     buses only; MPFEVER_AITOWNFREIGHT=0, MPFEVER_AIROUND=0, MPFEVER_AIROADS=0: without towns, rounds, streets.
   - NEW (computer companies): a level for each one, chosen by the host in the lobby: Easy, Normal (the default) or Hard. The
