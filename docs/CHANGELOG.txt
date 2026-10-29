@@ -8,7 +8,7 @@ MPFever - Changelog
     loaded at the producer, and buys its first two trucks at once: the year's best truck for that cargo (a truck more when
     cargo waits at the producer). It also delivers the towns: a producer's cargo to a stop near the shops or the works that want more of it (a
     stop of the company already there is taken). Its trucks use the garages already there (it builds none near an industry,
-    and builds a garage on level ground only: one built on a slope froze the games in a test). A round picks up a second
+    and builds a garage on level ground only: one built on a slope made both games crash in a test). A round picks up a second
     producer of the same cargo on the way. An industry no truck reaches is left aside: the company tries a street to the
     nearest town street (straight, a dry run first), but the game refuses those streets so far (they cross blocks and
     streets: they need a real route, next version). MPFEVER_AIFREIGHT=0:
