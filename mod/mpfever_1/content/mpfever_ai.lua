@@ -907,7 +907,7 @@ local function manageLines(E, co, lines, vehicles, money)
 			busy = n < LV.maxTruck and (waiting >= LV.waiting or (use and use > LV.truckUse))
 			if busy then L(E, string.format("line %d: %d %s waiting at the producer", l.e, waiting, cargoName(E, l.freight.cargo))) end
 		end
-		if busy and money > RESERVE + (A.busCost or BUS_COST) then
+		if busy and money > RESERVE + ((l.freight and A.truckCost or A.busCost) or BUS_COST) then
 			local depot = garagesNear(E, co.ent, l.mid or (l.freight and l.freight.from.pos) or { x = 0, y = 0 }, 5000)[1]
 			if depot then
 				A.forLine = l.e
@@ -1160,6 +1160,19 @@ local function industries(E)
 					if s.cargoType >= 0 then it.inputs[s.cargoType] = true else it.inputSets[#it.inputSets + 1] = s.cargoTypes end
 				end
 			end
+			-- (primary: a rule of it, not a booster, makes cargo from nothing, as a mine or a farm; the others need their inputs)
+			it.primary = false
+			pcall(function()
+				for k = 1, #sl.rules do
+					local r = sl.rules[k]
+					if not r.booster then
+						local need = 0
+						local alt = r.input and r.input[1]
+						if alt then for j = 1, #alt do need = need + (alt[j] or 0) end end
+						if need == 0 then it.primary = true end
+					end
+				end
+			end)
 			it.road = roadTerminals(E, con)
 			-- (else a station of one of its parts, as the game's own path finding of the missions looks for it)
 			for k = 1, #con.subconstructions do
@@ -1173,6 +1186,23 @@ local function industries(E)
 	table.sort(list, function(a, b) return a.e < b.e end)
 	A.indCache = { frame = E.G.frames, list = list }
 	return list
+end
+
+-- How much of a cargo a producer makes now (a year's worth, for the routes' score), nil when it makes none: an industry that needs
+-- inputs makes nothing without them (the first test of 0.5.13: a brick works, a refinery and a food factory with no raw material,
+-- lines that ran empty and were given up); a primary one starts once a line serves it (half its most). MPFEVER_AIANYPRODUCER=1:
+-- every producer, as before.
+local function producedOf(E, ind, c)
+	local api = E.api
+	local made = 0
+	pcall(function() made = api.engine.util.stock.getCargoProducedPerYear(ind.stockList, c) or 0 end)
+	if made > 0 then return made end
+	if ind.primary or os.getenv("MPFEVER_AIANYPRODUCER") == "1" then
+		local most = 0
+		pcall(function() most = api.engine.util.stock.getCargoMaxProductionPerYear(ind.stockList, c) or 0 end)
+		return most * 0.5
+	end
+	return nil
 end
 
 local function takes(E, ind, cargo)
@@ -1296,9 +1326,30 @@ buyFor = function(E, co, line, depot)
 	return buyBus(E, co, depot)
 end
 
-local function freightStop(E, road, stop0)
+-- A stop of a freight line; loadCargo: the cargo its trucks load there (a producer's stop). The stop's configuration lists, per
+-- cargo type (its id + 1), whether to load it and up to which share: a new stop's lists are empty, and its trucks loaded nothing
+-- (the lines of 0.5.13's first test ran empty and were given up). As the game's line window sets it: that cargo loaded, full.
+local function freightStop(E, road, stop0, loadCargo)
 	local s = {}
 	if stop0 then for k, v in pairs(stop0) do s[k] = v end end
+	if loadCargo then
+		local n = 0
+		pcall(function() for id in pairs(E.api.res.cargoTypeRep.getAll(true)) do if id + 1 > n then n = id + 1 end end end)
+		if n > loadCargo then
+			local cfg = {}
+			if type(s.stopConfig) == "table" then for k, v in pairs(s.stopConfig) do cfg[k] = v end end
+			local load, maxLoad = {}, {}
+			for k = 1, n do load[k] = (k == loadCargo + 1); maxLoad[k] = 1 end
+			cfg.load, cfg.maxLoad = load, maxLoad
+			if cfg.destroyForConfigChange == nil then cfg.destroyForConfigChange = true end
+			if cfg.destroyForRefresh == nil then cfg.destroyForRefresh = true end
+			if cfg.forceUnload == nil then cfg.forceUnload = false end
+			cfg.__ud = true
+			s.stopConfig = cfg
+		else
+			L(E, "freight stop: the cargo types could not be read, " .. tostring(loadCargo) .. " not set to load")
+		end
+	end
 	local first = road.list[1]
 	s.stationGroup = road.group
 	s.station = first.station
@@ -1328,9 +1379,9 @@ local function createFreightLine(E, co, f, extra)
 		stop0 = {}
 		for k, v in pairs(template.stops[1]) do if k ~= "stopConfig" then stop0[k] = v end end
 	end
-	template.stops = { freightStop(E, f.from.road, stop0), freightStop(E, f.to.road, stop0) }
+	template.stops = { freightStop(E, f.from.road, stop0, f.cargo), freightStop(E, f.to.road, stop0) }
 	-- (a round: a second producer of the same cargo on the way, see collectFrom)
-	if extra then table.insert(template.stops, 2, freightStop(E, extra.road, stop0)) end
+	if extra then table.insert(template.stops, 2, freightStop(E, extra.road, stop0, f.cargo)) end
 	local name = AINAME .. " " .. cargoName(E, f.cargo) .. " " .. math.floor(dist(f.from.pos, f.to.pos) / 100) / 10 .. " km"
 	act(E, co.id, "makeLineCreateCmd", { n = 4, [1] = name, [2] = C.marshal(api.type.Vec3f.new(0.8, 0.5, 0.1)), [3] = co.ent, [4] = template })
 	E.G.AI.busy = { what = "line " .. name, since = E.G.frames, linesBefore = #myLines(E, co.ent), jr = { kind = "freight", pos = f.from.pos, a = name, b = f.cargo } }
@@ -1358,9 +1409,9 @@ local function bestFreight(E, co, lines)
 	for _, p in ipairs(inds) do
 		if not others[p.road.group] then
 			for _, c in ipairs(p.outputs) do
-				local prod = 0
-				pcall(function() prod = api.engine.util.stock.getCargoMaxProductionPerYear(p.stockList, c) end)
-				for _, q in ipairs(inds) do
+				-- (only a producer that makes that cargo now, or a primary one, see producedOf)
+				local prod = producedOf(E, p, c)
+				for _, q in ipairs(prod and inds or {}) do
 					-- (an industry found cut off from the streets is left out until a street reaches it, see roadProject)
 					if q.e ~= p.e and not others[q.road.group] and cut[p.e] ~= false and cut[q.e] ~= false and takes(E, q, c) then
 						local d = dist(p.pos, q.pos)
@@ -1446,12 +1497,11 @@ local function bestTownFreight(E, co, lines)
 					for _, ind in ipairs(inds) do
 						if not others[ind.road.group] and (A.roadChecked or {})[ind.e] ~= false then
 							for _, c in ipairs(ind.outputs) do
-								if c == w.cargo then
+								if c == w.cargo and producedOf(E, ind, c) then
 									local d = dist(ind.pos, p)
 									local key = ind.e .. ">town" .. t.e .. ":" .. c
 									if d > FREIGHT_MIN and d < LV.freightMax and A.freightTried[key] ~= false and not (A.freightDone or {})[key] then
-										local prod = 0
-										pcall(function() prod = api.engine.util.stock.getCargoMaxProductionPerYear(ind.stockList, c) end)
+										local prod = producedOf(E, ind, c) or 0
 										cands[#cands + 1] = { from = ind, town = t.e, use = w.use, p = p, cargo = c, d = d, key = key,
 											score = (prod + 50) * d / (1 + (d / 3000) ^ 2) * math.min(w.miss, 100) / 100 }
 									end
@@ -1502,14 +1552,14 @@ local function townFreightProject(E, co, stops, lines, vehicles, money)
 	-- (a line given up there before: that delivery is left)
 	if not line and (A.badPair or {})[math.min(f.from.road.group, s.group) .. "-" .. math.max(f.from.road.group, s.group)] then A.freightTried[f.key] = false; return false end
 	if not line then
-		if money < RESERVE + 2 * (A.busCost or BUS_COST) then return true end
+		if money < RESERVE + 2 * (A.truckCost or BUS_COST) then return true end
 		createFreightLine(E, co, { from = f.from, to = { road = road, pos = s.pos }, cargo = f.cargo })
 		return true
 	end
 	local n = 0
 	for _, v in ipairs(vehicles) do if v.line == line.e then n = n + 1 end end
 	if n < 2 then
-		if money < RESERVE + (A.busCost or BUS_COST) then return true end
+		if money < RESERVE + (A.truckCost or BUS_COST) then return true end
 		A.forLine = line.e
 		buyTruck(E, co, g.depot, f.cargo)
 		return true
@@ -1532,7 +1582,7 @@ local function collectFrom(E, co, f, lines)
 	for _, p in ipairs(industries(E)) do
 		if p.e ~= f.from.e and p.e ~= f.to.e and not others[p.road.group] and not mine[p.road.group] then
 			local makes = false
-			for _, c in ipairs(p.outputs) do if c == f.cargo then makes = true end end
+			for _, c in ipairs(p.outputs) do if c == f.cargo and producedOf(E, p, c) then makes = true end end
 			local d = dist(p.pos, f.from.pos)
 			if makes and d < 1500 and dist(p.pos, f.to.pos) < LV.freightMax and A.roundTried[f.key .. "+" .. p.e] ~= false and (not bd or d < bd) then
 				best, bd = p, d
@@ -1565,7 +1615,7 @@ local function industryProject(E, co, lines, vehicles, money)
 	-- (a line given up there before: that route is left)
 	if not line and (A.badPair or {})[math.min(f.from.road.group, f.to.road.group) .. "-" .. math.max(f.from.road.group, f.to.road.group)] then A.freightTried[f.key] = false; return false end
 	if not line then
-		if money < RESERVE + 2 * (A.busCost or BUS_COST) then return true end
+		if money < RESERVE + 2 * (A.truckCost or BUS_COST) then return true end
 		-- (a second producer of that cargo near the first: one round for both)
 		local extra = collectFrom(E, co, f, lines)
 		if extra == "searching" then return "searching" end
@@ -1575,7 +1625,7 @@ local function industryProject(E, co, lines, vehicles, money)
 	local n = 0
 	for _, v in ipairs(vehicles) do if v.line == line.e then n = n + 1 end end
 	if n < 2 then
-		if money < RESERVE + (A.busCost or BUS_COST) then return true end
+		if money < RESERVE + (A.truckCost or BUS_COST) then return true end
 		A.forLine = line.e
 		buyTruck(E, co, g.depot, f.cargo)
 		return true
@@ -1814,7 +1864,10 @@ local function step(E)
 		elseif A.busy.vehBefore and #myVehicles(E, co.ent) > A.busy.vehBefore then
 			-- (what a bus costs: measured on the company's account)
 			local paid = (A.busy.moneyBefore or 0) - balanceOf(E, co.ent)
-			if paid > 10000 and paid < 5000000 then A.busCost = paid end
+			-- (a truck's price kept apart: taken for a bus's, it held the bus lines back until the company had a million)
+			if paid > 10000 and paid < 5000000 then
+				if A.busy.jr and A.busy.jr.kind == "truck" then A.truckCost = paid else A.busCost = paid end
+			end
 			L(E, A.busy.what .. ": done" .. (paid > 0 and (", paid " .. math.floor(paid)) or ""))
 			if A.busy.jr then journal(E, co.id, A.busy.jr.kind, A.busy.jr.pos, A.busy.jr.a, A.busy.jr.b) end
 			A.busy = nil
@@ -1875,7 +1928,7 @@ local function step(E)
 				local n = 0
 				for _, v in ipairs(vehicles) do if v.line == l.e then n = n + 1 end end
 				if n >= 2 then A.trucksFor[l.e] = 2
-				elseif money > RESERVE + (A.busCost or BUS_COST) then
+				elseif money > RESERVE + (A.truckCost or BUS_COST) then
 					local depot = garagesNear(E, co.ent, f.from.pos, 5000)[1]
 					if depot then
 						A.trucksFor[l.e] = (A.trucksFor[l.e] or 0) + 1
