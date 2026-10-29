@@ -890,6 +890,15 @@ local function manageLines(E, co, lines, vehicles, money)
 		sellVehicle(E, co, emptiest.last, "in debt, emptiest line " .. emptiest.line.e)
 		return true
 	end
+	-- (in debt with no line losing money: a loan, as a player would take, rather than waiting in debt; one ask every 2 minutes at
+	-- most, the game refuses more than its loans' maximum. MPFEVER_AILOAN=0: none)
+	if money < 0 and losingOnly and os.getenv("MPFEVER_AILOAN") ~= "0" and G.frames - (A.loanAsked or -100000) > 7200 then
+		A.loanAsked = G.frames
+		act(E, co.id, "makeScriptingSendEventCmd", { n = 4, [1] = "mpfever", [2] = "mpfever", [3] = "ai_loan", [4] = {} })
+		A.busy = { what = "loan", since = G.frames, until_ = G.frames + 120 }
+		L(E, "in debt (" .. math.floor(money) .. "): a loan asked")
+		return true
+	end
 	for _, l in ipairs(lines) do
 		local n = 0
 		for _, v in ipairs(vehicles) do if v.line == l.e then n = n + 1 end end

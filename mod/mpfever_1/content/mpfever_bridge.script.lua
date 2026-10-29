@@ -2734,6 +2734,23 @@ local function handleEvent(userParams, state, src, id, name, param)
 				end)
 				if not okS then log("companies: share failed: " .. tostring(errS)) end
 			end
+		elseif name == "ai_loan" then
+			-- a computer company in debt takes the first loan on offer to it, as a player does from the loan window (see
+			-- mpfever_ai.lua): every game takes the same offer at the same step. A player's company cannot send it.
+			local reg = st.co
+			local c = reg and reg.mode == "separate" and CO.find(reg, tonumber(param.mpfCo)) or nil
+			local okL, errL = pcall(function()
+				if not (c and type(c.key) == "string" and c.key:sub(1, 3) == "ai:") then log("companies: ai_loan refused to company " .. tostring(param.mpfCo)); return end
+				local lt = coLoanTable(st, c.id)
+				local now = gameTime()
+				local offer = nil
+				for _, loan in ipairs(lt and lt.availableLoans or {}) do
+					if not offer and type(loan.amount) == "number" and not (loan.cooldownUntil and loan.cooldownUntil > now) then offer = loan end
+				end
+				if not offer then log("companies: no loan on offer to computer company " .. c.id); return end
+				coLoanEvent(st, c.id, "Obtain", { offer, offer })
+			end)
+			if not okL then log("companies: ai_loan failed: " .. tostring(errL)) end
 		elseif name == "recolor" then
 			-- a company picks another colour in the MPFever window (one no other company has)
 			local reg = st.co
