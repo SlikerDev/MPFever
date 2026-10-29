@@ -377,6 +377,11 @@ local function setup()
 	local PAGE_W, PAGE_H = 1630, 680   -- content of the page's card (the « Load Game » card is 1646 x 774)
 	local SIDE_W = 960                 -- picture of the session view (16:9)
 	local CHOICE_W = (PAGE_W - 60) / 2
+	-- (0.5.13) the session view: its height, its right column, and the savegame's picture of a lobby with options (one company per
+	-- player): smaller, the options beside it and the computer companies under it, all in view without scrolling
+	local LOBBY_H = PAGE_H - 24
+	local RIGHT_W = PAGE_W - SIDE_W - 40
+	local PIC_W, PIC_H = 416, 234
 
 	-- inline style: only what the game's style sheets do not give (sizes, paddings, colours)
 	local function style(t)
@@ -732,6 +737,9 @@ local function setup()
 				for _, s in ipairs(saves:old()) do if s.saveName == st.lobbySave then lobbySave = s end end
 			end
 			local right = {}
+			-- (one company per player) beside the smaller picture: the company colour, the host's bankruptcy rule; under it: the
+			-- computer companies (the mods list joins them)
+			local side, below = {}, {}
 			right[#right + 1] = text(titles[st.phase] or T("Multijoueur", "Multiplayer"), "font-scale-title-1")
 			if isHost and st.lobbySave and st.lobbySave ~= "" then
 				right[#right + 1] = text(st.lobbySave, "font-scale-title-3")
@@ -752,7 +760,11 @@ local function setup()
 				elseif pub == "?" then
 					addrRows[#addrRows + 1] = text(T("Adresse publique introuvable : cherchez « mon adresse IP » sur Internet.", "Public address unknown: search « what is my IP » on the Internet."), "font-scale-title-4, warning", w - 24)
 				else
-					addrRows[#addrRows + 1] = text(pub, "font-scale-title-2", w - 24)
+					-- (one address a line: an IPv6 one, long, in a smaller font, never cut in the middle)
+					for a in pub:gmatch("[^,]+") do
+						a = a:gsub("^%s+", ""):gsub("%s+$", "")
+						if a ~= "" then addrRows[#addrRows + 1] = text(a, a:find("[", 1, true) and "font-scale-title-4" or "font-scale-title-2", w - 24) end
+					end
 				end
 				if st.port and st.port ~= "" then
 					addrRows[#addrRows + 1] = gap(1, 4)
@@ -821,74 +833,66 @@ local function setup()
 					}, nil, { padding = { 4, 10, 4, 10 }, background = { 1, 1, 1, i % 2 == 1 and 0.06 or 0.02 }, size = { PAGE_W - SIDE_W - 60, -1 } })
 				end
 			end
-			if separate then
-				right[#right + 1] = gap(1, 14)
-				right[#right + 1] = colorRow(mine, pickColor, nil, true, taken)
-			end
-			-- (one company per player) the computer companies: run by the host's game, each with its own colour; the host adds them,
-			-- colours them and takes them out here, a savegame's are there from the start; the players of the lobby see them
+			if separate then side[#side + 1] = colorRow(mine, pickColor, nil, true, taken) end
+			-- (one company per player) the computer companies: run by the host's game, each with its own colour and level; the host
+			-- adds them, sets them and takes them out here, a savegame's are there from the start; the players of the lobby see them.
+			-- Under the savegame's picture (0.5.13), one line each, so that the lobby shows them without scrolling.
 			if separate and (isHost or #ais > 0) then
-				local w = PAGE_W - SIDE_W - 60
-				right[#right + 1] = gap(1, 16)
-				right[#right + 1] = text(T("Entreprises de l'ordinateur (expérimental)", "Computer companies (experimental)") .. (#ais > 0 and (" (" .. #ais .. ")") or ""), "font-scale-title-3")
-				right[#right + 1] = text(T("Gérées par le jeu de l'hôte : bus, camions de marchandises et livraisons des villes. Plus le niveau est élevé, plus elles grandissent vite.", "Run by the host's game: buses, freight trucks and deliveries to the towns. The higher the level, the faster they grow."), "font-scale-body", w)
-				right[#right + 1] = gap(1, 6)
+				local w = SIDE_W - 24
+				local head = { text(T("Entreprises de l'ordinateur (expérimental)", "Computer companies (experimental)") .. (#ais > 0 and (" (" .. #ais .. ")") or ""), "font-scale-title-3"), hfill() }
+				if isHost and #ais < 8 then
+					head[#head + 1] = button(T("Ajouter une entreprise de l'ordinateur", "Add a computer company"), function() request("aiadd", "", playerName()) end, { font = "font-scale-body" })
+				end
+				below[#below + 1] = box(H, head, nil, { size = { w, -1 } })
+				below[#below + 1] = text(T("Gérées par le jeu de l'hôte : bus, camions de marchandises et livraisons des villes. Plus le niveau est élevé, plus elles grandissent vite.", "Run by the host's game: buses, freight trucks and deliveries to the towns. The higher the level, the faster they grow."), "font-scale-body", w)
+				below[#below + 1] = gap(1, 6)
+				-- its level (0.5.13): how fast it grows and how hard it competes
+				local LEVELS = { T("Facile", "Easy"), T("Normal", "Normal"), T("Difficile", "Hard") }
 				for i, a in ipairs(ais) do
 					local pc = PALETTE[a.ix]
 					local n = a.n
-					-- (its name and the host's « Remove » on one line, the host's palette for its colour under it)
-					local head = {
+					local line = {
 						pc and builtin.Component{ meta = { styleSheet = style{ size = { 22, 22 }, background = { pc[1], pc[2], pc[3], 1 } } } } or icon("::/gui/menu/icons/profile.tga"),
 						gap(10, 1),
-						text(a.name ~= "" and a.name or (T("Ordinateur %s", "Computer %s"):gsub("%%s", tostring(n))), "font-scale-title-4"),
+						text(a.name ~= "" and a.name or (T("Ordinateur %s", "Computer %s"):gsub("%%s", tostring(n))), "font-scale-title-4", 220),
 						hfill(),
 					}
-					if isHost then head[#head + 1] = button(T("Retirer", "Remove"), function() request("aidel", tostring(n), playerName()) end, { font = "font-scale-body" }) end
-					local rows = { box(H, head) }
-					-- its level (0.5.13): how fast it grows and how hard it competes; the host picks it, the players see it
-					local LEVELS = { T("Facile", "Easy"), T("Normal", "Normal"), T("Difficile", "Hard") }
 					if isHost then
-						local lvRow = { text(T("Niveau :", "Level:"), "font-scale-body"), gap(8, 1) }
 						for lv = 1, 3 do
 							local pick = lv
-							lvRow[#lvRow + 1] = button(LEVELS[lv], function() request("ailevel", tostring(n) .. ":" .. tostring(pick), playerName()) end,
+							line[#line + 1] = button(LEVELS[lv], function() request("ailevel", tostring(n) .. ":" .. tostring(pick), playerName()) end,
 								{ font = "font-scale-body", primary = a.lv == lv })
-							lvRow[#lvRow + 1] = gap(4, 1)
+							line[#line + 1] = gap(4, 1)
 						end
-						rows[#rows + 1] = gap(1, 4)
-						rows[#rows + 1] = box(H, lvRow)
-					else
-						rows[#rows + 1] = text(T("Niveau : ", "Level: ") .. (LEVELS[a.lv] or LEVELS[2]), "font-scale-body")
-					end
-					if isHost then
-						-- (the colours of the players and of the other computer companies greyed)
-						local pal = {}
+						line[#line + 1] = gap(8, 1)
+						-- (its colour; those of the players and of the other computer companies greyed)
 						for ix, c in ipairs(PALETTE) do
 							local sel = a.ix == ix
 							local busyC = taken[ix] and not sel
-							local pick = ix
-							pal[#pal + 1] = builtin.Button{
-								meta = { class = sel and "primary" or "secondary", enabled = not busyC, styleSheet = style{ size = { 28, 24 }, padding = { 3, 3, 3, 3 } } },
-								content = builtin.Component{ meta = { styleSheet = style{ size = { sel and 18 or 14, sel and 16 or 12 }, background = { c[1], c[2], c[3], busyC and 0.25 or 1 } } } },
-								onClick = function() request("aicolor", tostring(n) .. ":" .. tostring(pick), playerName()) end,
+							local pickC = ix
+							line[#line + 1] = builtin.Button{
+								meta = { class = sel and "primary" or "secondary", enabled = not busyC, styleSheet = style{ size = { 24, 22 }, padding = { 3, 3, 3, 3 } } },
+								content = builtin.Component{ meta = { styleSheet = style{ size = { sel and 16 or 12, sel and 14 or 10 }, background = { c[1], c[2], c[3], busyC and 0.25 or 1 } } } },
+								onClick = function() request("aicolor", tostring(n) .. ":" .. tostring(pickC), playerName()) end,
 							}
-							pal[#pal + 1] = gap(3, 1)
+							line[#line + 1] = gap(2, 1)
 						end
-						rows[#rows + 1] = gap(1, 4)
-						rows[#rows + 1] = box(H, pal)
+						line[#line + 1] = gap(8, 1)
+						line[#line + 1] = builtin.Button{
+							meta = { class = "secondary", tooltip = T("Retirer", "Remove"), styleSheet = style{ size = { 34, 30 }, padding = { 5, 5, 5, 5 } } },
+							content = icon("::/gui/menu/icons/symbol_x.tga", 20),
+							onClick = function() request("aidel", tostring(n), playerName()) end,
+						}
+					else
+						line[#line + 1] = text(T("Niveau : ", "Level: ") .. (LEVELS[a.lv] or LEVELS[2]), "font-scale-body")
 					end
-					right[#right + 1] = box(V, rows, nil, { padding = { 6, 10, 6, 10 }, background = { 1, 1, 1, i % 2 == 1 and 0.06 or 0.02 }, size = { w, -1 } })
+					below[#below + 1] = box(H, line, nil, { padding = { 4, 10, 4, 10 }, background = { 1, 1, 1, i % 2 == 1 and 0.06 or 0.02 }, size = { w, -1 } })
 				end
-				if isHost and #ais < 8 then
-					right[#right + 1] = gap(1, 6)
-					right[#right + 1] = button(T("Ajouter une entreprise de l'ordinateur", "Add a computer company"), function() request("aiadd", "", playerName()) end, { font = "font-scale-body" })
-				end
-			end
-			-- (the host) months in debt before a company goes bankrupt (its assets auctioned to the others, its players start
+			end			-- (the host) months in debt before a company goes bankrupt (its assets auctioned to the others, its players start
 			-- again with a new company): the game's rule, sent with the session (see MPFever.exe's BankruptMonths)
 			if separate and isHost then
 				local cur = tonumber(st.bankrupt) or 12
-				local opts = { box(H, { text(T("Faillite d'une entreprise endettée après :", "A company in debt goes bankrupt after:"), "font-scale-title-4") }), gap(1, 6) }
+				local opts = { box(H, { text(T("Faillite d'une entreprise endettée après :", "A company in debt goes bankrupt after:"), "font-scale-title-4", SIDE_W - PIC_W - 32) }), gap(1, 6) }
 				local row = {}
 				for _, mo in ipairs({ 0, 3, 6, 12, 24 }) do
 					local m = mo
@@ -897,8 +901,8 @@ local function setup()
 					row[#row + 1] = gap(6, 1)
 				end
 				opts[#opts + 1] = box(H, row)
-				right[#right + 1] = gap(1, 14)
-				right[#right + 1] = box(V, opts)
+				side[#side + 1] = gap(1, 12)
+				side[#side + 1] = box(V, opts)
 			end
 			-- (the host) players who lack mods no Mod Hub has: send them from this PC? (with their size)
 			if isHost then
@@ -989,7 +993,7 @@ local function setup()
 
 			-- the mods of the host's savegame, under its picture: the player who joins sees at once which ones are missing here
 			-- (the host's game cannot be loaded without them, see mpfever_auto.lua)
-			local leftCol = { SavePicture{ save = lobbySave, size = { SIDE_W, SIDE_W * 9 / 16 }, fallback = "::/gui/menu/images/main.tga" } }
+			local modsBox, modsFirst
 			local mods = decodeMods(st.hostMods)
 			if #mods > 0 then
 				-- each mod with what is wrong first: missing here, another version than the host's, known to break a session,
@@ -1120,31 +1124,63 @@ local function setup()
 						end
 					end
 				end
+				modsBox = box(V, rows, nil, { padding = { 8, 12, 8, 12 }, background = { 1, 1, 1, 0.07 }, size = { SIDE_W - 20, -1 } })
+				-- (a player who joins: its missing mods first, before the computer companies)
+				modsFirst = blocking > 0 and not isHost
+			end
+			-- the left column: the savegame's picture; with one company per player (0.5.13) a smaller one with the options beside it,
+			-- the computer companies and the mods under it in one scroll area; else the big picture, the mods under a smaller one
+			local leftCol
+			if separate then
+				local list = {}
+				if modsBox and modsFirst then list[#list + 1] = modsBox; list[#list + 1] = gap(1, 12) end
+				for _, c in ipairs(below) do list[#list + 1] = c end
+				if modsBox and not modsFirst then list[#list + 1] = gap(1, 12); list[#list + 1] = modsBox end
+				leftCol = {
+					box(H, {
+						SavePicture{ save = lobbySave, size = { PIC_W, PIC_H }, fallback = "::/gui/menu/images/main.tga" },
+						gap(16, 1),
+						box(V, side, nil, { size = { SIDE_W - PIC_W - 16, PIC_H } }),
+					}),
+					gap(1, 12),
+				}
+				if #list > 0 then
+					leftCol[#leftCol + 1] = builtin.ScrollArea{
+						meta = { styleSheet = style{ size = { SIDE_W, LOBBY_H - PIC_H - 12 } } },
+						content = box(V, list, nil, { size = { SIDE_W - 20, -1 } }),
+						horizontalPolicy = builtin.type.ScrollBarPolicy.AlwaysOff,
+						verticalPolicy = builtin.type.ScrollBarPolicy.AsNeeded,
+					}
+				end
+			elseif modsBox then
 				local picH = 220
 				leftCol = {
 					SavePicture{ save = lobbySave, size = { SIDE_W, picH }, fallback = "::/gui/menu/images/main.tga" },
 					gap(1, 8),
 					builtin.ScrollArea{
 						meta = { styleSheet = style{ size = { SIDE_W, math.floor(SIDE_W * 9 / 16) - picH - 8 } } },
-						content = box(V, rows, nil, { padding = { 8, 12, 8, 12 }, background = { 1, 1, 1, 0.07 }, size = { SIDE_W - 20, -1 } }),
+						content = modsBox,
 						horizontalPolicy = builtin.type.ScrollBarPolicy.AlwaysOff,
 						verticalPolicy = builtin.type.ScrollBarPolicy.AsNeeded,
 					},
 				}
+			else
+				leftCol = { SavePicture{ save = lobbySave, size = { SIDE_W, SIDE_W * 9 / 16 }, fallback = "::/gui/menu/images/main.tga" } }
 			end
+			-- (0.5.13: the right column takes the page's whole height, the buttons at its bottom)
 			body[#body + 1] = box(H, {
-				box(V, leftCol),
+				box(V, leftCol, nil, { size = { SIDE_W, LOBBY_H } }),
 				gap(24, 1),
 				box(V, {
 					builtin.ScrollArea{
-						meta = { styleSheet = style{ size = { PAGE_W - SIDE_W - 40, math.floor(SIDE_W * 9 / 16) - 64 } } },
-						content = box(V, right, nil, { size = { PAGE_W - SIDE_W - 60, -1 } }),
+						meta = { styleSheet = style{ size = { RIGHT_W, LOBBY_H - 56 } } },
+						content = box(V, right, nil, { size = { RIGHT_W - 20, -1 } }),
 						horizontalPolicy = builtin.type.ScrollBarPolicy.AlwaysOff,
 						verticalPolicy = builtin.type.ScrollBarPolicy.AsNeeded,
 					},
 					vfill(),
 					actionsBox,
-				}, nil, { size = { PAGE_W - SIDE_W - 40, SIDE_W * 9 / 16 } }),
+				}, nil, { size = { RIGHT_W, LOBBY_H } }),
 			})
 		elseif tab:old() == "host" then
 			-- the « Host » tab ------------------------------------------------------------------------------------------
