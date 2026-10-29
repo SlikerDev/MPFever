@@ -738,6 +738,15 @@ local function sellVehicle(E, co, v, why)
 	L(E, "vehicle " .. v .. " sold (" .. why .. ")")
 end
 
+-- (freight, see below: a line's trucks and cargo)
+local buyFor, freightOf
+
+local function cargoName(E, id)
+	local n = tostring(id)
+	pcall(function() n = E.api.res.cargoTypeRep.getName(id) end)
+	return n
+end
+
 local function manageLines(E, co, lines, vehicles, money)
 	local G = E.G
 	local A = G.AI
@@ -754,18 +763,21 @@ local function manageLines(E, co, lines, vehicles, money)
 		local use = meanUse(E, l.e) or lineUse(E, l.e) or 0
 		local bal = lineBalance(E, l.e)
 		if n > 0 and (not eUse or use < eUse) then emptiest, eUse = { line = l, last = last, n = n }, use end
+		-- (a freight line: its trucks come back empty, and a producer starts slowly once served: emptier, and given more time)
+		l.freight = os.getenv("MPFEVER_AIFREIGHT") ~= "0" and freightOf(E, l) or nil
+		local emptyUse, emptyLooks = l.freight and 0.04 or 0.08, l.freight and 6 or 3
 		-- (empty: few seats used on average, and losing money when its balance is known)
-		local empty = n == 0 or (use < 0.08 and (bal == nil or bal <= 0))
+		local empty = n == 0 or (use < emptyUse and (bal == nil or bal <= 0))
 		A.emptyRuns[l.e] = empty and ((A.emptyRuns[l.e] or 0) + 1) or 0
 		l.use, l.bal = use, bal
 		-- (a line that stays empty three looks in a row: its buses sold one by one, the line given up with the last)
-		if A.emptyRuns[l.e] >= 3 and n > 0 and period == 7200 then
+		if A.emptyRuns[l.e] >= emptyLooks and n > 0 and period == 7200 then
 			L(E, string.format("line %d empty for %d looks: a bus less", l.e, A.emptyRuns[l.e]))
 			sellVehicle(E, co, last, "empty line " .. l.e)
 			return true
 		end
 		-- (the line itself goes once its last bus is sold: the engine keeps a line that still has a vehicle)
-		if A.emptyRuns[l.e] >= 3 and n == 0 and period == 7200 then
+		if A.emptyRuns[l.e] >= emptyLooks and n == 0 and period == 7200 then
 			L(E, "line " .. l.e .. " given up (empty)")
 			act(E, co.id, "makeLineDestroyCmd", { n = 1, [1] = l.e })
 			A.badPair = A.badPair or {}
@@ -825,11 +837,19 @@ local function manageLines(E, co, lines, vehicles, money)
 		end
 		A.problemSeen = A.problemSeen or {}
 		A.problemSeen[l.e] = probs[l.e] and true or nil
-		if use and use > 0.75 and n < 8 and money > RESERVE + (A.busCost or BUS_COST) then
-			local depot = garagesNear(E, co.ent, l.mid or { x = 0, y = 0 }, 5000)[1]
+		-- (a freight line: a truck more when the cargo waiting at the producer fills one, or the trucks are full one way)
+		local busy = use and use > 0.75 and n < 8
+		if l.freight then
+			local waiting = 0
+			pcall(function() waiting = E.api.engine.system.simEntityAtTerminalSystem.getLineStopSimEntitiesCount(l.e, 0, l.freight.cargo) end)
+			busy = n < 10 and (waiting >= 40 or (use and use > 0.45))
+			if busy then L(E, string.format("line %d: %d %s waiting at the producer", l.e, waiting, cargoName(E, l.freight.cargo))) end
+		end
+		if busy and money > RESERVE + (A.busCost or BUS_COST) then
+			local depot = garagesNear(E, co.ent, l.mid or (l.freight and l.freight.from.pos) or { x = 0, y = 0 }, 5000)[1]
 			if depot then
 				A.forLine = l.e
-				buyBus(E, co, depot.depot)
+				buyFor(E, co, l, depot.depot)
 				return true
 			end
 		end
@@ -1010,6 +1030,297 @@ local function pairProject(E, co, stops, lines, vehicles, money)
 	return true
 end
 
+-- ------------------------------------------------------------------ freight (trucks, 0.5.13)
+
+-- Every industry has its own street station (the trucks of the players stop at the industry itself): a freight line is a line
+-- from a producer's station to the station of an industry that takes that cargo, with trucks that carry it. Nothing to build
+-- but the garage. MPFEVER_AIFREIGHT=0: buses only, as in 0.5.12.
+local FREIGHT_MIN, FREIGHT_MAX = 900, 5000      -- the distance between the two industries (m)
+
+-- the road terminals of a construction's stations: { group, list = { { station, terminal, node } } } (station and terminal
+-- 0-based, as a line's stop takes them), nil when it has none
+local function roadTerminals(E, con)
+	local api = E.api
+	local truck = api.type.enum.TransportMode.TRUCK
+	local out
+	for k = 1, #con.stations do
+		local st = con.stations[k]
+		local okg, group = pcall(function() return api.engine.system.stationGroupSystem.getStationGroup(st) end)
+		local sg = okg and group and api.engine.getComponent(group, api.type.ComponentType.STATION_GROUP)
+		local sc = api.engine.getComponent(st, api.type.ComponentType.STATION)
+		if sg and sc then
+			local si
+			for i = 1, #sg.stations do if sg.stations[i] == st then si = i - 1 end end
+			for t = 1, #sc.terminals do
+				-- (a terminal trucks use: the carriers the engine reports for it; kept when it cannot tell)
+				local road = true
+				pcall(function()
+					local cr = api.engine.system.stationGroupSystem.getCarriers(group, si, t - 1)
+					local modes = cr and cr[2]
+					if modes and #modes > 0 then
+						road = false
+						for _, m in ipairs(modes) do if m == truck then road = true end end
+					end
+				end)
+				if road and si then
+					out = out or { group = group, list = {} }
+					if out.group == group then
+						out.list[#out.list + 1] = { station = si, terminal = t - 1, node = sc.terminals[t].vehicleNodeId }
+					end
+				end
+			end
+		end
+	end
+	return out
+end
+
+-- the map's industries: what each makes and takes, where it stands, its road terminals (read once a minute)
+local function industries(E)
+	local api, R = E.api, E.R
+	local A = E.G.AI
+	if A.indCache and E.G.frames - A.indCache.frame < 3600 then return A.indCache.list end
+	local OUT, IN = api.type.enum.StockListType.OutputStock, api.type.enum.StockListType.InputStock
+	local list = {}
+	for _, e in ipairs(R.entitiesWith("INDUSTRY")) do
+		pcall(function()
+			local ind = api.engine.getComponent(e, api.type.ComponentType.INDUSTRY)
+			local con = ind and api.engine.getComponent(ind.construction, api.type.ComponentType.CONSTRUCTION)
+			local sl = ind and api.engine.getComponent(ind.stockList, api.type.ComponentType.STOCK_LIST)
+			if not (con and sl) then return end
+			local m = E.C.marshal(con.transf)
+			local it = { e = e, con = ind.construction, stockList = ind.stockList, pos = { x = m[13], y = m[14], z = m[15] },
+				file = tostring(con.fileName), outputs = {}, inputs = {}, inputSets = {} }
+			for k = 1, #sl.stocks do
+				local s = sl.stocks[k]
+				if s.type == OUT and s.cargoType >= 0 then it.outputs[#it.outputs + 1] = s.cargoType end
+				if s.type == IN then
+					if s.cargoType >= 0 then it.inputs[s.cargoType] = true else it.inputSets[#it.inputSets + 1] = s.cargoTypes end
+				end
+			end
+			it.road = roadTerminals(E, con)
+			-- (else a station of one of its parts, as the game's own path finding of the missions looks for it)
+			for k = 1, #con.subconstructions do
+				if it.road then break end
+				local sub = api.engine.getComponent(con.subconstructions[k], api.type.ComponentType.CONSTRUCTION)
+				if sub then it.road = roadTerminals(E, sub) end
+			end
+			if it.road then list[#list + 1] = it end
+		end)
+	end
+	table.sort(list, function(a, b) return a.e < b.e end)
+	A.indCache = { frame = E.G.frames, list = list }
+	return list
+end
+
+local function takes(E, ind, cargo)
+	if ind.inputs[cargo] then return true end
+	for _, set in ipairs(ind.inputSets) do
+		local ok, yes = pcall(function() return E.api.res.cargoTypeRep.hasCargoType(set, cargo) end)
+		if ok and yes then return true end
+	end
+	return false
+end
+
+-- the station groups other companies' lines stop at (the industries they serve are theirs: PvE)
+local function servedByOthers(E, ent)
+	local api, R = E.api, E.R
+	local out = {}
+	for _, l in ipairs(R.entitiesWith("LINE")) do
+		if ownerOf(E, l) ~= ent then
+			local lc = api.engine.getComponent(l, api.type.ComponentType.LINE)
+			for k = 1, #lc.stops do out[lc.stops[k].stationGroup] = true end
+		end
+	end
+	return out
+end
+
+-- a truck can drive from one industry's road terminals to the other's (the engine's path finding)
+local function roadPath(E, a, b)
+	local api = E.api
+	local na, nb = {}, {}
+	for _, t in ipairs(a.road.list) do na[#na + 1] = t.node end
+	for _, t in ipairs(b.road.list) do nb[#nb + 1] = t.node end
+	local ok, p = pcall(function() return api.engine.util.pathfinding.findPathNodeToNode(na, nb, { api.type.enum.TransportMode.TRUCK }) end)
+	return ok and type(p) == "table" and #p > 0
+end
+
+-- the best truck on sale this year for a cargo: most capacity for it, then the newest
+local function bestTruck(E, cargo)
+	local api = E.api
+	local year = currentYear(E)
+	local best
+	for id, name in pairs(api.res.modelRep.getAll()) do
+		if tostring(name):find("/vehicle/truck/", 1, true) then
+			local m = api.res.modelRep.get(id)
+			local md = m and m.metadata
+			local av = md and md.availability
+			local from, to = av and av.yearFrom or 0, av and av.yearTo or 0
+			if from <= year and (to == 0 or to > year) then
+				local cap = 0
+				pcall(function()
+					for _, comp in ipairs(md.transportVehicle.compartments) do
+						for _, lc in ipairs(comp.loadConfigs) do
+							if api.res.cargoTypeRep.hasCargoType(lc.cargoEntry.cargoTypeSet, cargo) then cap = math.max(cap, lc.cargoEntry.capacity or 0) end
+						end
+					end
+				end)
+				if cap > 0 and (not best or cap > best.seats or (cap == best.seats and from > best.from)) then
+					best = { id = id, name = name, seats = cap, from = from }
+				end
+			end
+		end
+	end
+	return best, year
+end
+
+-- a freight line of the company: { from = industry, to = industry, cargo } when its first stop is an industry's station and its
+-- second one an industry that takes a cargo of the first (read from the world: nothing kept across loads)
+freightOf = function(E, line)
+	local inds = industries(E)
+	local byGroup = {}
+	for _, it in ipairs(inds) do byGroup[it.road.group] = it end
+	local a, b = byGroup[line.groups[1]], byGroup[line.groups[2]]
+	if not (a and b) then return nil end
+	for _, c in ipairs(a.outputs) do if takes(E, b, c) then return { from = a, to = b, cargo = c } end end
+	return nil
+end
+
+-- a vehicle more for a line: a truck for its cargo on a freight line, else a bus
+local function buyTruck(E, co, depot, cargo)
+	local truck, year = bestTruck(E, cargo)
+	if not truck then L(E, "no truck for " .. cargoName(E, cargo) .. " on sale in " .. year); return false end
+	local cfg = {
+		vehicles = { { part = { modelId = truck.id, reversed = false, compartment2loadConfig = { { loadConfigIndex = 0, cargoTypeId = 0, __ud = true } },
+			color = { x = -1, y = -1, z = -1, __vec = true }, __ud = true }, purchaseTime = 0, maintenanceChange = 0, maintenanceState = 1,
+			autoLoadConfig = { true }, __ud = true } },
+		vehicleGroups = { 1 }, muFileNames = {}, __ud = true }
+	act(E, co.id, "makeVehicleBuyCmd", { n = 3, [1] = co.ent, [2] = depot, [3] = cfg })
+	E.G.AI.busy = { what = "truck " .. truck.name, since = E.G.frames, vehBefore = #myVehicles(E, co.ent), moneyBefore = balanceOf(E, co.ent) }
+	L(E, "truck requested: " .. truck.name .. " (" .. truck.seats .. " " .. cargoName(E, cargo) .. ", " .. year .. ") at depot " .. depot)
+	return true
+end
+
+buyFor = function(E, co, line, depot)
+	local f = os.getenv("MPFEVER_AIFREIGHT") ~= "0" and freightOf(E, line)
+	if f then return buyTruck(E, co, depot, f.cargo) end
+	return buyBus(E, co, depot)
+end
+
+local function freightStop(E, road, stop0)
+	local s = {}
+	if stop0 then for k, v in pairs(stop0) do s[k] = v end end
+	local first = road.list[1]
+	s.stationGroup = road.group
+	s.station = first.station
+	s.terminal = first.terminal
+	-- (the station's other road terminals as alternatives: the engine takes a free one)
+	local alt = {}
+	for k = 2, #road.list do alt[#alt + 1] = { station = road.list[k].station, terminal = road.list[k].terminal, __ud = true } end
+	s.alternativeTerminals = alt
+	s.waypoints = {}
+	s.__ud = true
+	return s
+end
+
+local function createFreightLine(E, co, f)
+	local api, C, R = E.api, E.C, E.R
+	-- (a truck line of the savegame as the template of the line's fields, else a new line's)
+	local template
+	for _, l in ipairs(R.entitiesWith("LINE")) do
+		local m = C.marshal(api.engine.getComponent(l, api.type.ComponentType.LINE))
+		if m and m.vehicleInfo and m.vehicleInfo.transportModes and m.vehicleInfo.transportModes[4] == true then template = m break end
+	end
+	if not template then template = C.marshal(api.type.Line.new()) end
+	-- (a stop's fields without the template's own cargo settings: every cargo loaded and unloaded, the engine's defaults)
+	local stop0
+	pcall(function() stop0 = C.marshal(api.type.Line.Stop.new()) end)
+	if not stop0 and template.stops and template.stops[1] then
+		stop0 = {}
+		for k, v in pairs(template.stops[1]) do if k ~= "stopConfig" then stop0[k] = v end end
+	end
+	template.stops = { freightStop(E, f.from.road, stop0), freightStop(E, f.to.road, stop0) }
+	local name = AINAME .. " " .. cargoName(E, f.cargo) .. " " .. math.floor(dist(f.from.pos, f.to.pos) / 100) / 10 .. " km"
+	act(E, co.id, "makeLineCreateCmd", { n = 4, [1] = name, [2] = C.marshal(api.type.Vec3f.new(0.8, 0.5, 0.1)), [3] = co.ent, [4] = template })
+	E.G.AI.busy = { what = "line " .. name, since = E.G.frames, linesBefore = #myLines(E, co.ent) }
+	L(E, "freight line requested: " .. name .. " (industry " .. f.from.e .. " -> " .. f.to.e .. ")")
+end
+
+-- The best freight route not served yet: a producer, an industry that takes its cargo 0.9 to 5 km away, no other company's line
+-- at either, a road between them (looked for once per route, one route per step: the path finding costs). Score: the most the
+-- producer can make of that cargo, times the distance (the fare grows with it), less for long routes.
+local function bestFreight(E, co, lines)
+	local api = E.api
+	local A = E.G.AI
+	A.freightTried = A.freightTried or {}
+	local others = servedByOthers(E, co.ent)
+	local inds = industries(E)
+	local cands = {}
+	for _, p in ipairs(inds) do
+		if not others[p.road.group] then
+			for _, c in ipairs(p.outputs) do
+				local prod = 0
+				pcall(function() prod = api.engine.util.stock.getCargoMaxProductionPerYear(p.stockList, c) end)
+				for _, q in ipairs(inds) do
+					if q.e ~= p.e and not others[q.road.group] and takes(E, q, c) then
+						local d = dist(p.pos, q.pos)
+						local key = p.e .. ">" .. q.e .. ":" .. c
+						if d > FREIGHT_MIN and d < FREIGHT_MAX and A.freightTried[key] ~= false and not (A.freightDone or {})[key] then
+							cands[#cands + 1] = { from = p, to = q, cargo = c, d = d, key = key, score = (prod + 50) * d / (1 + (d / 3000) ^ 2) }
+						end
+					end
+				end
+			end
+		end
+	end
+	table.sort(cands, function(a, b) if a.score ~= b.score then return a.score > b.score end return a.key < b.key end)
+	for _, f in ipairs(cands) do
+		-- (a line of the company there already: that route is running)
+		if lineFor(E, lines, { f.from.road.group, f.to.road.group }) then
+			A.freightDone = A.freightDone or {}; A.freightDone[f.key] = true
+		elseif A.freightTried[f.key] == true then
+			return f
+		else
+			-- (one path search per step)
+			local ok = roadPath(E, f.from, f.to)
+			A.freightTried[f.key] = ok
+			if ok then L(E, "freight route found: " .. cargoName(E, f.cargo) .. ", industry " .. f.from.e .. " -> " .. f.to.e .. " (" .. math.floor(f.d) .. " m)") end
+			return ok and f or "searching"
+		end
+	end
+	return nil
+end
+
+-- one step of the best freight route: its garage, its line, its first two trucks. True when it acted (or waits)
+local function freightProject(E, co, lines, vehicles, money)
+	local A = E.G.AI
+	local f = bestFreight(E, co, lines)
+	if f == "searching" then return true end
+	if not f then return false end
+	local g = garageFor(E, co, f.from.pos, money, "industry " .. f.from.e)
+	if g == "building" then return true end
+	if not g then
+		L(E, "no garage for the freight route " .. f.key .. ": route left")
+		A.freightTried[f.key] = false
+		return false
+	end
+	local line = lineFor(E, lines, { f.from.road.group, f.to.road.group })
+	if not line then
+		if money < RESERVE + 2 * (A.busCost or BUS_COST) then return true end
+		createFreightLine(E, co, f)
+		return true
+	end
+	local n = 0
+	for _, v in ipairs(vehicles) do if v.line == line.e then n = n + 1 end end
+	if n < 2 then
+		if money < RESERVE + (A.busCost or BUS_COST) then return true end
+		A.forLine = line.e
+		buyTruck(E, co, g.depot, f.cargo)
+		return true
+	end
+	A.freightDone = A.freightDone or {}; A.freightDone[f.key] = true
+	return false
+end
+
 -- ------------------------------------------------------------------ the step
 
 local function join(E)
@@ -1104,6 +1415,12 @@ local function step(E)
 	-- (the towns' own lines across their streets first, as the players' best filled lines; then the lines between towns)
 	sampleUse(E, lines)
 	if manageLines(E, co, lines, vehicles, money) then return end
+	-- freight: a route of trucks while the company has fewer freight lines than half its lines (one at first), then the buses
+	if os.getenv("MPFEVER_AIFREIGHT") ~= "0" then
+		local nf = 0
+		for _, l in ipairs(lines) do if freightOf(E, l) then nf = nf + 1 end end
+		if nf < math.max(1, math.ceil(#lines / 2)) and freightProject(E, co, lines, vehicles, money) then return end
+	end
 	for _, t in ipairs(townsForLines(E, co.ent)) do
 		local town = t.e
 		if (A.skipTown and A.skipTown[town]) or t.size < 500 then goto continue end
@@ -1190,10 +1507,11 @@ local function step(E)
 		local n = 0
 		for _, v in ipairs(vehicles) do if v.line == l.e then n = n + 1 end end
 		if n < 2 and not A.noBuses and money > RESERVE + (A.busCost or BUS_COST) and ((A.emptyRuns or {})[l.e] or 0) == 0 then
-			local depot = garagesNear(E, co.ent, l.mid or { x = 0, y = 0 }, 5000)[1]
+			local f = os.getenv("MPFEVER_AIFREIGHT") ~= "0" and freightOf(E, l)
+			local depot = garagesNear(E, co.ent, l.mid or (f and f.from.pos) or { x = 0, y = 0 }, 5000)[1]
 			if depot then
 				A.forLine = l.e
-				buyBus(E, co, depot.depot)
+				buyFor(E, co, l, depot.depot)
 				return
 			end
 		end
@@ -1205,7 +1523,8 @@ end
 M.f = { aiCompany = aiCompany, myStops = myStops, myDepots = myDepots, myLines = myLines, myVehicles = myVehicles, bestBus = bestBus,
 	act = act, build = build, buildStop = buildStop, createLine = createLine, buyBus = buyBus, join = join, context = context,
 	findDepotPlace = findDepotPlace, townsBySize = townsBySize, currentYear = currentYear, garagePlaces = garagePlaces,
-	buildGarage = buildGarage, garagesNear = garagesNear, garageCapture = garageCapture }
+	buildGarage = buildGarage, garagesNear = garagesNear, garageCapture = garageCapture, industries = industries, roadTerminals = roadTerminals,
+	bestTruck = bestTruck, bestFreight = bestFreight, freightOf = freightOf, roadPath = roadPath, cargoName = cargoName }
 
 function M.tick(E, st)
 	local G, C = E.G, E.C
