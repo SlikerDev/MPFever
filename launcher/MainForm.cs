@@ -122,6 +122,8 @@ namespace MPFever
         // (a player) the host's offer ("ids|MB"), where the player's ask stands ("waiting", "refused") and what came
         string modOffer = "", modAskState = "", modRecvText = "";
         readonly Dictionary<string, string[]> modParts = new Dictionary<string, string[]>();
+        // (a player) the mods of the offer this player took: the only ones it installs (lock modParts)
+        readonly HashSet<string> modTaken = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         // the host's addresses shown in its lobby: public (Internet, "" while looked up, "?" when unknown) and local network
         string lobbyPublic = "", lobbyLocal = "";
         int lobbyPort;
@@ -815,6 +817,7 @@ namespace MPFever
                 if (answer == DialogResult.Yes) Report(true);
             }
             var u = pendingUpdate;
+            bool installed = false;
             if (u != null && !ServerMode && Updater.Enabled)
             {
                 pendingUpdate = null;
@@ -822,17 +825,40 @@ namespace MPFever
                 {
                     using (var dlg = new UpdateDialog(u, true))
                         if (dlg.ShowDialog(this) == DialogResult.OK)
+                        {
+                            installed = true;
                             Log.Ok(F("MPFever {0} installé : il démarrera la prochaine fois.", "MPFever {0} installed: it starts next time.", u.Version));
+                        }
                 }
                 catch (Exception e) { Log.Err(e.Message); }
             }
             if (ServerMode || autotest) { Close(); return; }
-            // (the launcher stays open behind a small thanks window: Close keeps it, Quit closes everything)
+            // (the launcher stays open behind a small thanks window: Close keeps it, Quit closes everything, Start again starts
+            // MPFever.exe again, which starts the game)
             try { WindowState = FormWindowState.Normal; Activate(); } catch { }
             DialogResult r;
             using (var dlg = new ThanksDialog()) r = dlg.ShowDialog(this);
             if (r == DialogResult.Abort) Close();
             else if (r == DialogResult.Retry) Report(false);
+            else if (r == DialogResult.Yes) StartAgain(installed);
+        }
+
+        /// <summary>Issue #94: the game closed, the player wants to play again. A new MPFever.exe starts it (this one's session,
+        /// connections and native settings are those of the game that closed: a fresh launcher starts from nothing, as when the
+        /// player starts MPFever.exe by hand), then this one closes. With the update just installed, the new one is that version.</summary>
+        void StartAgain(bool updated)
+        {
+            try
+            {
+                var exe = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "MPFever.exe");
+                Log.W(T("Relance de MPFever et de Transport Fever 3...", "Starting MPFever and Transport Fever 3 again..."));
+                Process.Start(new ProcessStartInfo(exe, updated ? "--updated" : "") { UseShellExecute = false, WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory });
+                Close();
+            }
+            catch (Exception e)
+            {
+                Log.Err(F("Relance impossible : {0}. Relancez MPFever.exe vous-même.", "Could not start again: {0}. Start MPFever.exe yourself.", e.Message));
+            }
         }
 
         /// <summary>A problem report: the logs in a zip (reports\), shown in the Explorer, and a new GitHub issue opened in
@@ -1264,10 +1290,17 @@ namespace MPFever
             string[] got;
             lock (modParts)
             {
+                // (a mod is code: one the player did not take is never installed, whoever sends it)
+                if (!modTaken.Contains(id))
+                {
+                    if (i == 0) Log.Warn(F("Mod {0} reçu sans avoir été accepté : ignoré.", "Mod {0} received without being accepted: ignored.", id));
+                    return;
+                }
                 if (!modParts.TryGetValue(id, out got) || got.Length != n) modParts[id] = got = new string[n];
                 got[i] = t["data"] as string;
                 if (got.Any(x => x == null)) { modRecvText = F("Réception du mod {0} : {1} %", "Receiving the mod {0}: {1} %", id, 100 * got.Count(x => x != null) / n); MenuStatus(); return; }
                 modParts.Remove(id);
+                modTaken.Remove(id);
             }
             try
             {
@@ -1537,6 +1570,11 @@ namespace MPFever
             {
                 // (a player) "takemods" with option 1: take the host's offer; 0: refuse it
                 bool yes = option == "1";
+                lock (modParts)
+                {
+                    modTaken.Clear();
+                    if (yes) foreach (var x in modOffer.Split('|')[0].Split(',')) if (x.Trim() != "") modTaken.Add(x.Trim());
+                }
                 foreach (var cl in clients.ToList()) { try { cl.Send(Msg.Make("modaccept", name, "{[\"yes\"]=" + (yes ? "true" : "false") + "}")); } catch { } }
                 modRecvText = yes ? T("Réception des mods de l'hôte...", "Receiving the host's mods...") : "";
                 if (!yes) modAskState = "refused";
@@ -2938,8 +2976,23 @@ namespace MPFever
 
         // ---------------------------------------------------------------- host-side message handling
 
+        // What only the host sends (its savegame, mods, lobby, settings, chat, status): from a player it is never passed on.
+        // Relayed, a player could have sent the others a mod (code) or a savegame in the host's place.
+        static readonly HashSet<string> HostOnlyKinds = new HashSet<string> { "modfile", "modoffer", "resync_file", "resync_bin",
+            "resync_use", "delta_bin", "lobby", "mpstatus", "chatmsg", "welcome", "session", "peerclock", "auth" };
+        DateTime hostOnlyWarned;
+
         void OnHostMessage(Msg m, Peer from)
         {
+            if (from != null && HostOnlyKinds.Contains(m.Kind) && Environment.GetEnvironmentVariable("MPFEVER_HOSTONLY") != "0")
+            {
+                if (DateTime.UtcNow - hostOnlyWarned > TimeSpan.FromSeconds(10))
+                {
+                    hostOnlyWarned = DateTime.UtcNow;
+                    Log.Warn(F("{0} a envoyé un message « {1} » que seul l'hôte envoie : ignoré.", "{0} sent a « {1} » message only the host sends: ignored.", m.From, m.Kind));
+                }
+                return;
+            }
             // a dedicated server: a player whose game is not in this session's world yet (it reconnected after a restart of
             // the server, still in its old world) only counts once its game has loaded the server's world: its clock,
             // actions and checks are those of another world
