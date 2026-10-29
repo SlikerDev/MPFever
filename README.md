@@ -66,7 +66,7 @@ Players can also join a game already running, and a lost connection reconnects b
   - Several players can run one company together: ask to join another company (its chief accepts), leave yours, or merge two companies.
   - A company in debt for too long (3 to 24 months, set by the host in the lobby) goes bankrupt: its lines, stations and depots are auctioned to the others, and its players start again.
   - Fees and tolls show in the finance window. Companies can give each other money, and the MPFever window ranks them.
-  - **Computer companies (experimental, 0.5.12)**: the host adds them in the lobby (up to 8), each with its colour; a savegame's computer companies come back with it. Run by the host's game under the same rules as the players, they build their own bus garages, stops and bus lines in and between towns. Buses only for now.
+  - **Computer companies (experimental)**: the host adds them in the lobby (up to 8), each with its colour and its level (Easy, Normal, Hard); a savegame's computer companies come back with it. Run by the host's game under the same rules as the players, they build bus garages, stops and bus lines in and between towns, carry freight by truck between industries and to the towns that want it (rounds through a second producer, a street to an industry no truck reaches), and grow faster at a higher level (Hard also competes for the players' industries and towns). Every player sees what they do: the AI tab of the MPFever window (each action with a Show button), their lines in the Company tab, and the chat.
 
 ### Everything is replicated
 
@@ -136,7 +136,8 @@ The mods tested so far are listed in [MODS](docs/MODS.md).
 ## Known limitations
 
 - **One company per player:** a merger into the savegame's company leaves the merged company's loans behind (they are the game's own loans).
-- **Steam and Windows only.**
+- **Steam and Windows only.** Linux and Steam Deck players report that it runs through Proton (see INSTALL.txt; untested by us).
+- **One company per player: the game's achievements** are counted for the savegame's company only (the game's own scripts see that company alone).
 - **Small drifts of vehicles and passengers** can happen. They are repaired by a reload if they last.
 - **Two players changing the same place within about two seconds**: the build made second is left out on every game when it no longer fits the place, and has to be made again (with one company per player, the chat tells its player).
 - **Every build of another player stops the games for about a second**, the time to apply it at the same game time everywhere.
