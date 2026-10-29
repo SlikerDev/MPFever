@@ -1,6 +1,35 @@
 MPFever - Changelog
 ===================
 
+0.5.13 - computer companies carry freight and get a level, players see what they do, a safer mod exchange, fixes
+  - NEW (experimental, computer companies): freight by truck. Every industry has its own street station: a computer company
+    finds a producer and an industry 0.9 to 5 km away that takes its cargo, checks with the game's path finding that a truck
+    can drive there, opens the line and buys the year's best truck for that cargo (a truck more when cargo waits at the
+    producer). It also delivers the towns: a producer's cargo to a stop near the shops or the works that want more of it (a
+    stop of the company already there is taken). A round picks up a second producer of the same cargo on the way, and an
+    industry no truck reaches gets a street to the nearest town street (straight, a dry run first). MPFEVER_AIFREIGHT=0:
+    buses only; MPFEVER_AITOWNFREIGHT=0, MPFEVER_AIROUND=0, MPFEVER_AIROADS=0: without towns, rounds, streets.
+  - NEW (computer companies): a level for each one, chosen by the host in the lobby: Easy, Normal (the default) or Hard. The
+    level sets how often it acts, the money it keeps back, how many vehicles a line may get and when it gets one more, how much
+    of its network carries freight and how far. Hard does not leave the players their industries and towns: it competes there.
+  - NEW (computer companies): every player sees what they do. An AI tab in the MPFever window lists each one's last actions
+    (stops, garages, streets, bus and freight lines, vehicles bought and sold, lines given up), each with a Show button that
+    takes the camera there; the Company tab lists their lines with their vehicles; their builds are told in the chat (Settings:
+    "Tell in the chat what the computer companies do", on by default). MPFEVER_AIJOURNAL=0: no journal.
+  - FIX (desyncs, every resync of a 3.5 h session of friends): the industry window's "extend" was counted as a build to replay.
+    It only computes the proposal it shows, so the count was never used: the player's next own build at that game time was
+    taken as that replay, never shipped, cancelled and built on its game only. In a pause the counts piled up (28 at once).
+    MPFEVER_EXTENDCOUNT=1: as before.
+  - FIX (security): a mod is installed only when the player accepted that mod from the host's offer, and the host no longer
+    passes on to the others the messages only it sends (its savegame, mods, lobby, settings, session, chat, status): before, any
+    player of a session could send the others a mod (code) or a savegame in the host's place. MPFEVER_HOSTONLY=0: as before.
+  - FIX (crash): after a session with one company per player, a session with one company for everybody in the same run of the
+    game crashed a few seconds after it started (an object of the interface kept the company of the game before, an entity that
+    is something else in the new one). The native module now reads this game's company there. MPFEVER_STALEUI=0: as before.
+  - FIX (issue #94): "Start Transport Fever 3 again" in the window shown when the game closes: MPFever.exe starts again and
+    starts the game (before, MPFever.exe had to be closed and started again by hand).
+  - FIX: the MPFever window showed 0 vehicles for every company (it asked the game for a function TF3 does not have).
+
 0.5.12 - computer companies (experimental), no more slow town drifts, no stuck tools, crashes fixed
   - NEW (experimental, one company per player): computer companies. The host adds them in its lobby (up to 8), gives each its
     colour and takes them out; those of the lobby's savegame are read from it and are there from the start with their colour.

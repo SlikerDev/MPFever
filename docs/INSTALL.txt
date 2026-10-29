@@ -12,8 +12,8 @@ REQUIREMENTS (every player)
   reports that it runs with Proton, with these Steam launch options for Transport Fever 3:
        WINEDLLOVERRIDES="winhttp=n,b" bash -c 'exec "${@/TransportFever3.exe/MPFever.exe}"' -- %command%
   with the files of the archive's MPFever folder extracted into the game's folder (next to
-  TransportFever3.exe), and its mod\mpfever_1 folder copied into the game's mods/release/mpfever_1
-  (MPFever's automatic update does not reach that folder: copy it again after an update).
+  TransportFever3.exe). Since 0.5.13, MPFever copies its mod into the game's mods/release/mpfever_1
+  by itself when it runs under Wine or Proton, at every start, so its automatic updates reach it too.
 
 
 1. INSTALLATION (every player)

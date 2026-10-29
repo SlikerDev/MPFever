@@ -2128,13 +2128,38 @@ namespace MPFever
             return null;
         }
 
-        /// <summary>Copies the mod into every Steam user's TF3 mods folder.</summary>
+        /// <summary>Running under Wine or Proton (Linux, Steam Deck): Wine keeps its own key in the registry it emulates.</summary>
+        public static bool UnderWine()
+        {
+            try { using (var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Wine")) return k != null; } catch { return false; }
+        }
+
+        /// <summary>Copies the mod into every Steam user's TF3 mods folder. Under Wine or Proton (issue #93) also into the game's
+        /// mods\release folder, where the game finds it there: each update of MPFever then reaches it too (MPFEVER_WINEMODS=0: not).</summary>
         public static int InstallMod()
         {
             var src = FindModSource();
+            int w = 0;
+            if (src != null && UnderWine() && Environment.GetEnvironmentVariable("MPFEVER_WINEMODS") != "0")
+            {
+                try
+                {
+                    var g = FindGameDir();
+                    var rel = g == null ? null : Path.Combine(g, "mods", "release");
+                    if (rel != null && Directory.Exists(rel))
+                    {
+                        var dst = Path.Combine(rel, "mpfever_1");
+                        if (Directory.Exists(dst)) Directory.Delete(dst, true);
+                        CopyDir(src, dst);
+                        w = 1;
+                        Log.Ok(L.T("Mod installé dans ", "Mod installed in ") + dst + " (Wine/Proton)");
+                    }
+                }
+                catch (Exception e) { Log.W("mods\\release: " + e.Message); }
+            }
             var steam = SteamPath();
-            if (src == null || steam == null) { Log.Err(L.T("Mod ou Steam introuvable, installation du mod ignorée", "Mod or Steam not found, mod installation skipped")); return 0; }
-            int n = 0;
+            if (src == null || steam == null) { if (w == 0) Log.Err(L.T("Mod ou Steam introuvable, installation du mod ignorée", "Mod or Steam not found, mod installation skipped")); return w; }
+            int n = w;
             var userdata = Path.Combine(steam, "userdata");
             if (!Directory.Exists(userdata)) return 0;
             foreach (var u in Directory.GetDirectories(userdata))
