@@ -412,6 +412,11 @@ def run():
     t0 = A.time()
     tick(30)
     check(A.L.eval("GAME.speed") == 2 and A.time() - t0 >= 30 * STEP * 1.5, "resumed at x2 (%d steps in 30 frames)" % ((A.time() - t0) // STEP))
+    # 0.5.13: the industry window's "extend" builds nothing: never counted as an expected replay (its replays made the player's next
+    # own build look like one, never shipped: every resync of a 3.5 h session), a real build still is
+    mp = "ug_require('mpfever_common.lua').makesProposal"
+    check(A.L.eval(mp + "('makeCreateIndustryExtendProposalCmd')") is False and A.L.eval(mp + "('makeWorldBuildProposalCmd')") is True
+          and A.L.eval(mp + "('makeVehicleBuyCmd')") is False, "an industry extension is not counted as a build to replay, a build is")
     logs = chr(10).join(A.read("mod.log") + B.read("mod.log") + A.read("ui_mod.log") + B.read("ui_mod.log"))
     bad = [l for l in logs.splitlines() if ("FAILED" in l or "LATE" in l)]
     check(not bad, "no failure / late action in logs %s" % bad[:3])
