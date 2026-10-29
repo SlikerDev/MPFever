@@ -814,12 +814,16 @@ local function manageLines(E, co, lines, vehicles, money)
 	local probs = problemLines(E, co.ent)
 	A.emptyRuns = A.emptyRuns or {}
 	local emptiest, eUse
+	-- (in debt, only the vehicles of a line that loses money are sold: selling the buses of the lines that earned left the companies
+	-- of a test of 2026-10-29 at -1.6 million with lines and no vehicle, earning nothing any more. MPFEVER_AIDEBTSELL=0: as before,
+	-- the emptiest line's whatever it earns)
+	local losingOnly = os.getenv("MPFEVER_AIDEBTSELL") ~= "0"
 	for _, l in ipairs(lines) do
 		local n, last = 0, nil
 		for _, v in ipairs(vehicles) do if v.line == l.e then n = n + 1; last = v.e end end
 		local use = meanUse(E, l.e) or lineUse(E, l.e) or 0
 		local bal = lineBalance(E, l.e)
-		if n > 0 and (not eUse or use < eUse) then emptiest, eUse = { line = l, last = last, n = n }, use end
+		if n > 0 and (not losingOnly or (bal ~= nil and bal < 0)) and (not eUse or use < eUse) then emptiest, eUse = { line = l, last = last, n = n }, use end
 		-- (a freight line: its trucks come back empty, and a producer starts slowly once served: emptier, and given more time)
 		l.freight = os.getenv("MPFEVER_AIFREIGHT") ~= "0" and freightOf(E, l) or nil
 		local emptyUse, emptyLooks = l.freight and 0.04 or 0.08, l.freight and 6 or 3
@@ -2030,6 +2034,9 @@ local function step(E)
 			end
 			local line = lineFor(E, lines, groups)
 			if not line then
+				-- (a line only with the money for its first two buses, as the lines between towns: a line left without one is given up
+				-- as empty after a few looks, its stops kept for nothing)
+				if money < RESERVE + 2 * (A.busCost or BUS_COST) then return end
 				createLine(E, co, groups, town)
 				return
 			end
