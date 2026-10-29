@@ -1216,6 +1216,22 @@ local function defaultWindowApi()
 	return nil
 end
 
+-- each company's vehicles: player entity -> count, read once every 2 s (TF3 has no getVehiclesForPlayer: the menu showed 0 vehicles
+-- for every company)
+U.vehicleCounts = function()
+	local now = os.clock()
+	if U.vehCount and now - U.vehCount.at < 2 then return U.vehCount.map end
+	local map = {}
+	pcall(function()
+		api.engine.forEachEntityWithComponent(function(v)
+			local po = api.engine.getComponent(v, api.type.ComponentType.PLAYER_OWNED)
+			if po and type(po.player) == "number" and po.player >= 0 then map[po.player] = (map[po.player] or 0) + 1 end
+		end, api.type.ComponentType.TRANSPORT_VEHICLE)
+	end)
+	U.vehCount = { at = now, map = map }
+	return map
+end
+
 -- companies mode: the companies of the session, best first (money, then number), each { ent, id, name, bal, lines, veh, rank }
 -- (gone ones left out), and this player's company's money (nil when unknown)
 U.companyList = function(eco)
@@ -1238,7 +1254,7 @@ U.companyList = function(eco)
 			if settled then
 				pcall(function() bal = api.engine.util.finance.getPlayersBalance(ent) end)
 				pcall(function() nLines = #api.engine.system.lineSystem.getLinesForPlayer(ent) end)
-				pcall(function() nVeh = #api.engine.system.transportVehicleSystem.getVehiclesForPlayer(ent) end)
+				nVeh = U.vehicleCounts()[ent] or 0
 			end
 			local rank = U.ranks and U.ranks[id] and U.ranks[id].level or nil
 			list[#list + 1] = { ent = ent, id = id, name = companyName(ent), bal = bal or 0, lines = nLines, veh = nVeh, rank = rank }
@@ -1290,7 +1306,7 @@ U.companyRows = function(ui)
 		if settled then
 			pcall(function() bal = api.engine.util.finance.getPlayersBalance(ent) end)
 			pcall(function() nLines = #api.engine.system.lineSystem.getLinesForPlayer(ent) end)
-			pcall(function() nVeh = #api.engine.system.transportVehicleSystem.getVehiclesForPlayer(ent) end)
+			nVeh = U.vehicleCounts()[ent] or 0
 		end
 		local rank = U.ranks and U.ranks[id] and U.ranks[id].level or nil
 		list[#list + 1] = { ent = ent, id = id, name = companyName(ent), bal = bal or 0, lines = nLines, veh = nVeh, rank = rank }
