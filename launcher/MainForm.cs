@@ -1969,11 +1969,14 @@ namespace MPFever
 
         [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
         [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out WinRect r);
+        [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
         struct WinRect { public int L, T, R, B; }
         /// <summary>(autotests) the mouse over a game window, a little elsewhere each second, as a player looking around.</summary>
         static void AutoHover(IntPtr w, int s)
         {
             if (w == IntPtr.Zero || !GetWindowRect(w, out var r) || r.R - r.L < 100) return;
+            // (the game reads the mouse only in the window in front)
+            if (s % 10 == 0) SetForegroundWindow(w);
             int cx = (r.L + r.R) / 2, cy = (r.T + r.B) / 2;
             SetCursorPos(cx + ((s * 37) % 200) - 100, cy + ((s * 53) % 160) - 80);
         }
