@@ -244,7 +244,7 @@ U.pollEco = function()
 	if txt == U.ecoTxt then return end
 	U.ecoTxt = txt
 	-- (stops, depotco: each company's rule for its stops and stations, and for its depots, shown in the window's Rules tab)
-	local e = { members = {}, chief = {}, gone = {}, debt = {}, track = {}, fees = {}, requests = {}, merges = {}, depots = {}, stops = {}, depotco = {} }
+	local e = { members = {}, chief = {}, gone = {}, debt = {}, track = {}, fees = {}, requests = {}, merges = {}, depots = {}, stops = {}, depotco = {}, ai = {} }
 	local TAB = C.TAB
 	for line in txt:gmatch("[^" .. C.NL .. "]+") do
 		local f1 = {}
@@ -255,6 +255,7 @@ U.pollEco = function()
 		elseif k == "member" then local id = tonumber(f1[2]); e.members[id] = e.members[id] or {}; table.insert(e.members[id], f1[3])
 		elseif k == "chief" then e.chief[tonumber(f1[2])] = f1[3]
 		elseif k == "gone" then e.gone[tonumber(f1[2])] = f1[3]
+		elseif k == "ai" then e.ai[tonumber(f1[2]) or -1] = true
 		elseif k == "debt" then e.debt[tonumber(f1[2])] = tonumber(f1[3])
 		elseif k == "track" then e.track[tonumber(f1[2])] = { rule = f1[3], toll = tonumber(f1[4]) or 0 }
 		elseif k == "fees" then e.fees[tonumber(f1[2])] = { si = tonumber(f1[3]) or 0, se = tonumber(f1[4]) or 0, ti = tonumber(f1[5]) or 0, te = tonumber(f1[6]) or 0 }
@@ -1266,9 +1267,107 @@ U.companyList = function(eco)
 	return list, myBal
 end
 
+-- ---------------------------------------------------------------- the computer companies' journal (0.5.13)
+-- ai_journal.txt (see the bridge's H.aijournal): one entry a line, "time co kind x y z a b". Read every second; new entries are
+-- told in the chat too when the player wants it (Settings, on by default). Each one's "Show" takes the camera there.
+U.pollAiJournal = function()
+	local now = os.clock()
+	if U.aiJAt and now - U.aiJAt < 1 then return end
+	U.aiJAt = now
+	-- (the entries there when this game loaded, a resynchronisation's reload too, are not told again)
+	local first = not U.aiJSeen
+	U.aiJSeen = true
+	local f = C.IO.open(C.DIR .. C.BS .. "ai_journal.txt", "rb")
+	if not f then return end
+	local size = f:seek("end") or 0
+	U.aiJOff = U.aiJOff or 0
+	if size < U.aiJOff then U.aiJOff = 0; U.aiJournal = {} end
+	if size == U.aiJOff then f:close() return end
+	f:seek("set", U.aiJOff)
+	local data = f:read(size - U.aiJOff) or ""
+	f:close()
+	local pos, fresh = 1, {}
+	while true do
+		local e = data:find(C.NL, pos, true)
+		if not e then break end   -- a line still being written: read next time
+		local line = data:sub(pos, e - 1):gsub(C.CR, "")
+		pos = e + 1
+		local p = {}
+		for x in (line .. C.TAB):gmatch("([^" .. C.TAB .. "]*)" .. C.TAB) do p[#p + 1] = x end
+		if #p >= 3 then
+			fresh[#fresh + 1] = { co = tonumber(p[2]), kind = p[3], x = tonumber(p[4]), y = tonumber(p[5]), z = tonumber(p[6]), a = p[7] or "", b = p[8] or "" }
+		end
+	end
+	U.aiJOff = U.aiJOff + pos - 1
+	if #fresh == 0 then return end
+	U.aiJournal = U.aiJournal or {}
+	for _, x in ipairs(fresh) do U.aiJournal[#U.aiJournal + 1] = x end
+	while #U.aiJournal > 200 do table.remove(U.aiJournal, 1) end
+	U.aiJVersion = (U.aiJVersion or 0) + 1
+	if first or (U.loadPrefs().aichat or "1") == "0" then return end
+	U.chat = U.chat or {}
+	for _, x in ipairs(fresh) do U.chat[#U.chat + 1] = { id = 0, t = os.time(), kind = "ai", name = U.aiCoName(x.co), text = U.aiText(x) } end
+	while #U.chat > 100 do table.remove(U.chat, 1) end
+	U.chatVersion = (U.chatVersion or 0) + 1
+end
+
+U.aiCoName = function(id)
+	for ent, cid in pairs(U.coMap or {}) do if cid == id then return companyName(ent) end end
+	return C.Tf("Entreprise %s", "Company %s", tostring(id))
+end
+
+-- what an entry says, in this game's language
+U.aiText = function(x)
+	local function cargo(id)
+		local n = tostring(id or "")
+		pcall(function() n = api.res.cargoTypeRep.getName(tonumber(id)) end)
+		return n
+	end
+	if x.kind == "stop" then return T("a construit un arrêt", "built a stop") end
+	if x.kind == "garage" then return T("construit un garage", "is building a garage") end
+	if x.kind == "line" then return C.Tf("a ouvert la ligne de bus %s", "opened the bus line %s", x.a) end
+	if x.kind == "freight" then return C.Tf("a ouvert la ligne de fret %s (%s)", "opened the freight line %s (%s)", x.a, cargo(x.b)) end
+	if x.kind == "bus" then return C.Tf("a acheté un bus (%s)", "bought a bus (%s)", x.a) end
+	if x.kind == "truck" then return C.Tf("a acheté un camion pour %s (%s)", "bought a truck for %s (%s)", cargo(x.b), x.a) end
+	if x.kind == "sold" then return T("a vendu un véhicule", "sold a vehicle") end
+	if x.kind == "giveup" then return C.Tf("a abandonné la ligne %s", "gave up the line %s", x.a) end
+	return tostring(x.kind)
+end
+
+U.aiFocus = function(x)
+	local ok, err = pcall(function() api.gui.camera.focusPosition(api.type.Vec3f.new(x.x, x.y, x.z or 0), 400) end)
+	if not ok then log("AI journal: camera not moved: " .. tostring(err)) end
+end
+
+-- the camera on a line's first stop
+U.focusLine = function(l)
+	local ok, err = pcall(function()
+		local lc = api.engine.getComponent(l, api.type.ComponentType.LINE)
+		local sg = api.engine.getComponent(lc.stops[1].stationGroup, api.type.ComponentType.STATION_GROUP)
+		api.gui.camera.focusEntity(sg.stations[1])
+	end)
+	if not ok then log("AI lines: camera not moved: " .. tostring(err)) end
+end
+
+-- a computer company's lines in its card of the Company tab: name, vehicles, "Show" (10 at most)
+U.aiLineRows = function(K, c, card, CW)
+	if (c.lines or 0) == 0 then return end
+	local ok, lines = pcall(function() return api.engine.system.lineSystem.getLinesForPlayer(c.ent) end)
+	if not (ok and type(lines) == "table") then return end
+	card[#card + 1] = K.gap(1, 4)
+	for i, l in ipairs(lines) do
+		if i > 10 then card[#card + 1] = K.muted(C.Tf("… et %s autres lignes", "… and %s more lines", #lines - 10), CW); break end
+		local name, nv = tostring(l), 0
+		pcall(function() name = api.engine.getComponent(l, api.type.ComponentType.NAME).name end)
+		pcall(function() nv = #api.engine.system.transportVehicleSystem.getLineVehicles(l) end)
+		card[#card + 1] = K.row { K.text(C.Tf("%s  ·  %s véhicule(s)", "%s  ·  %s vehicle(s)", name, nv), nil, nil, CW - 80), K.gap(6, 1),
+			K.btn(T("Voir", "Show"), nil, function() U.focusLine(l) end) }
+	end
+end
+
 -- an empty view of eco.txt, before the bridge has written it
 U.ECO_EMPTY = function()
-	return { members = {}, chief = {}, gone = {}, debt = {}, track = {}, fees = {}, requests = {}, merges = {}, depots = {}, stops = {}, depotco = {} }
+	return { members = {}, chief = {}, gone = {}, debt = {}, track = {}, fees = {}, requests = {}, merges = {}, depots = {}, stops = {}, depotco = {}, ai = {} }
 end
 
 -- mpfever_co.lua (palette, colours), loaded once
@@ -1689,7 +1788,7 @@ U.loadPrefs = function()
 		end
 	end
 	read(C.DIR .. C.BS .. "ui_prefs.txt", { open = true, tab = true, compact = true, pinned = true })
-	read(C.DIR .. C.BS .. ".." .. C.BS .. "ui_prefs.txt", { autoopen = true })
+	read(C.DIR .. C.BS .. ".." .. C.BS .. "ui_prefs.txt", { autoopen = true, aichat = true })
 	U.prefs = p
 	U.tab = U.tab or p.tab or "session"
 	U.compact = p.compact == "1"
@@ -1704,28 +1803,35 @@ U.savePrefs = function()
 	local f = C.IO.open(C.DIR .. C.BS .. "ui_prefs.txt", "wb")
 	if f then f:write(table.concat(L, C.NL) .. C.NL); f:close() end
 end
+-- (the preferences kept across launches: the window opening by itself, the computer companies' builds told in the chat)
+U.saveGlobalPrefs = function()
+	local p = U.loadPrefs()
+	local f = C.IO.open(C.DIR .. C.BS .. ".." .. C.BS .. "ui_prefs.txt", "wb")
+	if f then f:write("autoopen=" .. tostring(p.autoopen or "1") .. C.NL .. "aichat=" .. tostring(p.aichat or "1") .. C.NL); f:close() end
+end
 U.saveAutoOpen = function(on)
 	local p = U.loadPrefs()
 	p.autoopen = on and "1" or "0"
-	local f = C.IO.open(C.DIR .. C.BS .. ".." .. C.BS .. "ui_prefs.txt", "wb")
-	if f then f:write("autoopen=" .. p.autoopen .. C.NL); f:close() end
+	U.saveGlobalPrefs()
 	log("window: opens by itself when a game starts: " .. p.autoopen)
 end
 
 -- ---------------------------------------------------------------- tabs, opening and closing
-U.TAB_IDS = { "session", "chat", "company", "rules", "settings" }
+U.TAB_IDS = { "session", "chat", "company", "ai", "rules", "settings" }
 -- (the French names, for MPFEVER_SHOWTAB)
-U.TAB_ALIAS = { entreprise = "company", regles = "rules", reglages = "settings", discussion = "chat" }
+U.TAB_ALIAS = { entreprise = "company", regles = "rules", reglages = "settings", discussion = "chat", ia = "ai" }
 U.tabName = function(tab)
 	tab = tostring(tab or "session"):lower()
 	return U.TAB_ALIAS[tab] or tab
 end
--- the tabs of this session: Company and Rules with one company per player only
+-- the tabs of this session: Company and Rules with one company per player only, AI when there are computer companies
 U.tabsFor = function(st)
 	local separate = st and st.mode == "separate"
+	if separate then pcall(U.pollEco) end
+	local ai = separate and U.eco ~= nil and next(U.eco.ai or {}) ~= nil
 	local t = {}
 	for _, id in ipairs(U.TAB_IDS) do
-		if separate or (id ~= "company" and id ~= "rules") then t[#t + 1] = id end
+		if (separate or (id ~= "company" and id ~= "rules")) and (id ~= "ai" or ai) then t[#t + 1] = id end
 	end
 	return t
 end
@@ -1742,6 +1848,7 @@ U.tabLabel = function(id)
 		return T("Chat", "Chat") .. (n > 0 and ("  (" .. n .. ")") or "")
 	end
 	if id == "company" then return T("Entreprise", "Company") end
+	if id == "ai" then return T("IA", "AI") end
 	if id == "rules" then return T("Règles", "Rules") end
 	return T("Réglages", "Settings")
 end
@@ -1752,7 +1859,7 @@ U.winChanged = function()
 	if U.winKick then pcall(U.winKick) end
 end
 U.viewKey = function()
-	return tostring(U.tab) .. "|" .. tostring(U.winVersion or 0) .. "|" .. tostring(U.ecoVersion or 0) .. "|" .. tostring(U.chatUnread or 0)
+	return tostring(U.tab) .. "|" .. tostring(U.winVersion or 0) .. "|" .. tostring(U.ecoVersion or 0) .. "|" .. tostring(U.chatUnread or 0) .. "|" .. tostring(U.tab == "ai" and U.aiJVersion or 0)
 end
 
 -- the chat counts as read while the window shows its Chat tab (no notice then, see pollChat and the toast)
@@ -2198,6 +2305,8 @@ U.TABS.company = function(K, st, ctx)
 			pl,
 		}
 		card[#card + 1] = debtLine(c.id)
+		-- (a computer company: its lines, each with a button that shows it on the map)
+		if eco.ai and eco.ai[c.id] then U.aiLineRows(K, c, card, CW) end
 		if not isMine and U.myCo then
 			local acts = {}
 			-- mixed modes: join it (its chief accepts), or merge into it (the two chiefs)
@@ -2372,6 +2481,40 @@ end
 -- Rules (one company per player): this company's rules for its tracks, its stops and stations and its depots (events applied by
 -- every game, see mpfever_eco.lua), the other companies' rules, the fees and tolls earned and paid, the bankruptcy rule. A rule
 -- eco.txt does not give yet is open (the default of every company).
+-- the computer companies (0.5.13): what each one did last (its journal, the latest first), each entry with a "Show" button
+U.TABS.ai = function(K, st, ctx)
+	local W, CW = K.TEXT_W, K.CARD_TEXT_W
+	pcall(U.pollEco)
+	pcall(U.pollAiJournal)
+	local eco = U.eco or U.ECO_EMPTY()
+	local rows = { K.muted(T("Ce que font les entreprises de l'ordinateur, le plus récent en premier. « Voir » amène la caméra sur place.",
+		"What the computer companies do, the latest first. « Show » takes the camera there."), W) }
+	for _, c in ipairs((U.companyList(eco))) do
+		if eco.ai[c.id] then
+			local card = {
+				K.row { U.swatch(K, c.id, 16), K.gap(8, 1), K.text(c.name, "font-scale-title-4", nil, CW - 24) },
+				K.muted(U.coFigures(c), CW),
+			}
+			local n = 0
+			local list = U.aiJournal or {}
+			for i = #list, 1, -1 do
+				local x = list[i]
+				if x.co == c.id then
+					n = n + 1
+					if n > 12 then break end
+					local r = { K.text(U.aiText(x), nil, nil, CW - 80) }
+					if x.x and x.y then r[#r + 1] = K.gap(6, 1); r[#r + 1] = K.btn(T("Voir", "Show"), nil, function() U.aiFocus(x) end) end
+					card[#card + 1] = K.row(r)
+				end
+			end
+			if n == 0 then card[#card + 1] = K.muted(T("Rien pour l'instant.", "Nothing yet."), CW) end
+			rows[#rows + 1] = K.gap(1, 8)
+			rows[#rows + 1] = K.card(card)
+		end
+	end
+	return rows
+end
+
 U.TABS.rules = function(K, st, ctx)
 	local W = K.TEXT_W
 	if not U.coMap then return { K.muted(T("En attente des entreprises…", "Waiting for the companies…"), W) } end
@@ -2521,6 +2664,14 @@ U.TABS.settings = function(K, st, ctx)
 		label = T("Ouvrir MPFever au début de chaque partie", "Open MPFever when a game starts"),
 		onValueChange = function(v) U.saveAutoOpen(v == 1); U.winChanged() end,
 	} }
+	-- (the computer companies' builds and purchases told in the chat: see U.pollAiJournal)
+	if st and st.mode == "separate" then
+		rows[#rows + 1] = K.row { builtin.CheckBox {
+			value = p.aichat == "0" and 0 or 1,
+			label = T("Annoncer dans le chat ce que font les entreprises de l'ordinateur", "Tell in the chat what the computer companies do"),
+			onValueChange = function(v) p.aichat = v == 1 and "1" or "0"; U.saveGlobalPrefs(); U.winChanged() end,
+		} }
+	end
 	-- the months in debt before a bankruptcy: the host's rule, sent by MPFever.exe to every game ("bankrupt" request)
 	if st and st.mode == "separate" and U.isHost(st) then
 		pcall(U.pollEco)
@@ -3712,6 +3863,8 @@ local function tick(pendingState)
 	pcall(pollStatus)
 	local okch, errch = pcall(pollChat)
 	if not okch then log("chat poll failed: " .. tostring(errch)) end
+	local okaj, erraj = pcall(U.pollAiJournal)
+	if not okaj and not U.aiJFailed then U.aiJFailed = true; log("AI journal poll failed: " .. tostring(erraj)) end
 	if not U.sessionInstalled and U.react and U.builtin then
 		local oks, errs = pcall(installSession, U.react, U.builtin)
 		if not oks then log("session: not installed: " .. tostring(errs)) end

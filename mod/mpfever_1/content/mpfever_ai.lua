@@ -251,6 +251,30 @@ local function act(E, coId, fn, margs)
 	E.C.appendFile(E.C.DIR .. E.BS .. "ui.log", E.C.line("act_req", { tok = "ai", id = A.reqId, fn = fn, args = margs, co = coId }))
 end
 
+-- An entry of the companies' journal, on every game (the MPFever window's AI tab and the chat, see the bridge's H.aijournal):
+-- what (kind), where (pos, for its "Show" button), and up to two words (a name, a model). MPFEVER_AIJOURNAL=0: none.
+local function journal(E, coId, kind, pos, a, b)
+	if os.getenv("MPFEVER_AIJOURNAL") == "0" then return end
+	local p = { t = E.gameTime(), co = coId, kind = kind, a = a, b = b }
+	if pos then p.x, p.y, p.z = math.floor(pos.x + 0.5), math.floor(pos.y + 0.5), math.floor((pos.z or 0) + 0.5) end
+	pcall(E.send, "aijournal", p)
+	if E.H and E.H.aijournal then pcall(E.H.aijournal, E.G.me, p) end
+end
+
+-- where a depot stands (its construction's place), nil if unknown
+local function depotPos(E, depot)
+	local api, R = E.api, E.R
+	for _, e in ipairs(R.entitiesWith("CONSTRUCTION")) do
+		local c = api.engine.getComponent(e, api.type.ComponentType.CONSTRUCTION)
+		if c and #c.depots > 0 then
+			for k = 1, #c.depots do
+				if c.depots[k] == depot then local m = E.C.marshal(c.transf); return { x = m[13], y = m[14], z = m[15] } end
+			end
+		end
+	end
+	return nil
+end
+
 -- bits as the native module reports a tool's Context (see the replays): 1 buildings gathered, 2 terrain aligned, 4 street graph
 -- cleaned up, 32 known. The depot tool builds with 39: without the clean-up the maintenance station's lanes were never linked
 -- to the street (no exit node), and a bus of it sent to a line stopped the simulation of every game.
@@ -268,7 +292,7 @@ local function context(E, ent, bits)
 end
 
 -- a build as a tool's, for the company: held at its time, shipped with the company's number (the others build it for it)
-local function build(E, coId, cmd, what, ctxBits)
+local function build(E, coId, cmd, what, ctxBits, jr)
 	local G = E.G
 	local A = G.AI
 	A.busy = { what = what, since = G.frames }
@@ -279,6 +303,7 @@ local function build(E, coId, cmd, what, ctxBits)
 		A.busy = nil
 		A.stopsCache = nil
 		A.lastResult = { what = what, ok = success, frame = G.frames }
+		if success and jr then journal(E, coId, jr.kind, jr.pos, jr.a, jr.b) end
 		if not success then A.failed = A.failed or {}; A.failed[what] = (A.failed[what] or 0) + 1 end
 	end)
 	local id = 100000 + G.autoBuildSeq
@@ -329,7 +354,8 @@ local function buildStop(E, co, seg, n)
 	if #ncr > 0 then ssp.nodeConfigsToRemove = ncr end
 	sp.streetProposal = ssp
 	local cmd = api.cmd.makeWorldBuildProposalCmd(sp, context(E, co.ent, CTX_STOP), false, true, true)
-	build(E, co.id, cmd, "stop " .. n, CTX_STOP)
+	local pa, pb = E.nodePosition(c.node0), E.nodePosition(c.node1)
+	build(E, co.id, cmd, "stop " .. n, CTX_STOP, { kind = "stop", pos = pa and pb and { x = (pa.x + pb.x) / 2, y = (pa.y + pb.y) / 2, z = (pa.z + pb.z) / 2 } or nil })
 end
 
 -- free town street segments near a point, the nearest first
@@ -519,6 +545,7 @@ local function buildGarage(E, co, place)
 	G.nativeQueue[#G.nativeQueue + 1] = a
 	A.busy = { what = "garage on segment " .. place.seg, since = G.frames, until_ = G.frames + 600 }
 	L(E, "garage requested on segment " .. place.seg .. " (" .. a.uid .. ", for t=" .. a.at .. ")")
+	journal(E, co.id, "garage", place.O)
 end
 
 -- ------------------------------------------------------------------ the plan
@@ -660,7 +687,8 @@ local function createLine(E, co, groups, town, name)
 	template.stops = stops
 	name = name or (AINAME .. " " .. townName(E, town))
 	act(E, co.id, "makeLineCreateCmd", { n = 4, [1] = name, [2] = C.marshal(api.type.Vec3f.new(0.2, 0.5, 0.9)), [3] = co.ent, [4] = template })
-	E.G.AI.busy = { what = "line " .. name, since = E.G.frames, linesBefore = #myLines(E, co.ent) }
+	local jpos = centre(E, town, E.api.type.enum.LandUseType.RESIDENTIAL)
+	E.G.AI.busy = { what = "line " .. name, since = E.G.frames, linesBefore = #myLines(E, co.ent), jr = { kind = "line", pos = jpos, a = name } }
 	L(E, "line requested: " .. name .. " with " .. #order .. " stops")
 end
 
@@ -673,7 +701,8 @@ local function buyBus(E, co, depot)
 			autoLoadConfig = { true }, __ud = true } },
 		vehicleGroups = { 1 }, muFileNames = {}, __ud = true }
 	act(E, co.id, "makeVehicleBuyCmd", { n = 3, [1] = co.ent, [2] = depot, [3] = cfg })
-	E.G.AI.busy = { what = "bus " .. bus.name, since = E.G.frames, vehBefore = #myVehicles(E, co.ent), moneyBefore = balanceOf(E, co.ent) }
+	E.G.AI.busy = { what = "bus " .. bus.name, since = E.G.frames, vehBefore = #myVehicles(E, co.ent), moneyBefore = balanceOf(E, co.ent),
+		jr = { kind = "bus", pos = depotPos(E, depot), a = tostring(bus.name):match("([^/]+)%.mdl$") or bus.name } }
 	L(E, "bus requested: " .. bus.name .. " (" .. bus.seats .. " seats, " .. year .. ") at depot " .. depot)
 	return true
 end
@@ -736,6 +765,7 @@ local function sellVehicle(E, co, v, why)
 	act(E, co.id, "makeVehicleSellCmd", { n = 1, [1] = { v } })
 	E.G.AI.busy = { what = "sale of vehicle " .. v, since = E.G.frames, until_ = E.G.frames + 120 }
 	L(E, "vehicle " .. v .. " sold (" .. why .. ")")
+	journal(E, co.id, "sold", nil)
 end
 
 -- (freight, see below: a line's trucks and cargo)
@@ -779,6 +809,9 @@ local function manageLines(E, co, lines, vehicles, money)
 		-- (the line itself goes once its last bus is sold: the engine keeps a line that still has a vehicle)
 		if A.emptyRuns[l.e] >= emptyLooks and n == 0 and period == 7200 then
 			L(E, "line " .. l.e .. " given up (empty)")
+			local ln = tostring(l.e)
+			pcall(function() ln = E.api.engine.getComponent(l.e, E.api.type.ComponentType.NAME).name end)
+			journal(E, co.id, "giveup", nil, ln)
 			act(E, co.id, "makeLineDestroyCmd", { n = 1, [1] = l.e })
 			A.badPair = A.badPair or {}
 			if l.groups[1] and l.groups[2] then A.badPair[math.min(l.groups[1], l.groups[2]) .. "-" .. math.max(l.groups[1], l.groups[2])] = true end
@@ -829,6 +862,9 @@ local function manageLines(E, co, lines, vehicles, money)
 		if probs[l.e] and n > 0 and (A.problemSeen or {})[l.e] then
 			-- (a problem seen twice in a row: the line is given up, its buses go to the company's other lines)
 			L(E, "line " .. l.e .. " given up (problem " .. tostring(probs[l.e]) .. ")")
+			local ln = tostring(l.e)
+			pcall(function() ln = E.api.engine.getComponent(l.e, E.api.type.ComponentType.NAME).name end)
+			journal(E, co.id, "giveup", nil, ln)
 			act(E, co.id, "makeLineDestroyCmd", { n = 1, [1] = l.e })
 			-- (its stops are not joined again: keyed by their station groups)
 			A.badPair = A.badPair or {}
@@ -1218,7 +1254,8 @@ local function buyTruck(E, co, depot, cargo)
 			autoLoadConfig = { true }, __ud = true } },
 		vehicleGroups = { 1 }, muFileNames = {}, __ud = true }
 	act(E, co.id, "makeVehicleBuyCmd", { n = 3, [1] = co.ent, [2] = depot, [3] = cfg })
-	E.G.AI.busy = { what = "truck " .. truck.name, since = E.G.frames, vehBefore = #myVehicles(E, co.ent), moneyBefore = balanceOf(E, co.ent) }
+	E.G.AI.busy = { what = "truck " .. truck.name, since = E.G.frames, vehBefore = #myVehicles(E, co.ent), moneyBefore = balanceOf(E, co.ent),
+		jr = { kind = "truck", pos = depotPos(E, depot), a = tostring(truck.name):match("([^/]+)%.mdl$") or truck.name, b = cargo } }
 	L(E, "truck requested: " .. truck.name .. " (" .. truck.seats .. " " .. cargoName(E, cargo) .. ", " .. year .. ") at depot " .. depot)
 	return true
 end
@@ -1264,7 +1301,7 @@ local function createFreightLine(E, co, f)
 	template.stops = { freightStop(E, f.from.road, stop0), freightStop(E, f.to.road, stop0) }
 	local name = AINAME .. " " .. cargoName(E, f.cargo) .. " " .. math.floor(dist(f.from.pos, f.to.pos) / 100) / 10 .. " km"
 	act(E, co.id, "makeLineCreateCmd", { n = 4, [1] = name, [2] = C.marshal(api.type.Vec3f.new(0.8, 0.5, 0.1)), [3] = co.ent, [4] = template })
-	E.G.AI.busy = { what = "line " .. name, since = E.G.frames, linesBefore = #myLines(E, co.ent) }
+	E.G.AI.busy = { what = "line " .. name, since = E.G.frames, linesBefore = #myLines(E, co.ent), jr = { kind = "freight", pos = f.from.pos, a = name, b = f.cargo } }
 	L(E, "freight line requested: " .. name .. " (industry " .. f.from.e .. " -> " .. f.to.e .. ")")
 end
 
@@ -1523,12 +1560,16 @@ local function step(E)
 	if A.busy then
 		local age = G.frames - A.busy.since
 		-- (a command's result shows in the world: the line or the vehicle appears)
-		if A.busy.linesBefore and #myLines(E, co.ent) > A.busy.linesBefore then L(E, A.busy.what .. ": done"); A.busy = nil
+		if A.busy.linesBefore and #myLines(E, co.ent) > A.busy.linesBefore then
+			L(E, A.busy.what .. ": done")
+			if A.busy.jr then journal(E, co.id, A.busy.jr.kind, A.busy.jr.pos, A.busy.jr.a, A.busy.jr.b) end
+			A.busy = nil
 		elseif A.busy.vehBefore and #myVehicles(E, co.ent) > A.busy.vehBefore then
 			-- (what a bus costs: measured on the company's account)
 			local paid = (A.busy.moneyBefore or 0) - balanceOf(E, co.ent)
 			if paid > 10000 and paid < 5000000 then A.busCost = paid end
 			L(E, A.busy.what .. ": done" .. (paid > 0 and (", paid " .. math.floor(paid)) or ""))
+			if A.busy.jr then journal(E, co.id, A.busy.jr.kind, A.busy.jr.pos, A.busy.jr.a, A.busy.jr.b) end
 			A.busy = nil
 		elseif A.busy.until_ and G.frames >= A.busy.until_ then A.busy = nil
 		elseif age > 1200 then L(E, A.busy.what .. ": no answer, given up"); A.busy = nil end

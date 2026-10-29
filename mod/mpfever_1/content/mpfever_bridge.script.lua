@@ -14511,6 +14511,8 @@ G.coEco = function(st, reg, c)
 	local rulesSig = {}
 	for _, co in ipairs(reg.list) do
 		if co.gone then L[#L + 1] = "gone\t" .. co.id .. "\t" .. tostring(co.gone) end
+		-- (a computer company: its lines and its journal in the window, see H.aijournal)
+		if tostring(co.key or ""):sub(1, 3) == "ai:" then L[#L + 1] = "ai\t" .. co.id end
 		for _, m in ipairs(CO.members(co)) do L[#L + 1] = "member\t" .. co.id .. "\t" .. clean(m.key) end
 		local ch = CO.chief(co)
 		if ch and not co.gone then L[#L + 1] = "chief\t" .. co.id .. "\t" .. clean(ch) end
@@ -15058,6 +15060,16 @@ G.previewTick = function()
 	for who, s in pairs(G.pv.shown) do
 		if G.frames - s.frame > 360 then G.previewClear(who) end
 	end
+end
+
+-- The computer companies' journal (the MPFever window's AI tab, and the chat): what they build and buy, and where. The host's
+-- module (mpfever_ai.lua) sends each entry to every game and gives it to its own; each game appends it to ai_journal.txt
+-- ("time co kind x y z a b", tab-separated), which the interface reads.
+H.aijournal = function(from, p)
+	if type(p) ~= "table" then return end
+	local function clean(v) return (tostring(v == nil and "" or v):gsub("%c", " "):sub(1, 120)) end
+	C.appendFile(C.DIR .. BS .. "ai_journal.txt", table.concat({ clean(p.t), clean(p.co), clean(p.kind), clean(p.x), clean(p.y), clean(p.z),
+		clean(p.a), clean(p.b) }, "\t") .. NL)
 end
 
 -- game companies (mpfever_ai.lua): what the module needs from here, then its step on the host. MPFEVER_AIDEV=<folder>: the module

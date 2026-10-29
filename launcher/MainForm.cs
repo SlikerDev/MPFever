@@ -1735,7 +1735,7 @@ namespace MPFever
                 menuGame.InGame = false;
                 foreach (var f in new[] { "in.log", "out.log", "ui.log", "sim_mods.log", "started.txt", "results.log", "native_events.log", "resync_claims.txt",
                                           "resync_pending.txt", "bindings.log", "captured.txt", "companies.txt", "shares.txt",
-                                          "chat.txt", "chat_out.txt", "load_id.txt" })
+                                          "chat.txt", "chat_out.txt", "load_id.txt", "ai_journal.txt" })
                     try { var p = Path.Combine(menuGame.Dir, f); if (File.Exists(p)) File.WriteAllText(p, ""); } catch { }
             }
             menuPhase = "idle"; menuText = ""; menuLoad = ""; menuLoadSeq = "";
@@ -2979,7 +2979,7 @@ namespace MPFever
         // What only the host sends (its savegame, mods, lobby, settings, chat, status): from a player it is never passed on.
         // Relayed, a player could have sent the others a mod (code) or a savegame in the host's place.
         static readonly HashSet<string> HostOnlyKinds = new HashSet<string> { "modfile", "modoffer", "resync_file", "resync_bin",
-            "resync_use", "delta_bin", "lobby", "mpstatus", "chatmsg", "welcome", "session", "peerclock", "auth" };
+            "resync_use", "delta_bin", "lobby", "mpstatus", "chatmsg", "welcome", "session", "peerclock", "auth", "aijournal" };
         DateTime hostOnlyWarned;
 
         void OnHostMessage(Msg m, Peer from)
@@ -3312,7 +3312,7 @@ namespace MPFever
                         if (from != null) hostGame?.ToGame(m);
                         relay.Broadcast(m, from);
                     }
-                    if (m.Kind != "chat" && m.Kind != "preview") Log.W($"{m.From} : {m.Kind} {m.Payload}");
+                    if (m.Kind != "chat" && m.Kind != "preview" && m.Kind != "aijournal") Log.W($"{m.From} : {m.Kind} {m.Payload}");
                     break;
             }
         }
