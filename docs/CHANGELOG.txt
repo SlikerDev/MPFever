@@ -1,6 +1,10 @@
 MPFever - Changelog
 ===================
 
+0.5.14 - (not released yet)
+  - NEW: the MPFever Discord (discord.gg/qhhKfUMSJx): a "Discord" link in the launcher's status bar, a "Discord" button in
+    the window shown once the game is closed, and a line in the launcher's log at the end of a session.
+
 0.5.13 - computer companies carry freight and get a level, players see what they do, a safer mod exchange, fixes
   - NEW (experimental, computer companies): freight by truck. Every industry has its own street station: a computer company
     finds a producer that makes its cargo now (or a primary one: a mine, a farm, a forest) and an industry 0.9 to 5 km away

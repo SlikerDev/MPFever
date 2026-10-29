@@ -467,9 +467,26 @@ namespace MPFever
                 try { Process.Start("https://ko-fi.com/knighthd"); }
                 catch (Exception ex) { Log.W(ex.Message); }
             };
+            // the community: players, help and news
+            const string discordText = "Discord";
+            var discord = new Label
+            {
+                Text = discordText, AutoSize = false, Dock = DockStyle.Right, TextAlign = ContentAlignment.MiddleRight,
+                Font = creditFont, ForeColor = Theme.Accent, Cursor = Cursors.Hand,
+            };
+            discord.Width = TextRenderer.MeasureText(discordText, linkFont).Width + S(16);
+            new ToolTip().SetToolTip(discord, ThanksDialog.DiscordUrl.Replace("https://", ""));
+            discord.MouseEnter += (s, e) => { discord.Font = linkFont; discord.ForeColor = Theme.AccentHover; };
+            discord.MouseLeave += (s, e) => { discord.Font = creditFont; discord.ForeColor = Theme.Accent; };
+            discord.Click += (s, e) =>
+            {
+                try { Process.Start(ThanksDialog.DiscordUrl); }
+                catch (Exception ex) { Log.W(ex.Message); }
+            };
             footer.Controls.Add(status);
             footer.Controls.Add(gameLabel);
             footer.Controls.Add(settingsLink);
+            footer.Controls.Add(discord);
             footer.Controls.Add(kofi);
             footer.Controls.Add(by);
             footer.Controls.Add(credit);   // docked first: rightmost
@@ -1708,6 +1725,8 @@ namespace MPFever
             Log.W(why ?? T("=== Retour au menu principal : fin de la session ===", "=== Back to the main menu: the session ends ==="));
             Log.W(T("Ce mod vous plaît ? Soutenez le projet ou remerciez son auteur sur ko-fi.com/knighthd",
                 "Enjoying MPFever? Support the project or thank its author at ko-fi.com/knighthd"));
+            Log.W(T("Des joueurs, de l'aide et les nouveautés : rejoignez le Discord de MPFever sur discord.gg/qhhKfUMSJx",
+                "Players, help and news: join the MPFever Discord at discord.gg/qhhKfUMSJx"));
             sessionGen++;
             clientCancelled = true;
             Options.HostSession = null;

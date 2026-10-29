@@ -15,6 +15,7 @@ namespace MPFever
         public const string KofiUrl = "https://ko-fi.com/knighthd";
         public const string NexusUrl = "https://www.nexusmods.com/transportfever3/mods/4?tab=posts";
         public const string GitHubUrl = "https://github.com/dkdknight/MPFever";
+        public const string DiscordUrl = "https://discord.gg/qhhKfUMSJx";
 
         public ThanksDialog()
         {
@@ -30,7 +31,7 @@ namespace MPFever
             var icon = Theme.AppIcon();
             if (icon != null) Icon = icon;
             HandleCreated += (s, e) => Theme.DarkTitleBar(Handle);
-            ClientSize = new Size(S(700), S(250));
+            ClientSize = new Size(S(780), S(250));
 
             var card = new Card { Dock = DockStyle.Fill, Padding = new Padding(S(22), S(18), S(22), S(18)) };
             var title = new Label { Text = T("Merci d'avoir joué avec MPFever !", "Thanks for playing with MPFever!"), AutoSize = false, Height = S(34), Font = Theme.Semibold(13f), ForeColor = Theme.Text };
@@ -42,10 +43,11 @@ namespace MPFever
             };
 
             var kofi = Btn(ButtonKind.Primary, T("♥ Soutenir sur Ko-fi", "♥ Support on Ko-fi"), () => Open(KofiUrl));
+            var discord = Btn(ButtonKind.Secondary, "Discord", () => Open(DiscordUrl));
             var nexus = Btn(ButtonKind.Secondary, T("Avis sur Nexus", "Rate on Nexus"), () => Open(NexusUrl));
             var github = Btn(ButtonKind.Secondary, T("Étoile sur GitHub", "Star on GitHub"), () => Open(GitHubUrl));
             var report = Btn(ButtonKind.Secondary, T("Signaler un problème", "Report a problem"), () => DialogResult = DialogResult.Retry);
-            var links = Row(S(40), FlowDirection.LeftToRight, kofi, nexus, github, report);
+            var links = Row(S(40), FlowDirection.LeftToRight, kofi, discord, nexus, github, report);
 
             var close = Btn(ButtonKind.Secondary, T("Fermer", "Close"), () => DialogResult = DialogResult.Cancel);
             var quit = Btn(ButtonKind.Ghost, T("Tout fermer", "Quit MPFever"), () => DialogResult = DialogResult.Abort);
