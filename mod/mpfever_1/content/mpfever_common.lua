@@ -838,6 +838,10 @@ end
 -- made every later build of the player look like a replay, and none was shipped (issue #12).
 local NO_PROPOSAL_PREFIXES = { "makeVehicle", "makeLine", "makeEntitySet", "makeScriptingSendEvent", "makeGameSet",
 	"makeJournal", "makeStockList", "makeTownSet", "makeTownBuildingSet", "makeIndustrySet" }
+-- (the industry window's "extend": the command only computes the proposal it shows, the build comes as a command of its own.
+-- Counted, every replayed click made the player's next own build look like a replay, never shipped, cancelled and built on
+-- one game only: every resync of a 3.5 h session, 2026-10-28. MPFEVER_EXTENDCOUNT=1: counted as before)
+if os.getenv("MPFEVER_EXTENDCOUNT") ~= "1" then NO_PROPOSAL_PREFIXES[#NO_PROPOSAL_PREFIXES + 1] = "makeCreateIndustryExtendProposalCmd" end
 function C.makesProposal(fn)
 	fn = tostring(fn)
 	for _, p in ipairs(NO_PROPOSAL_PREFIXES) do
