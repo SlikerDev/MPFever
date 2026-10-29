@@ -3,9 +3,10 @@ MPFever - Changelog
 
 0.5.13 - computer companies carry freight and get a level, players see what they do, a safer mod exchange, fixes
   - NEW (experimental, computer companies): freight by truck. Every industry has its own street station: a computer company
-    finds a producer and an industry 0.9 to 5 km away that takes its cargo, checks with the game's path finding that a truck
-    can drive there, opens the line and buys the year's best truck for that cargo (a truck more when cargo waits at the
-    producer). It also delivers the towns: a producer's cargo to a stop near the shops or the works that want more of it (a
+    finds a producer that makes its cargo now (or a primary one: a mine, a farm, a forest) and an industry 0.9 to 5 km away
+    that takes that cargo, checks with the game's path finding that a truck can drive there, opens the line with that cargo
+    loaded at the producer, and buys its first two trucks at once: the year's best truck for that cargo (a truck more when
+    cargo waits at the producer). It also delivers the towns: a producer's cargo to a stop near the shops or the works that want more of it (a
     stop of the company already there is taken). A round picks up a second producer of the same cargo on the way, and an
     industry no truck reaches gets a street to the nearest town street (straight, a dry run first). MPFEVER_AIFREIGHT=0:
     buses only; MPFEVER_AITOWNFREIGHT=0, MPFEVER_AIROUND=0, MPFEVER_AIROADS=0: without towns, rounds, streets.
