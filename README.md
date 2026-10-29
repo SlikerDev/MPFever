@@ -230,6 +230,8 @@ python tools\mksigs.py check "<path>\TransportFever3.exe"
   seksi1227-wq, Manocornuto, dev-andrei-v, Nassachi, Zippo1578, Shog-SC, thedevouttrout, AlexXY2, MorganJones13
   and everyone who played and gave feedback on Nexus.
 
+Written about MPFever: [PCGamesN](https://www.pcgamesn.com/transport-fever-3/multiplayer-mod), [PC Games](https://www.pcgames.de/Transport-Fever-3-Spiel-75226/News/Multiplayer-Mod-Koop-Kompetitiv-Unternehmen-1558055/) (German), [PlayNews](https://www.playnews.gg/en/news/transport-fever-3-multiplayer-mpfever-adds-co-op-and-competition-all-for-free) and an [interview on Spielemagazin.de](https://www.spielemagazin.de/spiele/interviews/mpfever-multiplayer-fuer-transport-fever-3/45494) (German).
+
 MPFever is free and open source, under the [GNU General Public License v3](LICENSE) (GPL-3.0-or-later): you may use, study, change and share it, and a project that includes MPFever's code must be shared under the same license. Versions up to 0.4.5 were published under the MIT License and stay so; see [NOTICE.txt](NOTICE.txt). If you enjoy it, you can support its development on [Ko-fi](https://ko-fi.com/knighthd) or leave a comment on [Nexus](https://www.nexusmods.com/transportfever3/mods/4?tab=posts).
 
 [![Support MPFever on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/knighthd)
