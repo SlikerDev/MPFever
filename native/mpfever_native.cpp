@@ -444,6 +444,14 @@ static volatile long g_canon = 0;
 static volatile long g_mainTid = 0;        // the game's main thread (its interface), see PatchPlayerReads
 static volatile i64 g_pickCount[8][3];     // per redirected reading: [0] on the interface's thread, [1] the simulation's, [2] another
 static volatile u64 g_gsWord[2];           // addresses of the local-player word of the two game states (seen in Replicate)
+// The players of the game before (this machine's and the savegame's, dropped with a new game) and the word the interface's game
+// state holds now (copied at the end of each iteration, 0 until the first one of a new game). An interface object that outlives a
+// game load keeps the player it copied: after a session of companies, an entity that is something else in the next game, and the
+// engine closed it (UI::CSelector, 2026-10-28). Read there, that player becomes the interface's word. MPFEVER_STALEUI=0: as read.
+static volatile long g_stalePlayer[2] = { 0, 0 };
+static volatile long g_uiWord = 0;
+static volatile i64 g_staleFixed = 0;
+static void NoteStale(int k, long v) { if (v) g_stalePlayer[k] = v; g_uiWord = 0; }
 static volatile long g_simTid = 0;         // the simulation thread (seen in its pre-iteration)
 static bool g_luaSeedFixed = false;           // Lua's string hash seed made constant (PatchLuaSeed)
 static bool g_entWatch = false;            // MPFEVER_ENTWATCH: entity additions/removals counted (EntFlush)
@@ -1089,6 +1097,7 @@ static void AuditFlush(bool force)
         LogLine(l);
     }
     if (g_moneyFixed) { Buf l; l.str("money checks of the tools for this machine's company: ").dec(g_moneyFixed); LogLine(l); }
+    if (g_staleFixed) { Buf l; l.str("interface objects' players of the game before read as this game's: ").dec((long)g_staleFixed).str(" (").dec(g_stalePlayer[0]).str("/").dec(g_stalePlayer[1]).str(" -> ").dec(g_uiWord).str(")"); LogLine(l); }
     if (g_paceWrites || g_trim != 1000) { Buf l; l.str("smooth pacing: batch interval scaled ").dec(g_paceWrites).str(" time(s), factor now ").dec(g_trim).str("/1000").str(g_paceOff ? " (OFF: layout not as expected)" : ""); LogLine(l); }
     EntFlush();
 }
@@ -1471,6 +1480,7 @@ static bool SplitWord()
 static void DropCanon(const char* why)
 {
     long c = _InterlockedExchange(&g_canon, 0);
+    NoteStale(1, c);
     if (c) { Buf b; b.str("savegame company ").dec(c).str(" dropped: ").str(why); LogLine(b); }
 }
 
@@ -1494,6 +1504,7 @@ static bool ReloadedAt(void* slot, u32 cur, u32 want)
     for (int i = 0; i < g_nDone; i++) {
         if (g_doneSlot[i] != slot || g_doneTok[i] != g_localTok) continue;
         Buf b; b.str("local player ").dec(g_localPlayer).str(" dropped: the game state ").hex((u64)slot).str(" holds ").dec(cur).str(" again (a game was loaded)"); LogLine(b);
+        NoteStale(0, g_localPlayer);
         g_localPlayer = 0;
         g_nOthers = 0;
         g_nDone = 0;
@@ -1520,6 +1531,7 @@ static void ApplyLocalPlayer(const char* why)
         DropCanon("a new game state");
         if (g_localPlayer) {
             Buf b; b.str("local player ").dec(g_localPlayer).str(" dropped: a new game state ").hex((u64)g_slot); LogLine(b);
+            NoteStale(0, g_localPlayer);
             g_localPlayer = 0;
             return;
         }
@@ -1555,6 +1567,7 @@ extern "C" u64 ReplDetour(void* src, void* dst, u64 flag)
     WatchAdd((u8*)src); WatchAdd((u8*)dst);
     if (src && dst && (u32)((uptr)_ReturnAddress() - g_base) == RVA_REPL_LOOP) { g_gsWord[0] = (u64)src + 0x20c; g_gsWord[1] = (u64)dst + 0x20c; }
     u64 r = g_replOrig(src, dst, flag);
+    if (dst && (u32)((uptr)_ReturnAddress() - g_base) == RVA_REPL_LOOP) g_uiWord = (long)*(u32*)((u8*)dst + 0x20c);
     static long n = 0;
     if (n < 80) {
         n++;
@@ -3599,6 +3612,8 @@ static void HookWordReads()
     if (!mem) { Buf e; e.str("player word: no memory near the game's code, readings not hooked"); LogLine(e); return; }
     u8* stubs = mem;
     int done = 0;
+    bool staleUi = true;
+    { char v[4] = {}; if (GetEnvironmentVariableA("MPFEVER_STALEUI", v, 3) == 1 && v[0] == '0') staleUi = false; }
     for (int i = 0; i < g_n20 && i < 64; i++) {
         const Site20c& s = g_s20[i];
         u8* site = (u8*)(g_base + s.rva);
@@ -3660,25 +3675,55 @@ static void HookWordReads()
         // UNMATCHED: the word of an object of the interface's own (the tools' factory makes every tool for the player it reads
         // there, the savegame's company): off the simulation thread, the savegame's company read there becomes this machine's
         Asm::at(jUnm, a.p);
-        u8* jUnmDone[4] = {};
+        u8* jUnmDone[12] = {};
+        int nUnm = 0;
         if (uiObj) {
+            const u8 cmpDstR10[] = { (u8)(0x41 | (s.dst >= 8 ? 4 : 0)), 0x3B, (u8)(((s.dst & 7) << 3) | 2) };    // cmp dst,[r10]
+            const u8 movDstR11[] = { (u8)(s.dst < 8 ? 0x44 : 0x45), 0x89, (u8)(0xD8 | (s.dst & 7)) };           // mov dst,r11d
             { const u8 t_[] = { 0x65, 0x44, 0x8B, 0x1C, 0x25, 0x48, 0, 0, 0 }; a.bn(t_, (int)sizeof(t_)); }    // mov r11d,gs:[48h]
             a.b(0x49); a.b(0xBA); a.imm64((u64)&g_simTid);     // mov r10,&simTid
             { const u8 t_[] = { 0x45, 0x3B, 0x1A }; a.bn(t_, (int)sizeof(t_)); }                        // cmp r11d,[r10]
-            jUnmDone[0] = a.jcc32(0x84);                       // je DONE
+            jUnmDone[nUnm++] = a.jcc32(0x84);                  // je DONE
             a.b(0x49); a.b(0xBA); a.imm64((u64)&g_canon);      // mov r10,&canon
-            a.b((u8)(0x41 | (s.dst >= 8 ? 4 : 0))); a.b(0x3B); a.b((u8)(((s.dst & 7) << 3) | 2));         // cmp dst,[r10]
-            jUnmDone[1] = a.jcc32(0x85);                       // jne DONE
+            a.bn(cmpDstR10, 3);                                // cmp dst,[r10]
+            u8* jStale = a.jcc32(0x85);                        // jne STALE
             a.b(0x49); a.b(0xBA); a.imm64((u64)&g_localPlayer); // mov r10,&localPlayer
             { const u8 t_[] = { 0x45, 0x8B, 0x1A }; a.bn(t_, (int)sizeof(t_)); }                        // mov r11d,[r10]
             { const u8 t_[] = { 0x45, 0x85, 0xDB }; a.bn(t_, (int)sizeof(t_)); }                        // test r11d,r11d
-            jUnmDone[2] = a.jcc32(0x84);                       // je DONE
-            if (s.dst < 8) { const u8 t_[] = { 0x44, 0x89, (u8)(0xD8 | s.dst) }; a.bn(t_, (int)sizeof(t_)); } else { const u8 t_[] = { 0x45, 0x89, (u8)(0xD8 | (s.dst - 8)) }; a.bn(t_, (int)sizeof(t_)); }   // mov dst,r11d
+            jUnmDone[nUnm++] = a.jcc32(0x84);                  // je DONE
+            a.bn(movDstR11, 3);                                // mov dst,r11d
             a.b(0x49); a.b(0xBA); a.imm64((u64)&g_siteCount[i][3]);   // mov r10,&count
             { const u8 t_[] = { 0xF0, 0x49, 0xFF, 0x02 }; a.bn(t_, (int)sizeof(t_)); }                  // lock inc qword [r10]
+            jUnmDone[nUnm++] = a.jmp32();                      // jmp DONE
+            // STALE: a player of the game before (see g_stalePlayer), not this machine's in this one: the interface's word now
+            Asm::at(jStale, a.p);
+            if (staleUi) {
+                u8* jHit[2] = {};
+                for (int k = 0; k < 2; k++) {
+                    a.b(0x49); a.b(0xBA); a.imm64((u64)&g_stalePlayer[k]);   // mov r10,&stale[k]
+                    { const u8 t_[] = { 0x45, 0x8B, 0x1A }; a.bn(t_, (int)sizeof(t_)); }                // mov r11d,[r10]
+                    { const u8 t_[] = { 0x45, 0x85, 0xDB }; a.bn(t_, (int)sizeof(t_)); }                // test r11d,r11d
+                    u8* jNone = a.jcc32(0x84);                 // je NEXT
+                    a.b((u8)(0x41 | (s.dst >= 8 ? 4 : 0))); a.b(0x3B); a.b((u8)(0xC3 | ((s.dst & 7) << 3)));   // cmp dst,r11d
+                    jHit[k] = a.jcc32(0x84);                   // je HIT
+                    Asm::at(jNone, a.p);
+                }
+                jUnmDone[nUnm++] = a.jmp32();                  // jmp DONE
+                for (int k = 0; k < 2; k++) Asm::at(jHit[k], a.p);
+                a.b(0x49); a.b(0xBA); a.imm64((u64)&g_localPlayer); // mov r10,&localPlayer
+                a.bn(cmpDstR10, 3);                            // cmp dst,[r10]
+                jUnmDone[nUnm++] = a.jcc32(0x84);              // je DONE (this machine's company in this game too)
+                a.b(0x49); a.b(0xBA); a.imm64((u64)&g_uiWord); // mov r10,&uiWord
+                { const u8 t_[] = { 0x45, 0x8B, 0x1A }; a.bn(t_, (int)sizeof(t_)); }                    // mov r11d,[r10]
+                { const u8 t_[] = { 0x45, 0x85, 0xDB }; a.bn(t_, (int)sizeof(t_)); }                    // test r11d,r11d
+                jUnmDone[nUnm++] = a.jcc32(0x84);              // je DONE (no iteration of this game yet)
+                a.bn(movDstR11, 3);                            // mov dst,r11d
+                a.b(0x49); a.b(0xBA); a.imm64((u64)&g_staleFixed);   // mov r10,&staleFixed
+                { const u8 t_[] = { 0xF0, 0x49, 0xFF, 0x02 }; a.bn(t_, (int)sizeof(t_)); }              // lock inc qword [r10]
+            }
         }
         u8* doneL = a.p;
-        for (int k = 0; k < 3; k++) if (jUnmDone[k]) Asm::at(jUnmDone[k], doneL);
+        for (int k = 0; k < nUnm; k++) Asm::at(jUnmDone[k], doneL);
         for (int kind = 0; kind < 3; kind++) Asm::at(ends[kind], doneL);
         { const u8 t_[] = { 0x41, 0x5B, 0x41, 0x5A }; a.bn(t_, (int)sizeof(t_)); }            // pop r11 / pop r10
         a.b(0x9D);                                   // popfq
