@@ -6039,6 +6039,9 @@ G.stillWatch = function()
 	end
 end
 
+-- (a due company join holds the game until it is applied, see nativeHoldAt)
+G.joinHoldDue = os.getenv("MPFEVER_JOINHOLD") ~= "0"
+
 local function nativeHoldAt()
 	local m = nil
 	local now = gameTime()
@@ -6074,6 +6077,14 @@ local function nativeHoldAt()
 	-- now waits until the engine is proven still, see G.sendStillWait)
 	for _, a in ipairs(G.nativeQueue or {}) do
 		if a.fn == "mpfCoJoin" and a.at <= now and (G.frames - (a.recvFrame or 0) < K.JOIN_GATHER or G.joinTurn(a) == false) then return now end
+		-- A due join still waiting here is applied later in this frame (runNativeReplays, after this): released now, the "resume"
+		-- of runPausedActions reached the simulation first and a batch of steps could run before G.coBusy held it again. The
+		-- company was then created 4 or 5 steps late on that game, with other entity ids than on the others (0.5.13 night tests
+		-- x2 and x4: company 5 entity 33903 on the host, 44955 on the client), and the games drifted later. MPFEVER_JOINHOLD=0: as before.
+		if a.fn == "mpfCoJoin" and a.at <= now and G.joinHoldDue then
+			if not a.dueHoldLogged then a.dueHoldLogged = true; log("companies: join " .. tostring(a.uid) .. " due at t=" .. tostring(a.at) .. " holds the game at t=" .. tostring(now) .. " until it is applied [frame " .. G.frames .. "]") end
+			return now
+		end
 		if a.stillWait and a.at <= now then return now end
 	end
 	for _, a in ipairs(G.nativeQueue or {}) do
@@ -7300,7 +7311,11 @@ local function runNativeReplays()
 			local okr, errr
 			if a.fn == "terrainEdit" then okr, errr = pcall(withActor, PL(a), replayTerrain, a)
 			elseif a.fn == "assetBuild" then okr, errr = pcall(withActor, PL(a), replayAssets, a)
-			elseif a.fn == "mpfCoJoin" then G.coBusy = { a = a, phase = "apply", frame = G.frames }; okr = true
+			elseif a.fn == "mpfCoJoin" then
+				G.coBusy = { a = a, phase = "apply", frame = G.frames }; okr = true
+				-- (test: MPFEVER_JOINGAPTEST=1 waits half a second here, the simulation running meanwhile if nothing holds it: see
+				-- G.joinHoldDue)
+				if os.getenv("MPFEVER_JOINGAPTEST") == "1" then local t0 = os.clock(); while os.clock() - t0 < 0.5 do end end
 			elseif select(2, pcall(G.alreadyBuilt, a)) == true then
 				log("NATIVE REPLAY " .. tostring(a.uid) .. ": its construction(s) already stand here (in the loaded savegame): not built again")
 				okr = true
