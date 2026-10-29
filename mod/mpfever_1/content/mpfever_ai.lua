@@ -468,6 +468,15 @@ local function garagePlaces(E, co, p, maxD)
 				local nx, ny = -dy * side, dx * side
 				local P = { x = (s.a.x + s.b.x) / 2, y = (s.a.y + s.b.y) / 2, z = (s.a.z + s.b.z) / 2 }
 				local O = { x = P.x + nx * 42, y = P.y + ny * 42, z = P.z }
+				-- (only on level ground: the garage, its entrance and the street end within 3 m of height, see freight's garages)
+				local lo, hi = P.z, P.z
+				for _, q in ipairs({ { 42, 0 }, { 21, 0 }, { 60, 0 }, { 42, 15 }, { 42, -15 }, { 60, 15 }, { 60, -15 } }) do
+					local x, y = P.x + nx * q[1] + dx * q[2], P.y + ny * q[1] + dy * q[2]
+					local z = E.groundZ(x, y, P.z)
+					if z < lo then lo = z end
+					if z > hi then hi = z end
+				end
+				local level = hi - lo <= 3
 				local sp = api.type.SimpleProposal.new()
 				local ce = api.type.SimpleProposal.ConstructionEntity.new()
 				ce.fileName = GARAGE_FILE
@@ -479,7 +488,7 @@ local function garagePlaces(E, co, p, maxD)
 				local okd, pd = pcall(function() return api.engine.util.proposal.makeProposalData(sp, context(E, co.ent, CTX_STOP)) end)
 				-- (its entrance touches the street it joins: a collision with that segment only is no obstacle, the tool's build
 				-- replaces that segment)
-				local free = okd and pd and not pd.errorState.critical
+				local free = level and okd and pd and not pd.errorState.critical
 				if free and #pd.errorState.messages > 0 then
 					local only = true
 					pcall(function()
@@ -1530,7 +1539,10 @@ local function townFreightProject(E, co, stops, lines, vehicles, money)
 	local f = bestTownFreight(E, co, lines)
 	if f == "searching" then return "searching" end
 	if not f then return false end
-	local g = garageFor(E, co, f.from.pos, money, "industry " .. f.from.e)
+	-- (a garage that is there already, the company's own first: none is built near an industry, whose ground is often uneven: a
+	-- garage built on a slope there stopped both games for good, the engine never ending its build. MPFEVER_AIFREIGHTGARAGE=1: built)
+	local g
+	if os.getenv("MPFEVER_AIFREIGHTGARAGE") == "1" then g = garageFor(E, co, f.from.pos, money, "industry " .. f.from.e) else g = garagesNear(E, co.ent, f.from.pos, 5000)[1] end
 	if g == "building" then return true end
 	if not g then
 		L(E, "no garage for the town delivery " .. f.key .. ": left")
@@ -1604,7 +1616,10 @@ local function industryProject(E, co, lines, vehicles, money)
 	local f = bestFreight(E, co, lines)
 	if f == "searching" then return "searching" end
 	if not f then return false end
-	local g = garageFor(E, co, f.from.pos, money, "industry " .. f.from.e)
+	-- (a garage that is there already, the company's own first: none is built near an industry, whose ground is often uneven: a
+	-- garage built on a slope there stopped both games for good, the engine never ending its build. MPFEVER_AIFREIGHTGARAGE=1: built)
+	local g
+	if os.getenv("MPFEVER_AIFREIGHTGARAGE") == "1" then g = garageFor(E, co, f.from.pos, money, "industry " .. f.from.e) else g = garagesNear(E, co.ent, f.from.pos, 5000)[1] end
 	if g == "building" then return true end
 	if not g then
 		L(E, "no garage for the freight route " .. f.key .. ": route left")
