@@ -58,7 +58,8 @@ it is stable enough.
 0.6 - Computer companies (experimental since 0.5.12; 1.0 once they are complete and reliable)
   [x] Computer companies added and coloured by the host in its lobby, kept in the savegame (0.5.12)
   [x] Bus lines in and between towns, purchases, given up lines, bankruptcy like a player (0.5.12)
-  [x] Freight by truck between industries and to the towns, rounds, streets to cut-off industries (0.5.13)
+  [x] Freight by truck between industries and to the towns, rounds (0.5.13)
+  [ ] Streets to the industries no truck reaches (tried since 0.5.13, refused by the game so far: they need a real route)
   [x] A level for each one (Easy, Normal, Hard), and what they do shown to every player (0.5.13)
   [ ] Trains (tracks, stations, signals, depots) and warehouses
   [ ] Ships and planes
