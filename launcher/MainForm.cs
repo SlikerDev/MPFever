@@ -138,6 +138,9 @@ namespace MPFever
         readonly ModernButton joinBtn = new ModernButton(ButtonKind.Secondary);
         readonly ModernButton localBtn = new ModernButton(ButtonKind.Ghost);
         readonly ModernButton startBtn = new ModernButton(ButtonKind.Primary) { Enabled = false };
+        // (issue #94: shown in place of startBtn once the game is closed)
+        readonly ModernButton againBtn = new ModernButton(ButtonKind.Primary) { Visible = false };
+        bool gameClosed, updateInstalled;
         readonly ModernButton pauseBtn = new ModernButton(ButtonKind.Segment) { Enabled = false };
         readonly ModernButton x1Btn = new ModernButton(ButtonKind.Segment) { Text = "x1", Enabled = false };
         readonly ModernButton x2Btn = new ModernButton(ButtonKind.Segment) { Text = "x2", Enabled = false };
@@ -277,6 +280,7 @@ namespace MPFever
             joinBtn.Click += (s, e) => Guard(() => StartClient(PlayerName(), hostBox.Text.Trim(), (int)portBox.Value, true));
             localBtn.Click += (s, e) => Guard(StartLocalTest);
             startBtn.Click += (s, e) => StartSession();
+            againBtn.Click += (s, e) => StartAgain(updateInstalled);
             pauseBtn.Click += (s, e) => Pause(T("hôte", "host"));
             x1Btn.Click += (s, e) => SetSpeed(1, T("hôte", "host"));
             x2Btn.Click += (s, e) => SetSpeed(2, T("hôte", "host"));
@@ -302,10 +306,11 @@ namespace MPFever
             joinBtn.Text = T("Rejoindre par IP", "Join by IP");
             localBtn.Text = T("Test local (2 jeux)", "Local test (2 games)");
             startBtn.Text = T("▶  Démarrer la partie", "▶  Start the game");
+            againBtn.Text = T("Relancer Transport Fever 3", "Start Transport Fever 3 again");
             pauseBtn.Text = "❚❚  " + T("Pause", "Pause");
             detBtn.Text = T("Test déterminisme", "Determinism test");
             langBtn.Text = L.Name + "  ▾";
-            foreach (var b in new[] { hostBtn, joinBtn, localBtn, startBtn, pauseBtn, x1Btn, x2Btn, x4Btn, detBtn, langBtn }) b.ResetFont();
+            foreach (var b in new[] { hostBtn, joinBtn, localBtn, startBtn, againBtn, pauseBtn, x1Btn, x2Btn, x4Btn, detBtn, langBtn }) b.ResetFont();
             logBox.Font = Theme.Mono(9f);
 
             header = new HeaderBar(T("Multijoueur pour Transport Fever 3", "Multiplayer for Transport Fever 3"), "v" + Version, langBtn);
@@ -345,11 +350,13 @@ namespace MPFever
             var session = new Card { Height = S(74), Padding = new Padding(S(16), S(17), S(16), S(16)) };
             var bar = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Margin = Padding.Empty, Padding = Padding.Empty };
             startBtn.Fit(40); startBtn.Margin = new Padding(0, 0, S(18), 0);
+            againBtn.Fit(40); againBtn.Margin = new Padding(0, 0, S(18), 0);
             var speedLabel = new Label { Text = T("VITESSE", "SPEED"), AutoSize = true, Font = Theme.Semibold(8f), ForeColor = Theme.Muted, Margin = new Padding(0, S(12), S(10), 0) };
             pauseBtn.Fit(30); pauseBtn.Margin = new Padding(0, 0, S(4), 0);
             foreach (var b in new[] { x1Btn, x2Btn, x4Btn }) { b.Width = S(52); b.Margin = new Padding(0, 0, S(4), 0); }
-            bar.Controls.AddRange(new Control[] { startBtn, speedLabel, pauseBtn, x1Btn, x2Btn, x4Btn });
-            startBtn.Visible = !ServerMode;   // (a server starts its world by itself)
+            bar.Controls.AddRange(new Control[] { startBtn, againBtn, speedLabel, pauseBtn, x1Btn, x2Btn, x4Btn });
+            startBtn.Visible = !ServerMode && !gameClosed;   // (a server starts its world by itself)
+            againBtn.Visible = !ServerMode && gameClosed;
             if (Dev) { detBtn.Height = S(38); detBtn.Fit(); detBtn.Margin = new Padding(S(14), 0, 0, 0); bar.Controls.Add(detBtn); }
             session.Controls.Add(bar);
 
@@ -677,6 +684,8 @@ namespace MPFever
             else if (ServerMode && st) h = F("Le serveur héberge son monde. Les joueurs le rejoignent depuis la fenêtre MPFever de leur jeu avec l'adresse de ce PC, port {0}.\n\nTapez help sous le journal pour les commandes du serveur.",
                                              "The server hosts its world. Players join it from the MPFever window of their game with this PC's address, port {0}.\n\nType help under the log for the server commands.", server?.Port ?? 28090);
             else if (ServerMode) h = (menuText ?? "") + T("\n\nTapez help sous le journal pour les commandes du serveur.", "\n\nType help under the log for the server commands.");
+            else if (gameClosed) h = T("Transport Fever 3 est fermé. Cliquez sur « Relancer Transport Fever 3 » pour jouer à nouveau.",
+                                       "Transport Fever 3 is closed. Click « Start Transport Fever 3 again » to play again.");
             else if (menuMode && !string.IsNullOrEmpty(menuText)) h = menuText;
             else if (menuMode) h = T("Le jeu démarre. Choisissez « Multijoueur (MPFever) » dans son menu principal pour héberger ou rejoindre une partie.",
                                      "The game is starting. Choose « Multiplayer (MPFever) » in its main menu to host or join a game.");
@@ -833,14 +842,17 @@ namespace MPFever
                 catch (Exception e) { Log.Err(e.Message); }
             }
             if (ServerMode || autotest) { Close(); return; }
-            // (the launcher stays open behind a small thanks window: Close keeps it, Quit closes everything, Start again starts
-            // MPFever.exe again, which starts the game)
+            // (the launcher stays open behind a small thanks window: Close keeps it, Quit closes everything; the launcher's own
+            // window then offers to start the game again in place of "Start the game", issue #94)
+            gameClosed = true;
+            updateInstalled = installed;
+            startBtn.Visible = false;
+            againBtn.Visible = true;
             try { WindowState = FormWindowState.Normal; Activate(); } catch { }
             DialogResult r;
             using (var dlg = new ThanksDialog()) r = dlg.ShowDialog(this);
             if (r == DialogResult.Abort) Close();
             else if (r == DialogResult.Retry) Report(false);
-            else if (r == DialogResult.Yes) StartAgain(installed);
         }
 
         /// <summary>Issue #94: the game closed, the player wants to play again. A new MPFever.exe starts it (this one's session,

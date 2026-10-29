@@ -30,7 +30,7 @@ MPFever - Changelog
   - FIX (crash): after a session with one company per player, a session with one company for everybody in the same run of the
     game crashed a few seconds after it started (an object of the interface kept the company of the game before, an entity that
     is something else in the new one). The native module now reads this game's company there. MPFEVER_STALEUI=0: as before.
-  - FIX (issue #94): "Start Transport Fever 3 again" in the window shown when the game closes: MPFever.exe starts again and
+  - FIX (issue #94): once the game is closed, "Start Transport Fever 3 again" in MPFever's window (in place of "Start the game"): MPFever.exe starts again and
     starts the game (before, MPFever.exe had to be closed and started again by hand).
   - FIX: the MPFever window showed 0 vehicles for every company (it asked the game for a function TF3 does not have).
 

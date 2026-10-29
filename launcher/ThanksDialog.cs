@@ -8,8 +8,8 @@ namespace MPFever
 {
     /// <summary>Shown over the launcher once the game is closed: thanks, and the ways to support, rate or report. Escape or
     /// « Close » keeps the launcher open (Cancel), « Quit MPFever » closes everything (Abort), « Report a problem » asks the
-    /// launcher for a report (Retry), « Start Transport Fever 3 again » starts MPFever.exe again (Yes). The links open in the
-    /// browser and leave the window as it is.</summary>
+    /// launcher for a report (Retry). Starting the game again is the launcher window's own button (issue #94). The links open
+    /// in the browser and leave the window as it is.</summary>
     sealed class ThanksDialog : Form
     {
         public const string KofiUrl = "https://ko-fi.com/knighthd";
@@ -49,9 +49,7 @@ namespace MPFever
 
             var close = Btn(ButtonKind.Secondary, T("Fermer", "Close"), () => DialogResult = DialogResult.Cancel);
             var quit = Btn(ButtonKind.Ghost, T("Tout fermer", "Quit MPFever"), () => DialogResult = DialogResult.Abort);
-            // (issue #94: the game could only be started again by starting MPFever.exe again, which this does)
-            var again = Btn(ButtonKind.Primary, T("Relancer Transport Fever 3", "Start Transport Fever 3 again"), () => DialogResult = DialogResult.Yes);
-            var bottom = Row(S(40), FlowDirection.RightToLeft, again, close, quit);
+            var bottom = Row(S(40), FlowDirection.RightToLeft, close, quit);
             bottom.Dock = DockStyle.Bottom;
 
             card.Controls.Add(bottom);
