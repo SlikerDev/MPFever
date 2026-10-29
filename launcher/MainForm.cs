@@ -1643,6 +1643,12 @@ namespace MPFever
                 // "Report a problem" in the in-game MPFever window
                 new Thread(() => Report(false)) { IsBackground = true, Name = "Report" }.Start();
             }
+            else if (cmd == "discord")
+            {
+                // "Discord" in the in-game MPFever window
+                try { Process.Start(ThanksDialog.DiscordUrl); }
+                catch (Exception ex) { Log.W(ex.Message); }
+            }
             else if (cmd == "dropnet")
             {
                 // test only: cuts the connection to the host as a network failure would
