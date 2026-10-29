@@ -55,6 +55,15 @@ it is stable enough.
   [x] Shared stations with a fee per stop (0.3.3)
   [x] Rules for shared tracks and depots: private, open, or a toll per passage (0.5.0)
 
+0.6 - Computer companies (experimental since 0.5.12; 1.0 once they are complete and reliable)
+  [x] Computer companies added and coloured by the host in its lobby, kept in the savegame (0.5.12)
+  [x] Bus lines in and between towns, purchases, given up lines, bankruptcy like a player (0.5.12)
+  [x] Freight by truck between industries and to the towns, rounds, streets to cut-off industries (0.5.13)
+  [x] A level for each one (Easy, Normal, Hard), and what they do shown to every player (0.5.13)
+  [ ] Trains (tracks, stations, signals, depots) and warehouses
+  [ ] Ships and planes
+  [ ] Computer companies on a dedicated server
+
 Later - Persistent worlds
   [x] Dedicated server running the world without the host's PC (0.3.12: MPFever.exe --server, separate archive,
       see SERVER.txt; to be tested in long real games; 0.5.8: start buttons, without display)
