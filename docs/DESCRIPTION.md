@@ -75,6 +75,10 @@ The mod does nothing in normal solo games. It only activates when the game is st
 - **SlikerDev** – the launcher's design, MPFever in the 13 languages of the game, the in-game MPFever window and the chat.
 - Thanks to every tester who reported a problem with their logs.
 
+## Community
+
+Find players, get help and follow the development on the [MPFever Discord](https://discord.gg/qhhKfUMSJx).
+
 ## Feedback and bug reports
 
 Describe what you did and what happened, and attach:
