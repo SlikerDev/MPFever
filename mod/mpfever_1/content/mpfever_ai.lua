@@ -26,11 +26,11 @@ local BUS_COST = 180000    -- a bus, until the first purchase measures it
 -- not left to them).
 local LEVELS = {
 	{ name = "easy", tick = 150, reserve = 700000, maxBus = 4, maxTruck = 5, busUse = 0.85, truckUse = 0.6, waiting = 80, freightShare = 1 / 3,
-		freightMax = 4000, compete = false, townMin = 600 },
+		freightMax = 4000, compete = false, townMin = 600, pause = 1200 },
 	{ name = "normal", tick = 60, reserve = 400000, maxBus = 8, maxTruck = 10, busUse = 0.75, truckUse = 0.45, waiting = 40, freightShare = 1 / 2,
-		freightMax = 5000, compete = false, townMin = 500 },
+		freightMax = 5000, compete = false, townMin = 500, pause = 600 },
 	{ name = "hard", tick = 30, reserve = 350000, maxBus = 12, maxTruck = 14, busUse = 0.6, truckUse = 0.35, waiting = 25, freightShare = 2 / 3,
-		freightMax = 6500, compete = true, townMin = 300 },
+		freightMax = 6500, compete = true, townMin = 300, pause = 300 },
 }
 local LV = LEVELS[2]
 
@@ -1881,6 +1881,9 @@ local function step(E)
 			local paid = (A.busy.moneyBefore or 0) - balanceOf(E, co.ent)
 			-- (a truck's price kept apart: taken for a bus's, it held the bus lines back until the company had a million)
 			if paid > 10000 and paid < 5000000 then
+				-- (never under the price of a bus of 1940: the account's difference also holds what the company earned meanwhile, and a
+				-- price measured at 2 720 let a company buy at every look)
+				paid = math.max(paid, BUS_COST)
 				if A.busy.jr and A.busy.jr.kind == "truck" then A.truckCost = paid else A.busCost = paid end
 			end
 			L(E, A.busy.what .. ": done" .. (paid > 0 and (", paid " .. math.floor(paid)) or ""))
@@ -2115,7 +2118,11 @@ function M.tick(E, st)
 	AINAME = known and known.name ~= "" and known.name or newName(E, cur.n)
 	-- (what a step costs this game's interface: the slowest one of each minute is logged)
 	local t0 = os.clock()
+	local busyBefore = G.AI.busy
 	step(E)
+	-- (after a purchase, a build or a new line, the level's pause: a Hard company that acted at every look spent its 2 million in
+	-- 90 s on a map of 1972, then sold everything in debt)
+	if G.AI.busy and G.AI.busy ~= busyBefore then G.AI.lookAt = math.max(G.AI.lookAt or 0, G.frames + (LV.pause or 600)) end
 	local dt = os.clock() - t0
 	T.slowest = math.max(T.slowest or 0, dt)
 	if G.frames - (T.costAt or 0) > 3600 then
