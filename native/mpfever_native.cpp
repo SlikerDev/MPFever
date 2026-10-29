@@ -1566,6 +1566,9 @@ extern "C" u64 ReplDetour(void* src, void* dst, u64 flag)
     if (replClear && (u32)((uptr)_ReturnAddress() - g_base) == RVA_REPL_LOOP) ClearOthersIn((u8*)src, false);
     WatchAdd((u8*)src); WatchAdd((u8*)dst);
     if (src && dst && (u32)((uptr)_ReturnAddress() - g_base) == RVA_REPL_LOOP) { g_gsWord[0] = (u64)src + 0x20c; g_gsWord[1] = (u64)dst + 0x20c; }
+    // (a game being loaded: its first copy goes into a fresh state, before its interface and tools are made and seconds before its
+    // first iteration; the interface word of the game before is forgotten there, not at that iteration, see g_stalePlayer)
+    if (dst && before == 0xFFFFFFFFu && (u32)((uptr)_ReturnAddress() - g_base) != RVA_REPL_LOOP) g_uiWord = 0;
     u64 r = g_replOrig(src, dst, flag);
     if (dst && (u32)((uptr)_ReturnAddress() - g_base) == RVA_REPL_LOOP) g_uiWord = (long)*(u32*)((u8*)dst + 0x20c);
     static long n = 0;

@@ -3030,10 +3030,11 @@ namespace MPFever
 
         // ---------------------------------------------------------------- host-side message handling
 
-        // What only the host sends (its savegame, mods, lobby, settings, chat, status): from a player it is never passed on.
+        // What only the host sends (its savegame, mods, lobby, settings, chat, status, resynchronisations, checks): from a player it is never passed on.
         // Relayed, a player could have sent the others a mod (code) or a savegame in the host's place.
         static readonly HashSet<string> HostOnlyKinds = new HashSet<string> { "modfile", "modoffer", "resync_file", "resync_bin",
-            "resync_use", "delta_bin", "lobby", "mpstatus", "chatmsg", "welcome", "session", "peerclock", "auth", "aijournal" };
+            "resync_use", "delta_bin", "lobby", "mpstatus", "chatmsg", "welcome", "session", "peerclock", "auth", "aijournal",
+            "resync_save", "resync_load", "hash", "peerleft", "solo", "det_run", "test_save", "census_now", "tomenu", "camtour", "area_dump" };
         DateTime hostOnlyWarned;
 
         void OnHostMessage(Msg m, Peer from)
