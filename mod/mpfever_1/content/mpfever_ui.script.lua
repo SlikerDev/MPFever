@@ -1325,6 +1325,7 @@ U.aiText = function(x)
 	end
 	if x.kind == "stop" then return T("a construit un arrêt", "built a stop") end
 	if x.kind == "garage" then return T("construit un garage", "is building a garage") end
+	if x.kind == "road" then return T("a construit une route vers une industrie", "built a road to an industry") end
 	if x.kind == "line" then return C.Tf("a ouvert la ligne de bus %s", "opened the bus line %s", x.a) end
 	if x.kind == "freight" then return C.Tf("a ouvert la ligne de fret %s (%s)", "opened the freight line %s (%s)", x.a, cargo(x.b)) end
 	if x.kind == "bus" then return C.Tf("a acheté un bus (%s)", "bought a bus (%s)", x.a) end

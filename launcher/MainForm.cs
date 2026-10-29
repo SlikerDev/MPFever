@@ -102,8 +102,8 @@ namespace MPFever
         // "ai:<n>" in the companies' registry: their colour (palette index) and name (a savegame's, "" for a new one). Those of the
         // lobby's savegame are there from the start (SaveInfo.AiCompanies); the host adds, removes and colours them. Sent to the
         // games with the session (ai= "n:colour,..."), the host's game runs them (mpfever_ai.lua); a player who joins the lobby
-        // sees them (lobbyAiText, "n:colour:name;...")
-        sealed class LobbyAi { public int Color; public string Name = ""; }
+        // sees them (lobbyAiText, "n:colour:level:name;..."). Level (0.5.13): 1 easy, 2 normal (the default), 3 hard
+        sealed class LobbyAi { public int Color; public string Name = ""; public int Level = 2; }
         readonly SortedDictionary<int, LobbyAi> lobbyAi = new SortedDictionary<int, LobbyAi>();
         string lobbyAiText = "";
         // the mods of the lobby's savegame ("id|name|origin" entries separated by ";;", see mpfever_menu.lua): written by the
@@ -1503,7 +1503,7 @@ namespace MPFever
                 if (lobbyOpen && hostName != null) { SetLobbyColor(BaseName(hostName), ix); }
                 else foreach (var cl in clients.ToList()) { try { cl.Send(Msg.Make("lobbycolor", name, "{[\"ix\"]=" + ix + "}")); } catch { } }
             }
-            else if (cmd == "aiadd" || cmd == "aidel" || cmd == "aicolor")
+            else if (cmd == "aiadd" || cmd == "aidel" || cmd == "aicolor" || cmd == "ailevel")
             {
                 // (the host, one company per player) the lobby's computer companies
                 LobbyAiRequest(cmd.Substring(2), arg);
@@ -1776,14 +1776,14 @@ namespace MPFever
             lock (lobbyColorOf) return string.Join(",", lobbyColorOf.Where(kv => here.Contains(kv.Key)).Select(kv => kv.Key + ":" + kv.Value));
         }
 
-        /// <summary>The lobby's computer companies for the menus: "n:colour:name;..." (names without ';' and ':').</summary>
+        /// <summary>The lobby's computer companies for the menus: "n:colour:level:name;..." (names without ';' and ':').</summary>
         string LobbyAiView()
         {
             lock (lobbyAi) return string.Join(";", lobbyAi.Select(kv => kv.Key.ToString(CultureInfo.InvariantCulture) + ":" + kv.Value.Color.ToString(CultureInfo.InvariantCulture)
-                + ":" + (kv.Value.Name ?? "").Replace(";", " ").Replace(":", " ")));
+                + ":" + kv.Value.Level.ToString(CultureInfo.InvariantCulture) + ":" + (kv.Value.Name ?? "").Replace(";", " ").Replace(":", " ")));
         }
 
-        /// <summary>The computer companies the host's game runs: "n:colour,..." (the session's ai=), "" without any.</summary>
+        /// <summary>The computer companies the host's game runs: "n:colour:level,..." (the session's ai=), "" without any.</summary>
         string AiPayload()
         {
             if (companyMode != "separate") return "";
@@ -1792,7 +1792,8 @@ namespace MPFever
                 // (the tests, without a lobby: MPFEVER_AI="n:colour,..." stands for the host's choice)
                 var env = Environment.GetEnvironmentVariable("MPFEVER_AI") ?? "";
                 if (lobbyAi.Count == 0 && env.Contains(":")) return env;
-                return string.Join(",", lobbyAi.Select(kv => kv.Key.ToString(CultureInfo.InvariantCulture) + ":" + kv.Value.Color.ToString(CultureInfo.InvariantCulture)));
+                return string.Join(",", lobbyAi.Select(kv => kv.Key.ToString(CultureInfo.InvariantCulture) + ":" + kv.Value.Color.ToString(CultureInfo.InvariantCulture)
+                    + ":" + kv.Value.Level.ToString(CultureInfo.InvariantCulture)));
             }
         }
 
@@ -1807,7 +1808,7 @@ namespace MPFever
             return 0;
         }
 
-        /// <summary>(the host, one company per player) the lobby's computer companies: "add", "del" n, "color" "n:index".</summary>
+        /// <summary>(the host, one company per player) the lobby's computer companies: "add", "del" n, "color" "n:index", "level" "n:1-3".</summary>
         void LobbyAiRequest(string what, string arg)
         {
             if (!lobbyOpen || companyMode != "separate") return;
@@ -1842,6 +1843,18 @@ namespace MPFever
                     if (!lobbyAi.TryGetValue(n, out var a) || lobbyAi.Any(kv => kv.Key != n && kv.Value.Color == ix)) return;
                     a.Color = ix;
                 }
+            }
+            else if (what == "level")
+            {
+                var parts = (arg ?? "").Split(':');
+                if (parts.Length != 2 || !int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out int n)
+                    || !int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out int lv) || lv < 1 || lv > 3) return;
+                lock (lobbyAi)
+                {
+                    if (!lobbyAi.TryGetValue(n, out var a)) return;
+                    a.Level = lv;
+                }
+                Log.W(F("Entreprise de l'ordinateur {0} : niveau {1}", "Computer company {0}: level {1}", n, lv));
             }
             BroadcastLobby();
             MenuStatus();

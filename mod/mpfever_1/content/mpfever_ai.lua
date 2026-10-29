@@ -17,18 +17,36 @@ local NAMES_EN = { "Regional Transport", "Valley Coaches", "Coastal Lines", "Pla
 local STOP_MODEL = "stations/street/small_stops/small_old_twosided.con"
 local DEPOT_FILE = "::/depots/road/road_maint_station.con"
 local TICK = 60            -- frames between two looks at the world
-local RESERVE = 400000     -- money kept back (the lines' first months cost more than they earn)
+local RESERVE = 400000     -- money kept back (the lines' first months cost more than they earn): the level's, see LEVELS
 local BUS_COST = 180000    -- a bus, until the first purchase measures it
+
+-- The levels (0.5.13), the host's choice for each company in its lobby: how often it looks at the world (frames), the money it
+-- keeps back, the vehicles a line may get, when a line gets one more (seats used, cargo waiting), how many of its lines carry
+-- freight, how far its freight goes, and whether it competes with the players (Hard: the industries and towns they serve are
+-- not left to them).
+local LEVELS = {
+	{ name = "easy", tick = 150, reserve = 700000, maxBus = 4, maxTruck = 5, busUse = 0.85, truckUse = 0.6, waiting = 80, freightShare = 1 / 3,
+		freightMax = 4000, compete = false, townMin = 600 },
+	{ name = "normal", tick = 60, reserve = 400000, maxBus = 8, maxTruck = 10, busUse = 0.75, truckUse = 0.45, waiting = 40, freightShare = 1 / 2,
+		freightMax = 5000, compete = false, townMin = 500 },
+	{ name = "hard", tick = 30, reserve = 250000, maxBus = 12, maxTruck = 14, busUse = 0.6, truckUse = 0.35, waiting = 25, freightShare = 2 / 3,
+		freightMax = 6500, compete = true, townMin = 300 },
+}
+local LV = LEVELS[2]
 
 local function L(E, s) E.log("AI" .. (AINUM ~= 1 and tostring(AINUM) or "") .. " " .. s) end
 
--- the computer companies the host chose in its lobby: "n:colour,n:colour" (the session's "ai"), as { { n, color }... }; the
--- developer tests' MPFEVER_AI=1 gives the first one when the session has none
+-- the computer companies the host chose in its lobby: "n:colour:level,..." (the session's "ai"; 0.5.12 sent "n:colour"), as
+-- { { n, color, level }... }; the developer tests' MPFEVER_AI=1 gives the first one when the session has none
 function M.listOf(text)
 	local out, seen = {}, {}
-	for n, ix in tostring(text or ""):gmatch("(%d+):(%d+)") do
-		n, ix = tonumber(n), tonumber(ix)
-		if n and n >= 1 and n <= 32 and not seen[n] then seen[n] = true; out[#out + 1] = { n = n, color = ix } end
+	for part in tostring(text or ""):gmatch("[^,;]+") do
+		local n, ix, lv = part:match("^%s*(%d+):(%d+):?(%d*)%s*$")
+		n, ix, lv = tonumber(n), tonumber(ix), tonumber(lv)
+		if n and n >= 1 and n <= 32 and not seen[n] then
+			seen[n] = true
+			out[#out + 1] = { n = n, color = ix, level = (lv and lv >= 1 and lv <= 3) and lv or 2 }
+		end
 	end
 	return out
 end
@@ -111,7 +129,7 @@ local function townsForLines(E, ent)
 			end
 		end)
 		t.others = others
-		t.score = t.size / (1 + others / 3)
+		t.score = t.size / (1 + others / (LV.compete and 12 or 3))
 	end
 	table.sort(list, function(a, b) if a.score ~= b.score then return a.score > b.score end return a.e < b.e end)
 	return list
@@ -874,11 +892,11 @@ local function manageLines(E, co, lines, vehicles, money)
 		A.problemSeen = A.problemSeen or {}
 		A.problemSeen[l.e] = probs[l.e] and true or nil
 		-- (a freight line: a truck more when the cargo waiting at the producer fills one, or the trucks are full one way)
-		local busy = use and use > 0.75 and n < 8
+		local busy = use and use > LV.busUse and n < LV.maxBus
 		if l.freight then
 			local waiting = 0
 			pcall(function() waiting = E.api.engine.system.simEntityAtTerminalSystem.getLineStopSimEntitiesCount(l.e, 0, l.freight.cargo) end)
-			busy = n < 10 and (waiting >= 40 or (use and use > 0.45))
+			busy = n < LV.maxTruck and (waiting >= LV.waiting or (use and use > LV.truckUse))
 			if busy then L(E, string.format("line %d: %d %s waiting at the producer", l.e, waiting, cargoName(E, l.freight.cargo))) end
 		end
 		if busy and money > RESERVE + (A.busCost or BUS_COST) then
@@ -1071,7 +1089,7 @@ end
 -- Every industry has its own street station (the trucks of the players stop at the industry itself): a freight line is a line
 -- from a producer's station to the station of an industry that takes that cargo, with trucks that carry it. Nothing to build
 -- but the garage. MPFEVER_AIFREIGHT=0: buses only, as in 0.5.12.
-local FREIGHT_MIN, FREIGHT_MAX = 900, 5000      -- the distance between the two industries (m)
+local FREIGHT_MIN = 900      -- the shortest distance between the two industries (m); the longest is the level's (LEVELS)
 
 -- the road terminals of a construction's stations: { group, list = { { station, terminal, node } } } (station and terminal
 -- 0-based, as a line's stop takes them), nil when it has none
@@ -1157,10 +1175,12 @@ local function takes(E, ind, cargo)
 	return false
 end
 
--- the station groups other companies' lines stop at (the industries they serve are theirs: PvE)
+-- the station groups other companies' lines stop at (the industries they serve are theirs: PvE; not on the Hard level, which
+-- competes with them)
 local function servedByOthers(E, ent)
 	local api, R = E.api, E.R
 	local out = {}
+	if LV.compete then return out end
 	for _, l in ipairs(R.entitiesWith("LINE")) do
 		if ownerOf(E, l) ~= ent then
 			local lc = api.engine.getComponent(l, api.type.ComponentType.LINE)
@@ -1231,7 +1251,8 @@ freightOf = function(E, line)
 	local inds = industries(E)
 	local byGroup = {}
 	for _, it in ipairs(inds) do byGroup[it.road.group] = it end
-	local a, b = byGroup[line.groups[1]], byGroup[line.groups[2]]
+	-- (a round: the producers first, the industry that takes their cargo last)
+	local a, b = byGroup[line.groups[1]], byGroup[line.groups[#line.groups]]
 	if not a or not line.groups[2] then return nil end
 	if b then
 		for _, c in ipairs(a.outputs) do if takes(E, b, c) then return { from = a, to = b, cargo = c } end end
@@ -1282,7 +1303,7 @@ local function freightStop(E, road, stop0)
 	return s
 end
 
-local function createFreightLine(E, co, f)
+local function createFreightLine(E, co, f, extra)
 	local api, C, R = E.api, E.C, E.R
 	-- (a truck line of the savegame as the template of the line's fields, else a new line's)
 	local template
@@ -1299,6 +1320,8 @@ local function createFreightLine(E, co, f)
 		for k, v in pairs(template.stops[1]) do if k ~= "stopConfig" then stop0[k] = v end end
 	end
 	template.stops = { freightStop(E, f.from.road, stop0), freightStop(E, f.to.road, stop0) }
+	-- (a round: a second producer of the same cargo on the way, see collectFrom)
+	if extra then table.insert(template.stops, 2, freightStop(E, extra.road, stop0)) end
 	local name = AINAME .. " " .. cargoName(E, f.cargo) .. " " .. math.floor(dist(f.from.pos, f.to.pos) / 100) / 10 .. " km"
 	act(E, co.id, "makeLineCreateCmd", { n = 4, [1] = name, [2] = C.marshal(api.type.Vec3f.new(0.8, 0.5, 0.1)), [3] = co.ent, [4] = template })
 	E.G.AI.busy = { what = "line " .. name, since = E.G.frames, linesBefore = #myLines(E, co.ent), jr = { kind = "freight", pos = f.from.pos, a = name, b = f.cargo } }
@@ -1312,6 +1335,13 @@ local function bestFreight(E, co, lines)
 	local api = E.api
 	local A = E.G.AI
 	A.freightTried = A.freightTried or {}
+	-- (a street built to an industry since: the routes that had no road there are looked for again, see roadProject)
+	if A.retryInd and E.G.frames >= (A.retryAt or 0) then
+		for k, v in pairs(A.freightTried) do
+			if v == false and (k:find("^" .. A.retryInd .. ">") or k:find(">" .. A.retryInd .. ":")) then A.freightTried[k] = nil end
+		end
+		A.retryInd = nil
+	end
 	local others = servedByOthers(E, co.ent)
 	local inds = industries(E)
 	local cands = {}
@@ -1324,7 +1354,7 @@ local function bestFreight(E, co, lines)
 					if q.e ~= p.e and not others[q.road.group] and takes(E, q, c) then
 						local d = dist(p.pos, q.pos)
 						local key = p.e .. ">" .. q.e .. ":" .. c
-						if d > FREIGHT_MIN and d < FREIGHT_MAX and A.freightTried[key] ~= false and not (A.freightDone or {})[key] then
+						if d > FREIGHT_MIN and d < LV.freightMax and A.freightTried[key] ~= false and not (A.freightDone or {})[key] then
 							cands[#cands + 1] = { from = p, to = q, cargo = c, d = d, key = key, score = (prod + 50) * d / (1 + (d / 3000) ^ 2) }
 						end
 					end
@@ -1344,6 +1374,11 @@ local function bestFreight(E, co, lines)
 			local ok = roadPath(E, f.from, f.to)
 			A.freightTried[f.key] = ok
 			if ok then L(E, "freight route found: " .. cargoName(E, f.cargo) .. ", industry " .. f.from.e .. " -> " .. f.to.e .. " (" .. math.floor(f.d) .. " m)") end
+			-- (no road between them: one of the two may be cut off from the streets, see roadProject)
+			if not ok then
+				A.pathFails = A.pathFails or {}
+				if #A.pathFails < 40 then A.pathFails[#A.pathFails + 1] = { from = f.from, to = f.to, score = f.score } end
+			end
 			return ok and f or "searching"
 		end
 	end
@@ -1403,7 +1438,7 @@ local function bestTownFreight(E, co, lines)
 								if c == w.cargo then
 									local d = dist(ind.pos, p)
 									local key = ind.e .. ">town" .. t.e .. ":" .. c
-									if d > FREIGHT_MIN and d < FREIGHT_MAX and A.freightTried[key] ~= false and not (A.freightDone or {})[key] then
+									if d > FREIGHT_MIN and d < LV.freightMax and A.freightTried[key] ~= false and not (A.freightDone or {})[key] then
 										local prod = 0
 										pcall(function() prod = api.engine.util.stock.getCargoMaxProductionPerYear(ind.stockList, c) end)
 										cands[#cands + 1] = { from = ind, town = t.e, use = w.use, p = p, cargo = c, d = d, key = key,
@@ -1472,6 +1507,36 @@ local function townFreightProject(E, co, stops, lines, vehicles, money)
 	return false
 end
 
+-- A round (0.5.13): another producer of the route's cargo within 1.5 km of the first, no line at it yet (nobody's, the company's
+-- neither), a road from it to the industry that takes the cargo: its stop goes between the two (one path search per step, kept).
+-- Returns that industry, nil, or "searching" (a search was made this step). MPFEVER_AIROUND=0: no rounds.
+local function collectFrom(E, co, f, lines)
+	if os.getenv("MPFEVER_AIROUND") == "0" then return nil end
+	local A = E.G.AI
+	A.roundTried = A.roundTried or {}
+	local others = servedByOthers(E, co.ent)
+	local mine = {}
+	for _, l in ipairs(lines) do for _, g in ipairs(l.groups) do mine[g] = true end end
+	local best, bd
+	for _, p in ipairs(industries(E)) do
+		if p.e ~= f.from.e and p.e ~= f.to.e and not others[p.road.group] and not mine[p.road.group] then
+			local makes = false
+			for _, c in ipairs(p.outputs) do if c == f.cargo then makes = true end end
+			local d = dist(p.pos, f.from.pos)
+			if makes and d < 1500 and dist(p.pos, f.to.pos) < LV.freightMax and A.roundTried[f.key .. "+" .. p.e] ~= false and (not bd or d < bd) then
+				best, bd = p, d
+			end
+		end
+	end
+	if not best then return nil end
+	local key = f.key .. "+" .. best.e
+	if A.roundTried[key] == true then return best end
+	local ok = roadPath(E, best, f.to)
+	A.roundTried[key] = ok
+	if ok then L(E, "round: industry " .. best.e .. " joins the route " .. f.key .. " (" .. math.floor(bd) .. " m from the first)") end
+	return ok and best or "searching"
+end
+
 -- one step of the best freight route between two industries: its garage, its line, its first two trucks. True when it acted
 local function industryProject(E, co, lines, vehicles, money)
 	local A = E.G.AI
@@ -1490,7 +1555,10 @@ local function industryProject(E, co, lines, vehicles, money)
 	if not line and (A.badPair or {})[math.min(f.from.road.group, f.to.road.group) .. "-" .. math.max(f.from.road.group, f.to.road.group)] then A.freightTried[f.key] = false; return false end
 	if not line then
 		if money < RESERVE + 2 * (A.busCost or BUS_COST) then return true end
-		createFreightLine(E, co, f)
+		-- (a second producer of that cargo near the first: one round for both)
+		local extra = collectFrom(E, co, f, lines)
+		if extra == "searching" then return true end
+		createFreightLine(E, co, f, extra)
 		return true
 	end
 	local n = 0
@@ -1505,6 +1573,174 @@ local function industryProject(E, co, lines, vehicles, money)
 	return false
 end
 
+-- ---- roads (0.5.13): an industry no truck reaches (a route of it found no road) gets a street from the free end of its own
+-- streets to the nearest town street node within 900 m: straight, in pieces of 80 m at most, the town street's template, owned
+-- by the company, a dry run first; built as the street tool builds (the same fields as the autotest's roads, see the bridge's
+-- buildMatrixProposal), for the company. The routes of that industry are looked for again a little later. MPFEVER_AIROADS=0: none.
+local CTX_ROAD = 35
+
+local function nearestTownCentre(E, p)
+	local best, bd
+	for _, t in ipairs(townsBySize(E)) do
+		local c = centre(E, t.e, E.api.type.enum.LandUseType.RESIDENTIAL)
+		if c then local d = dist(c, p); if not bd or d < bd then best, bd = c, d end end
+	end
+	return best
+end
+
+-- the street proposal from node n0 (at p0) to the town node n1 (at p1), with the town segment tc's template; nil if no lanes
+local function roadProposal(E, co, n0, p0, n1, p1, tc)
+	local api, C = E.api, E.C
+	local lanes = C.templateLanes(tc.roadTemplate)
+	if not lanes then return nil end
+	local len = dist(p0, p1)
+	local k = math.max(1, math.ceil(len / 80))
+	local pts = { p0 }
+	for i = 1, k - 1 do
+		local x, y = p0.x + (p1.x - p0.x) * i / k, p0.y + (p1.y - p0.y) * i / k
+		pts[#pts + 1] = { x = x, y = y, z = E.groundZ(x, y, p0.z + (p1.z - p0.z) * i / k) }
+	end
+	pts[#pts + 1] = p1
+	local sp = api.type.SimpleProposal.new()
+	local ssp = sp.streetProposal
+	local nodes, edges = {}, {}
+	local ids = { n0 }
+	for i = 2, k do
+		local ne = api.type.NodeAndEntity.new()
+		ne.entity = -i
+		local bn = ne.comp
+		bn.position = api.type.Vec3f.new(pts[i].x, pts[i].y, pts[i].z)
+		ne.comp = bn
+		nodes[#nodes + 1] = ne
+		ids[i] = -i
+	end
+	ids[k + 1] = n1
+	for i = 1, k do
+		local a, b = pts[i], pts[i + 1]
+		local e = api.type.SegmentAndEntity.new()
+		e.entity = -100 - i
+		e.type = 0
+		local c = e.comp
+		c.laneConfigs = lanes
+		c.node0, c.node1 = ids[i], ids[i + 1]
+		local t = api.type.Vec3f.new(b.x - a.x, b.y - a.y, b.z - a.z)
+		c.tangent0, c.tangent1 = t, t
+		c.type, c.typeIndex = 0, -1
+		c.position0 = api.type.Vec3f.new(a.x, a.y, a.z)
+		c.position1 = api.type.Vec3f.new(b.x, b.y, b.z)
+		c.roadTemplate, c.roadStyle, c.roadType = tc.roadTemplate, tc.roadStyle, tc.roadType
+		e.comp = c
+		local se = e.streetEdge
+		se.precedenceNode0, se.precedenceNode1 = 2, 2
+		e.streetEdge = se
+		local po = e.playerOwned
+		if po == nil then po = C.newOf("PlayerOwned") end
+		po.player = co.ent
+		e.playerOwned = po
+		edges[#edges + 1] = e
+	end
+	if #nodes > 0 then ssp.nodesToAdd = nodes end
+	ssp.edgesToAdd = edges
+	sp.streetProposal = ssp
+	return sp
+end
+
+-- one street to an industry cut off from the streets: true when it was asked for
+local function connectIndustry(E, co, ind)
+	local api, R = E.api, E.R
+	local A = E.G.AI
+	local con = api.engine.getComponent(ind.con, api.type.ComponentType.CONSTRUCTION)
+	local segmap = api.engine.system.streetSystem.getNode2SegmentMap()
+	-- the free ends of its own streets
+	local ends, seen = {}, {}
+	for k = 1, #con.frozenEdges do
+		local e = con.frozenEdges[k]
+		local be = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
+		if be and api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE_STREET) then
+			for _, nd in ipairs({ be.node0, be.node1 }) do
+				local p = not seen[nd] and #(segmap[nd] or {}) == 1 and E.nodePosition(nd)
+				seen[nd] = true
+				if p then ends[#ends + 1] = { node = nd, p = p } end
+			end
+		end
+	end
+	if #ends == 0 then L(E, "road: industry " .. ind.e .. " has no free street end"); return false end
+	-- the town street nodes near them, the nearest pairs first
+	local pairsList = {}
+	for _, e in ipairs(R.allEdges()) do
+		local c = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
+		if c and c.type == 0 and api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE_STREET) and tostring(c.roadTemplate):find("/town/", 1, true) then
+			local okC, cn = pcall(function() return api.engine.system.streetConnectorSystem.getConstructionEntityForEdge(e) end)
+			if not (okC and type(cn) == "number" and cn >= 0) then
+				for _, nd in ipairs({ c.node0, c.node1 }) do
+					local q = #(segmap[nd] or {}) <= 3 and E.nodePosition(nd)
+					if q then
+						for _, en in ipairs(ends) do
+							local d = dist(en.p, q)
+							if d > 30 and d < 900 then pairsList[#pairsList + 1] = { en = en, node = nd, q = q, c = c, d = d } end
+						end
+					end
+				end
+			end
+		end
+	end
+	table.sort(pairsList, function(a, b) if a.d ~= b.d then return a.d < b.d end return a.node < b.node end)
+	local ctx = context(E, co.ent, CTX_ROAD)
+	for i = 1, math.min(4, #pairsList) do
+		local pr = pairsList[i]
+		local okp, sp = pcall(roadProposal, E, co, pr.en.node, pr.en.p, pr.node, pr.q, pr.c)
+		if okp and sp then
+			local okd, pd = pcall(function() return api.engine.util.proposal.makeProposalData(sp, ctx) end)
+			local why = ""
+			if okd and pd then pcall(function() why = E.C.ser(E.C.marshal(pd.errorState.messages)) end) end
+			if okd and pd and #pd.errorState.messages == 0 and not pd.errorState.critical then
+				local mid = { x = (pr.en.p.x + pr.q.x) / 2, y = (pr.en.p.y + pr.q.y) / 2, z = (pr.en.p.z + pr.q.z) / 2 }
+				L(E, string.format("road to industry %d: %.0f m from node %d to the town node %d", ind.e, pr.d, pr.en.node, pr.node))
+				build(E, co.id, api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, true, true), "road to industry " .. ind.e, CTX_ROAD,
+					{ kind = "road", pos = mid })
+				return true
+			end
+			L(E, "road to industry " .. ind.e .. " (" .. math.floor(pr.d) .. " m): dry run refused " .. why:sub(1, 200))
+		elseif not okp then
+			L(E, "road to industry " .. ind.e .. ": " .. tostring(sp):sub(1, 200))
+		end
+	end
+	return false
+end
+
+-- one step of the roads: the industries of the routes that found no road, the best route first; is each one cut off from the
+-- streets (one path search per step)? A street to the first one that is. True when it acted (or searched)
+local function roadProject(E, co, money)
+	if os.getenv("MPFEVER_AIROADS") == "0" then return false end
+	local A = E.G.AI
+	if not A.pathFails or #A.pathFails == 0 or money < RESERVE + 400000 then return false end
+	A.roadChecked = A.roadChecked or {}
+	A.roadDone = A.roadDone or {}
+	table.sort(A.pathFails, function(a, b) return a.score > b.score end)
+	for _, pf in ipairs(A.pathFails) do
+		for _, ind in ipairs({ pf.from, pf.to }) do
+			if not A.roadDone[ind.e] then
+				if A.roadChecked[ind.e] == nil then
+					local c = nearestTownCentre(E, ind.pos)
+					A.roadChecked[ind.e] = c == nil or roadPathTo(E, ind, c)
+					if not A.roadChecked[ind.e] then L(E, "industry " .. ind.e .. " is cut off from the streets") end
+					return true
+				end
+				if A.roadChecked[ind.e] == false then
+					A.roadDone[ind.e] = true
+					if connectIndustry(E, co, ind) then
+						A.retryInd, A.retryAt = ind.e, E.G.frames + 1800
+						A.roadChecked[ind.e] = nil
+						return true
+					end
+				end
+			end
+		end
+	end
+	A.pathFails = {}
+	return false
+end
+
 -- the next freight step: deliveries to towns and routes between industries in turn (the kind the company has fewer lines of
 -- first, the other one when it has nothing to do). MPFEVER_AITOWNFREIGHT=0: between industries only.
 local function freightProject(E, co, stops, lines, vehicles, money)
@@ -1515,9 +1751,9 @@ local function freightProject(E, co, stops, lines, vehicles, money)
 	end
 	local towns = os.getenv("MPFEVER_AITOWNFREIGHT") ~= "0"
 	if towns and nTown <= nInd then
-		return townFreightProject(E, co, stops, lines, vehicles, money) or industryProject(E, co, lines, vehicles, money)
+		return townFreightProject(E, co, stops, lines, vehicles, money) or industryProject(E, co, lines, vehicles, money) or roadProject(E, co, money)
 	end
-	return industryProject(E, co, lines, vehicles, money) or (towns and townFreightProject(E, co, stops, lines, vehicles, money))
+	return industryProject(E, co, lines, vehicles, money) or (towns and townFreightProject(E, co, stops, lines, vehicles, money)) or roadProject(E, co, money)
 end
 
 -- ------------------------------------------------------------------ the step
@@ -1622,11 +1858,11 @@ local function step(E)
 	if os.getenv("MPFEVER_AIFREIGHT") ~= "0" then
 		local nf = 0
 		for _, l in ipairs(lines) do if freightOf(E, l) then nf = nf + 1 end end
-		if nf < math.max(1, math.ceil(#lines / 2)) and freightProject(E, co, stops, lines, vehicles, money) then return end
+		if nf < math.max(1, math.ceil(#lines * LV.freightShare)) and freightProject(E, co, stops, lines, vehicles, money) then return end
 	end
 	for _, t in ipairs(townsForLines(E, co.ent)) do
 		local town = t.e
-		if (A.skipTown and A.skipTown[town]) or t.size < 500 then goto continue end
+		if (A.skipTown and A.skipTown[town]) or t.size < LV.townMin then goto continue end
 		do
 			-- the garage of the town's buses (see garageFor)
 			local tc = centre(E, town, E.api.type.enum.LandUseType.RESIDENTIAL)
@@ -1695,7 +1931,7 @@ local function step(E)
 			-- buses: two at first, more as the town is bigger
 			local onLine = 0
 			for _, v in ipairs(vehicles) do if v.line == line.e then onLine = onLine + 1 end end
-			local wantBuses = math.min(5, 2 + math.floor(#groups / 2))
+			local wantBuses = math.min(5, LV.maxBus, 2 + math.floor(#groups / 2))
 			if onLine < wantBuses and not A.noBuses then
 				if money < RESERVE + (A.busCost or BUS_COST) then return end
 				A.forLine = line.e
@@ -1751,16 +1987,26 @@ function M.tick(E, st)
 	end
 	if dev and not T.enabled then return end
 	if G.frames < (T.nextAt or 0) then return end
-	T.nextAt = G.frames + TICK
+	-- (a look every half second at most; each company has its own pace, its level's)
+	T.nextAt = G.frames + 30
 	-- (not before the session's first minute: the joins and the first checks)
 	T.firstAt = T.firstAt or (G.frames + 600)
 	if G.frames < T.firstAt then return end
-	-- one company per look, in turn
-	T.turn = (T.turn or 0) % #list + 1
-	local cur = list[T.turn]
+	-- one company per look, in turn: the next one whose own look is due
 	G.AIS = G.AIS or {}
-	G.AIS[cur.n] = G.AIS[cur.n] or {}
+	local cur
+	for _ = 1, #list do
+		T.turn = (T.turn or 0) % #list + 1
+		local c = list[T.turn]
+		G.AIS[c.n] = G.AIS[c.n] or {}
+		if G.frames >= (G.AIS[c.n].lookAt or 0) then cur = c; break end
+	end
+	if not cur then return end
 	G.AI = G.AIS[cur.n]
+	LV = LEVELS[cur.level or 2] or LEVELS[2]
+	RESERVE = LV.reserve
+	G.AI.lookAt = G.frames + LV.tick
+	if G.AI.levelSaid ~= LV.name then G.AI.levelSaid = LV.name; E.log("AI" .. cur.n .. " level " .. LV.name) end
 	AINUM, AIKEY = cur.n, "ai:" .. cur.n
 	AICOLOR = (cur.color and cur.color >= 1 and cur.color <= #E.CO.PALETTE) and cur.color or nil
 	local known = aiCompany(E)
@@ -1776,7 +2022,7 @@ function M.tick(E, st)
 		T.slowest = 0
 	end
 	-- (a slow step waits longer before the next one)
-	if dt > 0.05 then T.nextAt = G.frames + TICK * 3 end
+	if dt > 0.05 then T.nextAt = G.frames + TICK * 3; G.AI.lookAt = math.max(G.AI.lookAt, G.frames + TICK * 3) end
 end
 
 return M

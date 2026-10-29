@@ -785,11 +785,11 @@ local function setup()
 			for nm, ix in (st.colors or ""):gmatch("([^,:]+):(%d+)") do colorOf[nm] = tonumber(ix) end
 			local me = st.name or playerName()
 			for nm, ix in pairs(colorOf) do if nm == me then mine = ix else taken[ix] = true end end
-			-- the computer companies of the lobby (experimental): "n:colour:name;..." from MPFever.exe; their colours are taken too
+			-- the computer companies of the lobby (experimental): "n:colour:level:name;..." from MPFever.exe; their colours are taken too
 			local ais = {}
 			if separate then
-				for n, ix, nm in (st.ai or ""):gmatch("(%d+):(%d+):([^;]*)") do
-					ais[#ais + 1] = { n = tonumber(n), ix = tonumber(ix), name = nm }
+				for n, ix, lv, nm in (st.ai or ""):gmatch("(%d+):(%d+):(%d+):([^;]*)") do
+					ais[#ais + 1] = { n = tonumber(n), ix = tonumber(ix), lv = tonumber(lv) or 2, name = nm }
 					taken[tonumber(ix)] = true
 				end
 			end
@@ -831,7 +831,7 @@ local function setup()
 				local w = PAGE_W - SIDE_W - 60
 				right[#right + 1] = gap(1, 16)
 				right[#right + 1] = text(T("Entreprises de l'ordinateur (expérimental)", "Computer companies (experimental)") .. (#ais > 0 and (" (" .. #ais .. ")") or ""), "font-scale-title-3")
-				right[#right + 1] = text(T("Gérées par le jeu de l'hôte : elles construisent leurs propres lignes de bus.", "Run by the host's game: they build their own bus lines."), "font-scale-body", w)
+				right[#right + 1] = text(T("Gérées par le jeu de l'hôte : bus, camions de marchandises et livraisons des villes. Plus le niveau est élevé, plus elles grandissent vite.", "Run by the host's game: buses, freight trucks and deliveries to the towns. The higher the level, the faster they grow."), "font-scale-body", w)
 				right[#right + 1] = gap(1, 6)
 				for i, a in ipairs(ais) do
 					local pc = PALETTE[a.ix]
@@ -845,6 +845,21 @@ local function setup()
 					}
 					if isHost then head[#head + 1] = button(T("Retirer", "Remove"), function() request("aidel", tostring(n), playerName()) end, { font = "font-scale-body" }) end
 					local rows = { box(H, head) }
+					-- its level (0.5.13): how fast it grows and how hard it competes; the host picks it, the players see it
+					local LEVELS = { T("Facile", "Easy"), T("Normal", "Normal"), T("Difficile", "Hard") }
+					if isHost then
+						local lvRow = { text(T("Niveau :", "Level:"), "font-scale-body"), gap(8, 1) }
+						for lv = 1, 3 do
+							local pick = lv
+							lvRow[#lvRow + 1] = button(LEVELS[lv], function() request("ailevel", tostring(n) .. ":" .. tostring(pick), playerName()) end,
+								{ font = "font-scale-body", primary = a.lv == lv })
+							lvRow[#lvRow + 1] = gap(4, 1)
+						end
+						rows[#rows + 1] = gap(1, 4)
+						rows[#rows + 1] = box(H, lvRow)
+					else
+						rows[#rows + 1] = text(T("Niveau : ", "Level: ") .. (LEVELS[a.lv] or LEVELS[2]), "font-scale-body")
+					end
 					if isHost then
 						-- (the colours of the players and of the other computer companies greyed)
 						local pal = {}
