@@ -29,7 +29,7 @@ local LEVELS = {
 		freightMax = 4000, compete = false, townMin = 600 },
 	{ name = "normal", tick = 60, reserve = 400000, maxBus = 8, maxTruck = 10, busUse = 0.75, truckUse = 0.45, waiting = 40, freightShare = 1 / 2,
 		freightMax = 5000, compete = false, townMin = 500 },
-	{ name = "hard", tick = 30, reserve = 250000, maxBus = 12, maxTruck = 14, busUse = 0.6, truckUse = 0.35, waiting = 25, freightShare = 2 / 3,
+	{ name = "hard", tick = 30, reserve = 350000, maxBus = 12, maxTruck = 14, busUse = 0.6, truckUse = 0.35, waiting = 25, freightShare = 2 / 3,
 		freightMax = 6500, compete = true, townMin = 300 },
 }
 local LV = LEVELS[2]
