@@ -10699,6 +10699,35 @@ H.badui = function(from, p)
 	G.waits[#G.waits + 1] = { at = G.frames + 300, fn = autoFinish }
 end
 
+-- Industry extends (MPFEVER_SCENARIO=extend with MPFEVER_PAUSED=1 and a build after it, "extend,newroad"; the friends' 0.5.12
+-- resyncs of 2026-10-28): MPFEVER_EXTEND_N (4) extends sent as the industry window sends them. Counted as builds to come (0.5.12,
+-- MPFEVER_EXTENDCOUNT=1 on a game), the next road built at that time there was taken as a replay and never shipped: the games
+-- then differ (edges) at the test's last check
+H.extend = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local cons, had = {}, {}
+	for _, e in ipairs(R.entitiesWith("INDUSTRY")) do
+		pcall(function()
+			local c = api.engine.getComponent(e, api.type.ComponentType.INDUSTRY).construction
+			pcall(function()
+				local top = api.engine.system.streetConnectorSystem.getConstructionEntityForSubconstruction(c)
+				if type(top) == "number" and top >= 0 then c = top end
+			end)
+			if type(c) == "number" and c >= 0 and not had[c] then had[c] = true; cons[#cons + 1] = c end
+		end)
+	end
+	table.sort(cons)
+	local want = #cons > 0 and (tonumber(os.getenv("MPFEVER_EXTEND_N") or "") or 4) or 0
+	for k = 1, want do uiRequest("makeCreateIndustryExtendProposalCmd", { n = 3, cons[(k - 1) % #cons + 1], 0, 1 }) end
+	AUTO.results[1] = want .. " industry extends sent at t=" .. tostring(gameTime()) .. (G.session.pauseAt and " (paused)" or " (not paused)")
+		.. ", EXTENDCOUNT=" .. tostring(os.getenv("MPFEVER_EXTENDCOUNT"))
+	log("AUTOTEST extend: " .. AUTO.results[1])
+	G.waits[#G.waits + 1] = { at = G.frames + 300, fn = autoFinish }
+end
+
 -- A train station edited again and again, as the module tool does (MPFEVER_SCENARIO=stationedit, host; issue #82: the frame
 -- rate fell with every module added to a train station): the station with the most modules replaced by itself
 -- MPFEVER_STATIONEDIT_N times (6), 10 s apart. Each round tells the interface's frame rate, the simulation state's size and what
