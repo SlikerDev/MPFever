@@ -922,26 +922,29 @@ local function mayExpand(E, co, lines, money)
 	local A = E.G.AI
 	local now = E.gameTime()
 	local why
-	if A.lastNewAt and A.lastNewAt <= now and now - A.lastNewAt < (LV.settle or 0) then
-		why = "its last new line fills (" .. math.floor((LV.settle - (now - A.lastNewAt)) / 4000) .. " day(s) left)"
-	elseif #lines >= (LV.bootstrap or 0) then
-		-- (its lines still filling or not paying their vehicles yet, see manageLines: at most the level's number of them at once)
-		local unproven = 0
-		for _, l in ipairs(lines) do
-			local born = A.born and A.born[l.e]
-			-- (a line short of paying its vehicles for good, between the level's give-up share and 1, would hold it back for ever: only
-			-- one well under it counts; the fleet rules of manageLines deal with the others)
-			-- (a line with no measure yet, no vehicle or MPFEVER_AIFLEET=0, by its age only: counted as 0 it held growth for good)
-			local r = A.ratio and A.ratio[l.e]
-			if (born and born <= now and now - born < (LV.ramp or 0)) or (os.getenv("MPFEVER_AIFLEET") ~= "0" and r ~= nil and r < ((LV.giveUp or 0.5) + 1) / 2) then unproven = unproven + 1 end
-		end
-		-- (the money of a loan just taken is not money to spare)
+	-- (its first lines, the level's bootstrap, freely; then not before its last new line had time to fill, and with plenty of
+	-- money besides its reserve and its loans whatever its lines do; else not while the level's number of its lines are still
+	-- filling or about to be given up, and only while its lines earn together)
+	if #lines >= (LV.bootstrap or 0) then
 		local spare = money - (A.loanCash or 0)
-		if unproven >= (LV.maxUnproven or 99) then
-			why = unproven .. " line(s) still filling or not paying their vehicles"
+		if A.lastNewAt and A.lastNewAt <= now and now - A.lastNewAt < (LV.settle or 0) then
+			why = "its last new line fills (" .. math.floor((LV.settle - (now - A.lastNewAt)) / 4000) .. " day(s) left)"
 		elseif spare < RESERVE + (LV.freeCash or 0) then
-			local r = companyResult(E, lines)
-			if r == nil or r <= 0 then why = "its lines do not earn yet (" .. tostring(r and math.floor(r)) .. " over 2 months)" end
+			local unproven = 0
+			local fleetOn = os.getenv("MPFEVER_AIFLEET") ~= "0"
+			for _, l in ipairs(lines) do
+				local born = A.born and A.born[l.e]
+				-- (a line with no measure yet, no vehicle or MPFEVER_AIFLEET=0, by its age only; a measured one while under the level's
+				-- give-up share, which the fleet rules end: one paying a little less than its vehicles no longer holds growth for good)
+				local r = A.ratio and A.ratio[l.e]
+				if (born and born <= now and now - born < (LV.ramp or 0)) or (fleetOn and r ~= nil and r < (LV.giveUp or 0.5)) then unproven = unproven + 1 end
+			end
+			if unproven >= (LV.maxUnproven or 99) then
+				why = unproven .. " line(s) still filling or about to be given up"
+			else
+				local r = companyResult(E, lines)
+				if r == nil or r <= 0 then why = "its lines do not earn yet (" .. tostring(r and math.floor(r)) .. " over 2 months)" end
+			end
 		end
 	end
 	if why then
@@ -1027,13 +1030,19 @@ local function manageLines(E, co, lines, vehicles, money)
 		local liveL, liveV = {}, {}
 		for _, l in ipairs(lines) do liveL[l.e] = true end
 		for _, v in ipairs(vehicles) do liveV[v.e] = true end
-		for _, t in ipairs({ A.emptyRuns, A.trucksFor, A.problemSeen, A.useHist, A.seenAt, A.losing, A.born, A.ratio, A.dropLine, A.changedAt }) do
+		for _, name in ipairs({ "emptyRuns", "trucksFor", "problemSeen", "useHist", "seenAt", "losing", "born", "ratio", "dropLine", "changedAt" }) do
+			local t = A[name]
 			if type(t) == "table" then for k in pairs(t) do if not liveL[k] then t[k] = nil end end end
 		end
 		if type(A.lineSent) == "table" then for k in pairs(A.lineSent) do if not liveV[k] then A.lineSent[k] = nil end end end
 	end
 	local nowG = E.gameTime()
 	A.born = A.born or {}
+	-- (the lines there at this session's first look ran before it: not young, after a load as on a new game's first lines)
+	if not A.bornInit then
+		A.bornInit = true
+		for _, l in ipairs(lines) do A.born[l.e] = A.born[l.e] or (nowG - (LV.ramp or 0) - 1) end
+	end
 	-- (0.5.14: each line's vehicles fit what it earns, see l.econ below. MPFEVER_AIFLEET=0: as before)
 	local fleet = os.getenv("MPFEVER_AIFLEET") ~= "0"
 	local yearMs = 1461000
@@ -1067,6 +1076,8 @@ local function manageLines(E, co, lines, vehicles, money)
 		-- (a line given up, see dropped: empty for good, its last vehicles sold and the line destroyed as the empty ones are)
 		if A.dropLine and A.dropLine[l.e] then empty = true; A.emptyRuns[l.e] = math.max(A.emptyRuns[l.e] or 0, emptyLooks - 1) end
 		if not grace or period == 7200 then A.emptyRuns[l.e] = empty and ((A.emptyRuns[l.e] or 0) + 1) or 0 end
+		-- (a count, never nil: a line had none before its first regular look, and the comparisons below stopped every look in debt)
+		A.emptyRuns[l.e] = A.emptyRuns[l.e] or 0
 		l.use, l.bal = use, bal
 		-- (0.5.14) what the line earns against what its vehicles cost to run, over the same two months: its income (the balance
 		-- plus the running costs it paid), the running costs of one vehicle, and their ratio (1: it pays its vehicles)
@@ -1422,6 +1433,8 @@ local function pairProject(E, co, stops, lines, vehicles, money, grow)
 	if g == "building" then return true end
 	if not g then g = garageFor(E, co, pair.b.c, money, nb) end
 	if g == "building" then return true end
+	-- (0.5.14: no garage only for want of money: the pair waits, it was left for the session before. MPFEVER_AIRETRY=0: left)
+	if not g and money < RESERVE + 650000 and os.getenv("MPFEVER_AIRETRY") ~= "0" then return "wait" end
 	if not g then
 		L(E, "no garage for " .. na .. " - " .. nb .. ": pair left")
 		A.pairFailed = A.pairFailed or {}; A.pairFailed[pair.key] = true
