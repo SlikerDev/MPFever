@@ -540,6 +540,13 @@ namespace MPFever
             Directory.CreateDirectory(dir);
             string opts = "";
             var gate = new PublicGate { BanFile = Path.Combine(dir, "mpfever_bans.txt"), AskSeconds = 30, Options = () => opts };
+            // (the lobby's string, as GameOpts keeps it: a parameter left at its default may be absent)
+            opts = GameOpts.Canon("public=1;join_bans=0");
+            int max8 = gate.MaxPlayers;
+            opts = GameOpts.Apply(opts, "public.max=3", out _);
+            int max3 = gate.MaxPlayers;
+            opts = GameOpts.Apply(opts, "public=0", out _);
+            Check(max8 == 8 && max3 == 3 && gate.MaxPlayers == 0 && opts == "", "options: the lobby's string read (" + max8 + ", " + max3 + ", " + gate.MaxPlayers + ")");
             gate.AddBan("Lena", "76561198000000002", "");
             gate.AddBan("Troll", "", "203.0.113.9");
             var again = new PublicGate { BanFile = gate.BanFile };

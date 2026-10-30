@@ -222,6 +222,7 @@ namespace MPFever
                 Changed?.Invoke();
             }
             if (a.Answer != 1) return Refuse("refused");
+            Log.Dim("feat public: " + name + (steam != "" ? " (Steam)" : ip != "" ? " (" + ip + ")" : "") + " let in by the host");
             lock (letIn) letIn[Key(name, steam)] = name;
             // (the places taken meanwhile: another arrival let in, a player back)
             max = MaxPlayers;
@@ -244,7 +245,8 @@ namespace MPFever
     /// mpfever_settings.txt (pubname=). MPFEVER_PUBLICGAMES=0: all of it off, and the list read as before (/api/servers).</summary>
     sealed partial class MainForm
     {
-        static bool PublicOff => Environment.GetEnvironmentVariable("MPFEVER_PUBLICGAMES") == "0";
+        // (MPFEVER_FEAT=0, the whole 0.6 options host off, docs/FEATURES-0.6.md: these options too, the game's lobby shows none)
+        static bool PublicOff => Environment.GetEnvironmentVariable("MPFEVER_PUBLICGAMES") == "0" || Environment.GetEnvironmentVariable("MPFEVER_FEAT") == "0";
 
         readonly object pubLock = new object();
         PublicGate pubGate;
@@ -255,8 +257,10 @@ namespace MPFever
                 lock (pubLock)
                 {
                     if (pubGate != null) return pubGate;
-                    var g = new PublicGate { BanFile = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "mpfever_bans.txt") };
-                    g.Options = () => PublicOff || server != null ? "" : gameOptions ?? "";
+                    // (an autotest bans in a file of its own: never the player's list)
+                    var g = new PublicGate { BanFile = autotest ? Path.Combine(Path.GetTempPath(), "mpfever_autotest_bans.txt") : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "mpfever_bans.txt") };
+                    // (the session's game options, the very string the lobby's "Game settings" and the window's Game tab edit)
+                    g.Options = () => PublicOff || server != null ? "" : GameOptions();
                     g.Changed += MenuStatus;
                     // (the host in its game: told in its own chat, the MPFever window shows Accept and Refuse)
                     g.Asked += who =>
@@ -270,8 +274,9 @@ namespace MPFever
             }
         }
 
-        /// <summary>The host's own game, as a player hosts it from the main menu (not a dedicated server).</summary>
-        bool PublicHosting() => !PublicOff && menuMode && server == null && hostGame != null && relay != null && hostName != null;
+        /// <summary>The host's own game, as a player hosts it from the main menu (not a dedicated server); an autotest's host too
+        /// (the scenario pubtest: its window's Accept, Refuse, Kick and Ban; it never goes into the public list).</summary>
+        bool PublicHosting() => !PublicOff && (menuMode || autotest) && server == null && hostGame != null && relay != null && hostName != null;
 
         /// <summary>Relay.Admit of a player's own game, after the version check (see StartHost).</summary>
         string PublicAdmit(Relay r, Peer p)
@@ -359,13 +364,40 @@ namespace MPFever
         }
 
         /// <summary>The host's own lines of mp_status.txt (its game's MPFever window, not sent to the players): the arrivals
-        /// waiting for its answer, and whether it may kick and ban.</summary>
+        /// waiting for its answer, and whether it may kick and ban; (0.6, the window's "Public game" tab, mpfever_feat_public.lua)
+        /// the list's state for this game, its name and the address shown (public on), the ban list (join_bans on) and whether
+        /// Steam takes the host's friends only. Nothing while those options are off.</summary>
         string PublicHostStatus()
         {
             if (!PublicHosting()) return "";
+            string Clean(string s) => (s ?? "").Replace("\r", " ").Replace("\n", " ");
             var w = Gate.Waiting();
-            return (w.Length > 0 ? "pending=" + string.Join(",", w) + "\n" : "") + (Gate.On("join_bans") ? "pubkick=1\n" : "");
+            var sb = new StringBuilder();
+            if (w.Length > 0) sb.Append("pending=").Append(Clean(string.Join(",", w))).Append('\n');
+            bool kick = Gate.On("join_bans");
+            if (kick)
+            {
+                sb.Append("pubkick=1\n");
+                var bans = Gate.Bans().Where(b => b.Name != "").Select(b => b.Name + "|" + b.Date).ToList();
+                if (bans.Count > 0) sb.Append("bans=").Append(Clean(string.Join(";", bans))).Append('\n');
+            }
+            if (Gate.On("public"))
+            {
+                sb.Append("pub=").Append(pubState == "" ? "wait" : Clean(pubState)).Append('\n');
+                sb.Append("pubname=").Append(Clean(PublicName())).Append('\n');
+                if (pubShownIp != "") sb.Append("pubip=").Append(Clean(pubShownIp)).Append('\n');
+            }
+            if (steamFriendsSent) sb.Append("pubfriends=1\n");
+            var s = sb.ToString();
+            // (what the host's window is given, told once each time it changes: for the in-game test)
+            if (s != pubStatusSaid)
+            {
+                pubStatusSaid = s;
+                if (s != "") Log.Dim("feat public: the host's window shows " + s.TrimEnd('\n').Replace("\n", ", "));
+            }
+            return s;
         }
+        string pubStatusSaid = "";
 
         // ---------------------------------------------------------------- the public list
 
@@ -376,6 +408,8 @@ namespace MPFever
         bool? pubV2;
         // the game was public at some time in this session: strangers may be in it (Steam friends only no more)
         volatile bool pubEver;
+        // (the public games' options last told in the log, see PublicGameTick)
+        string pubOptsSaid = "";
 
         string PublicName()
         {
@@ -403,7 +437,14 @@ namespace MPFever
             bool hosting = PublicHosting();
             bool pub = hosting && Gate.On("public");
             if (pub) pubEver = true;
-            if (hosting) SteamFriendsSync();
+            if (hosting)
+            {
+                // (the public games' options as MPFever.exe reads them, told when they change: for the in-game test)
+                var mine = string.Join(";", GameOpts.Parse(Gate.Options()).Where(kv => kv.Key.StartsWith("public", StringComparison.Ordinal)
+                    || kv.Key.StartsWith("join_", StringComparison.Ordinal)).Select(kv => kv.Key + "=" + kv.Value));
+                if (mine != pubOptsSaid) { pubOptsSaid = mine; Log.Dim("feat public: the host's options now " + (mine == "" ? "all off" : mine)); }
+                SteamFriendsSync();
+            }
             // (nothing listed, nothing to list: the options off, as in 0.5.14)
             if (!pub && pubListId == null && pubState == "") return;
             bool late = Gate.Param("public", "late") == "1";
@@ -505,6 +546,7 @@ namespace MPFever
             if (pubGate != null) Gate.EndSession();
             steamHostLine = null;
             pubEver = false; pubV2 = null; pubV2At = -1000; pubAt = -1000; pubName = null; pubState = ""; pubShownIp = "";
+            steamFriendsSent = false; pubOptsSaid = ""; pubStatusSaid = "";
             if (pubListId != null) new Thread(PublicGameRemove) { IsBackground = true, Name = "Public game out" }.Start();
         }
 
@@ -536,8 +578,84 @@ namespace MPFever
             if (want == steamFriendsSent) return;
             steamFriendsSent = want;
             try { SteamNet.Cmd(steamHostDir, line + (want ? " friends" : "")); } catch (Exception e) { Log.W("steamnet: " + e.Message); return; }
+            // (the game module's answer is in its own log: "not a friend" for a stranger refused, see the in-game checks)
+            Log.Dim("feat public: the game module's host command sent again, Steam friends only " + (want ? "on" : "off"));
             Log.W(want ? T("Steam : seuls vos amis Steam peuvent rejoindre par Steam.", "Steam: only your Steam friends can join through Steam.")
                 : T("Steam : tout le monde peut de nouveau rejoindre par Steam.", "Steam: everybody can join through Steam again."));
+        }
+
+        // ---------------------------------------------------------------- autotest
+
+        /// <summary>Autotest pubtest (MPFEVER_SCENARIO=pubtest, the autotest's two games): the public games' options switched on
+        /// for the session (public with 3 players at most, join_bans, join_approve: the scenario's own, never written into
+        /// mpfever_settings.txt; an autotest never goes into the public list), every game takes them (f_opts); a stranger (a
+        /// connection of this MPFever.exe named Stranger) waits for the host's answer while both games show their MPFever window's
+        /// "Public game" tab, then the Session tab (the bridge's H.pubtest: the host's offer Accept and Refuse); the host refuses
+        /// it, bans it (refused when it comes back), takes the ban back, through the requests of the window's buttons; the options
+        /// off again. Each check is a line "pubtest: ok/FAIL ..." of the autotest's report; the games are compared afterwards as
+        /// after every scenario.</summary>
+        void RunPubTest()
+        {
+            void Line(bool ok, string what) => AutoLine("pubtest: " + (ok ? "ok    " : "FAIL  ") + what);
+            bool Wait(Func<bool> f, double s) { var end = Now + s; while (Now < end && !f()) Thread.Sleep(200); return f(); }
+            if (PublicOff) { AutoLine("pubtest: MPFEVER_PUBLICGAMES=0, nothing tested"); return; }
+            if (Environment.GetEnvironmentVariable("MPFEVER_ANYVERSION") == "1") { AutoLine("pubtest: MPFEVER_ANYVERSION=1 checks no arrival, nothing tested"); return; }
+            int port = relay?.Port ?? 0;
+            try { File.Delete(Gate.BanFile); } catch { }
+            gameOptsTest = "join_approve=1;join_bans=1;public=1;public.max=3";
+            BroadcastSession();
+            Line(PublicHosting() && Gate.On("public") && Gate.On("join_approve") && Gate.On("join_bans") && Gate.MaxPlayers == 3, "the options read by MPFever.exe: " + GameOptions());
+            // (the host's game puts them into the game at once: f_opts, applied by both games at the same step)
+            Thread.Sleep(8000);
+            var clients = new List<Client>();
+            Dictionary<object, object> denied = null;
+            int waits = 0;
+            void Join()
+            {
+                denied = null; waits = 0;
+                var c = new Client();
+                c.Denied += d => denied = d;
+                c.Waiting += () => Interlocked.Increment(ref waits);
+                clients.Add(c);
+                c.Connect("127.0.0.1", port, "Stranger");
+            }
+            string Reason() { var d = denied; return d != null && d.TryGetValue("reason", out var r) ? r as string : null; }
+            try
+            {
+                Join();
+                bool asked = Wait(() => Gate.Waiting().Length == 1 && waits > 0, 15);
+                Line(asked, "a stranger waits for the host's answer, told so (" + string.Join(",", Gate.Waiting()) + ")");
+                Thread.Sleep(1500);
+                Line(PublicHostStatus().Contains("pending=Stranger#"), "the host's window is given the arrival (pending=)");
+                // (both games: the options in the game, the window's tabs; the arrival waits meanwhile, 120 s at most)
+                lock (autoDone) { autoDone.Remove("host"); autoDone.Remove("client"); }
+                foreach (var r in new[] { "host", "client" }) HostSend(Msg.Make("pubtest", hostName, "{[\"role\"]=\"" + r + "\"}"));
+                WaitUntil(() => { lock (autoDone) return (autoDone.ContainsKey("host") && autoDone.ContainsKey("client")) || ClosedGames() != ""; }, 90);
+                lock (autoDone) foreach (var r in new[] { "host", "client" }) AutoLine("pubtest: " + r + " game: " + (autoDone.ContainsKey(r) ? autoDone[r] : "TIMEOUT"));
+                // the host's answer, as the window's Refuse button asks it
+                var who = Gate.Waiting().FirstOrDefault();
+                PublicMenuRequest("admit", (who ?? "Stranger") + " 0");
+                Line(who != null && Wait(() => denied != null, 10) && Reason() == "refused", "refused by the host (" + Reason() + ")");
+                // banned (the Ban button), refused at once when it comes back; the ban taken back (Remove)
+                PublicMenuRequest("ban", "Stranger");
+                Line(Gate.BannedAs("Stranger", "", "") != null && PublicHostStatus().Contains("bans=Stranger|"), "banned, the host's window lists it (bans=)");
+                Join();
+                Line(Wait(() => denied != null, 10) && Reason() == "banned" && Gate.Waiting().Length == 0, "a banned player refused before asking (" + Reason() + ")");
+                PublicMenuRequest("unban", "Stranger");
+                Line(Gate.BannedAs("Stranger", "", "") == null, "the ban taken back");
+            }
+            catch (Exception e) { Line(false, "error " + e.Message); }
+            finally
+            {
+                foreach (var c in clients) try { c.Dispose(); } catch { }
+                Gate.EndSession();
+                try { File.Delete(Gate.BanFile); } catch { }
+                // (all off again for what follows: nothing of them stays in the games)
+                gameOptsTest = "";
+                BroadcastSession();
+                Thread.Sleep(8000);
+                Line(!Gate.On("public") && PublicHostStatus() == "", "the options off again: nothing given to the host's window");
+            }
         }
     }
 }
