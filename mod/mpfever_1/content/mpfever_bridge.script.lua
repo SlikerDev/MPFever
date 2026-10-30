@@ -1818,16 +1818,17 @@ SIM.featBridge = function()
 				local ok, b = pcall(api.engine.util.finance.getPlayersBalance, ent)
 				return (ok and type(b) == "number") and b or nil
 			end,
-			-- (money added to or taken from a company, from an event: the same entry on every game, as a gift between companies)
-			book = function(ent, amount, who)
+			-- (money added to or taken from a company, from an event: the same entry on every game, as a gift between companies;
+			-- kind "subsidy": a SUBSIDY entry, as the game's own subsidies book their money, subvention_util.applyBonusMalus)
+			book = function(ent, amount, who, kind)
 				amount = math.floor((tonumber(amount) or 0) + 0.5)
 				if not ent or amount == 0 then return false end
 				local e = api.type.JournalEntry.new()
 				e.amount = amount
 				e.time = -1
-				e.category.type = api.type.JournalEntry.Type.OTHER
+				e.category.type = kind == "subsidy" and api.type.JournalEntry.Type.SUBSIDY or api.type.JournalEntry.Type.OTHER
 				coBook(ent, e)
-				log("options (" .. tostring(who) .. "): " .. amount .. " booked to player entity " .. tostring(ent))
+				log("options (" .. tostring(who) .. "): " .. amount .. " booked to player entity " .. tostring(ent) .. (kind and (" (" .. tostring(kind) .. ")") or ""))
 				return true
 			end,
 			-- (the companies, sorted by number: those of the registry in the separate mode, the one company of the co-op else)
@@ -1906,16 +1907,19 @@ SIM.featNative = function(state, param, seq0)
 	local a = { fn = "nativeBuild", native = true, at = now, proposal = param[1], data = param[2] }
 	if F.simAction(st, a, true, SIM.featBridge()) then state:set(st) end
 end
--- whether a module on hears the game's own script events (and the modules loaded, with this log, at the first look)
-SIM.featHearing = function(text)
+-- whether a module on hears the game's own script events (and the modules loaded, with this log, at the first look); st: the
+-- state of this step (a module may have nothing to hear now, see F.hearsGameEvents)
+SIM.featHearing = function(text, st)
 	local F = C.feat()
 	if not F then return false end
 	F.load(log)
-	return F.hearsGameEvents(text)
+	return F.hearsGameEvents(text, st)
 end
 -- the game's own script events, for the modules that hear them (SIM.featHears)
 SIM.featGameEvent = function(state, src, id, name, param)
 	local F = C.feat()
+	-- (the state is read only for an event some module on hears by its name, see M.GAME_EVENTS: the game sends many)
+	if F and F.wantsGameEvent and SIM.featText and not F.wantsGameEvent(SIM.featText, name) then return end
 	local st = state:get()
 	if not (F and type(st) == "table") then return end
 	if F.simGameEvent(st, id, name, param, SIM.featBridge(), src) then state:set(st) end
@@ -1929,7 +1933,8 @@ local function update(userParams, state, dt)
 		-- (0.6) whether a game option is on (st.optsText, the options every game applied from the host's f_opts): the only thing of
 		-- them read while none is on (see SIM.featBridge)
 		SIM.featOn = K.FEAT and type(st0) == "table" and type(st0.optsText) == "string" and st0.optsText ~= ""
-		SIM.featHears = SIM.featOn and SIM.featHearing(st0.optsText)
+		SIM.featHears = SIM.featOn and SIM.featHearing(st0.optsText, st0)
+		SIM.featText = SIM.featOn and st0.optsText or nil
 		-- (again from time to time: the game loads the script of a type of contract when it first needs it)
 		SIM.ctTick = (SIM.ctTick or 0) + 1
 		if SIM.ctTick % 50 == 1 and os.getenv("MPFEVER_EVSTEPLOG") == "1" then pcall(SIM.evStepInstall) end
@@ -15658,6 +15663,73 @@ H.pingtest = function(from, p)
 	end }
 end
 
+-- (0.6) Tenders scenario (MPFEVER_SCENARIO=tenders, one company per player: MPFEVER_COMPANIES=separate; MPFEVER_TDGOAL=n on the
+-- host advised, MPFEVER_SPEED=4 to let the months pass): the host switches the game option "tenders" on as its lobby would
+-- (G.featOpts, the session's options: MPFEVER_TDOPTS, else "tenders=1;tenders.freq=3"), its game sends f_opts, every game applies
+-- it, the host's module publishes tender 1 (f_tenders_new). The host's results say when the first tender came and what it is,
+-- after MPFEVER_TDWAIT more seconds (20) each company's count; the client's say what its game holds (the same tenders, the same
+-- signature, the window's file, the chat notice). Compare both games' "signature" lines and the final "sync:" line.
+H.tenders = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local function S() local st = G.featSt; return type(st) == "table" and type(st.feat) == "table" and st.feat.tenders or nil end
+	local function report(prefix)
+		local st, s = G.featSt or {}, S()
+		AUTO.results[#AUTO.results + 1] = prefix .. "options '" .. tostring(st.optsText) .. "' (" .. tostring(st.optsMode) .. ")"
+		if not s then AUTO.results[#AUTO.results + 1] = "no tenders state"; return end
+		for _, t in ipairs(s.open or {}) do
+			local pr = {}
+			for k, n in pairs(t.prog or {}) do pr[#pr + 1] = "company " .. k .. "=" .. n end
+			table.sort(pr)
+			AUTO.results[#AUTO.results + 1] = "open #" .. tostring(t.id) .. " " .. tostring(t.kind) .. " " .. tostring(t.a and t.a.name) .. (t.b and (" - " .. tostring(t.b.name)) or "")
+				.. (t.cargo and (" " .. t.cargo) or "") .. ", goal " .. tostring(t.goal) .. ", bonus " .. tostring(t.prize) .. ", until month " .. tostring(t.deadline)
+				.. ": " .. (#pr > 0 and table.concat(pr, ", ") or "nobody counted yet")
+		end
+		local F = C.feat()
+		local M = F and F.byId and F.byId.tenders
+		AUTO.results[#AUTO.results + 1] = "signature " .. tostring(M and M.signature and M.signature(st))
+		local f = C.IO.open(C.DIR .. BS .. "feat_tenders_list.txt", "rb")
+		local n = 0
+		if f then for _ in (f:read("*a") or ""):gmatch("[^\n]+") do n = n + 1 end f:close() end
+		AUTO.results[#AUTO.results + 1] = "window file feat_tenders_list.txt: " .. (f and (n .. " lines") or "MISSING")
+		local c = C.IO.open(C.DIR .. BS .. "chat.txt", "rb")
+		local told = false
+		if c then
+			-- (the notice in French or English; another language's is not recognised here)
+			local all = (c:read("*a") or ""):lower()
+			c:close()
+			told = all:find("tender #", 1, true) ~= nil or all:find("appel d'offres n", 1, true) ~= nil
+		end
+		AUTO.results[#AUTO.results + 1] = "chat notice of a tender: " .. (told and "yes" or "NO")
+	end
+	if G.cmode ~= "separate" then AUTO.results[1] = "the tenders need one company per player (MPFEVER_COMPANIES=separate)"; return autoFinish() end
+	if C.ROLE ~= "host" then
+		report("")
+		return autoFinish()
+	end
+	G.featOpts = os.getenv("MPFEVER_TDOPTS") or "tenders=1;tenders.freq=3"
+	G.featOptsAt = nil
+	log("AUTOTEST tenders: the session's options are now " .. G.featOpts)
+	local t0 = G.frames
+	local function poll()
+		local s = S()
+		if s and (tonumber(s.seq) or 0) >= 1 then
+			AUTO.results[#AUTO.results + 1] = "tender 1 published after " .. math.floor((G.frames - t0) / 60) .. " s"
+			local secs = tonumber(os.getenv("MPFEVER_TDWAIT") or "") or 20
+			G.waits[#G.waits + 1] = { at = G.frames + secs * 60, fn = function() report("after " .. secs .. " s more: ") autoFinish() end }
+			return
+		end
+		if G.frames - t0 > 90 * 60 then
+			report("NO tender within 90 s: ")
+			return autoFinish()
+		end
+		G.waits[#G.waits + 1] = { at = G.frames + 120, fn = poll }
+	end
+	G.waits[#G.waits + 1] = { at = G.frames + 120, fn = poll }
+end
+
 G.pingTick = function()
 	for key, s in pairs(G.pings) do
 		if G.frames > s.till or G.frames < s.till - 2000 then
@@ -15801,7 +15873,7 @@ end
 G.featBridge = function()
 	local B = G.featB
 	if not B then
-		B = { log = log, gameTime = gameTime, R = R, CO = CO,
+		B = { log = log, gameTime = gameTime, R = R, CO = CO, T = C.T,
 			-- (an event of a module: stamped and applied by every game at the same step, as the host's events)
 			send = function(name, param) return G.coEvent(name, param) ~= false end,
 			chat = function(text) return G.featChat(text) end,
