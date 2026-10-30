@@ -6,7 +6,7 @@
 local M = {}
 
 -- the company of the step under way (see M.tick): its key in the registry ("ai:<n>"), its name, its colour (a palette index)
-local AIKEY, AINAME, AICOLOR, AINUM = "ai:1", "", 7, 1
+local AIKEY, AINAME, AICOLOR, AINUM, AIMONEY = "ai:1", "", 7, 1, nil
 -- the names of new computer companies, by number
 local NAMES_FR = { "Transports Régionaux", "Cars de la Vallée", "Lignes du Littoral", "Autocars du Plateau", "Réseau des Collines", "Transports du Pays",
 	"Bus de la Plaine", "Lignes de l'Estuaire" }
@@ -41,11 +41,12 @@ local function L(E, s) E.log("AI" .. (AINUM ~= 1 and tostring(AINUM) or "") .. "
 function M.listOf(text)
 	local out, seen = {}, {}
 	for part in tostring(text or ""):gmatch("[^,;]+") do
-		local n, ix, lv = part:match("^%s*(%d+):(%d+):?(%d*)%s*$")
-		n, ix, lv = tonumber(n), tonumber(ix), tonumber(lv)
+		-- ("n:colour:level:money", 0.5.14: its start money, -1 or none = the players')
+		local n, ix, lv, mo = part:match("^%s*(%d+):(%d+):?(%d*):?(%-?%d*)%s*$")
+		n, ix, lv, mo = tonumber(n), tonumber(ix), tonumber(lv), tonumber(mo)
 		if n and n >= 1 and n <= 32 and not seen[n] then
 			seen[n] = true
-			out[#out + 1] = { n = n, color = ix, level = (lv and lv >= 1 and lv <= 3) and lv or 2 }
+			out[#out + 1] = { n = n, color = ix, level = (lv and lv >= 1 and lv <= 3) and lv or 2, money = (mo and mo >= 0 and mo <= 1e10) and mo or nil }
 		end
 	end
 	return out
@@ -1861,7 +1862,7 @@ local function join(E)
 	-- everything drifted). That far ahead every game holds at its time, the gathering of the joins included)
 	local a = { fn = "mpfCoJoin", origin = G.me, oseq = G.oseq, uid = G.me .. ":" .. G.oseq,
 		at = paused and E.pausedStamp(now) or (E.stampFor(now) + 60 * E.STEP), paused = paused or nil, native = true,
-		args = { key = AIKEY, name = AINAME, host = false, mode = "separate", start = G.coStart, color = AICOLOR, cname = AINAME } }
+		args = { key = AIKEY, name = AINAME, host = false, mode = "separate", start = AIMONEY or G.coStart, color = AICOLOR, cname = AINAME } }
 	E.send("act", a)
 	a.recvFrame = G.frames
 	G.nativeQueue[#G.nativeQueue + 1] = a
@@ -2130,6 +2131,8 @@ function M.tick(E, st)
 	if G.AI.levelSaid ~= LV.name then G.AI.levelSaid = LV.name; E.log("AI" .. cur.n .. " level " .. LV.name) end
 	AINUM, AIKEY = cur.n, "ai:" .. cur.n
 	AICOLOR = (cur.color and cur.color >= 1 and cur.color <= #E.CO.PALETTE) and cur.color or nil
+	-- (its start money, the host's choice for it; else the players')
+	AIMONEY = cur.money
 	local known = aiCompany(E)
 	AINAME = known and known.name ~= "" and known.name or newName(E, cur.n)
 	-- (what a step costs this game's interface: the slowest one of each minute is logged)

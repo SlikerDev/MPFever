@@ -27,6 +27,7 @@ namespace MPFever
         public string CompanyMode = "shared";
         public string Owner = "";
         public long StartMoney = 2000000;
+        public bool ShareRules = true;
         public int StartSpeed = 1;
         public bool PauseWhenEmpty = true;
         public bool PlayerSpeedControl = true;
@@ -71,6 +72,10 @@ namespace MPFever
             "",
             "# separate only: money of a new company.",
             "start-money=2000000",
+            "",
+            "# separate only: true, each company decides whether its tracks, stations, stops and depots are private, open or paying;",
+            "# false: everything is open and free for every company.",
+            "sharing-rules=true",
             "",
             "# Game speed when the world starts: 1, 2 or 4.",
             "start-speed=1",
@@ -149,6 +154,7 @@ namespace MPFever
                     if (!long.TryParse(v, NumberStyles.Integer, CultureInfo.InvariantCulture, out long money) || money < 0) return false;
                     StartMoney = money;
                     return true;
+                case "sharing-rules": return Bool(v, ref ShareRules);
                 case "start-speed":
                     if (v != "1" && v != "2" && v != "4") return false;
                     StartSpeed = int.Parse(v, CultureInfo.InvariantCulture);

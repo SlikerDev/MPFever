@@ -103,9 +103,10 @@ namespace MPFever
         // lobby's savegame are there from the start (SaveInfo.AiCompanies); the host adds, removes and colours them. Sent to the
         // games with the session (ai= "n:colour,..."), the host's game runs them (mpfever_ai.lua); a player who joins the lobby
         // sees them (lobbyAiText, "n:colour:level:name;..."). Level (0.5.13): 1 easy, 2 normal (the default), 3 hard
-        sealed class LobbyAi { public int Color; public string Name = ""; public int Level = 2; }
+        // (Money, 0.5.14: its start money, -1 = the players')
+        sealed class LobbyAi { public int Color; public string Name = ""; public int Level = 2; public long Money = -1; }
         readonly SortedDictionary<int, LobbyAi> lobbyAi = new SortedDictionary<int, LobbyAi>();
-        string lobbyAiText = "";
+        string lobbyAiText = "", lobbyRulesText = "";
         // the mods of the lobby's savegame ("id|name|origin" entries separated by ";;", see mpfever_menu.lua): written by the
         // host's menu (host_mods.txt), sent to the players of the lobby, shown by their menu with those missing on their PC
         string lobbyMods = "";
@@ -1250,6 +1251,7 @@ namespace MPFever
                     ["cmode"] = lobbyOpen ? companyMode : lobbyMode,
                     ["bankrupt"] = lobbyOpen ? BankruptMonths() : "",
                     ["ai"] = lobbyOpen ? (companyMode == "separate" ? LobbyAiView() : "") : lobbyAiText,
+                    ["rules"] = lobbyOpen ? (companyMode == "separate" ? LobbyRulesView() : "") : lobbyRulesText,
                     ["myMods"] = SafeMineView(),
                     ["autoMods"] = st.TryGetValue("automods", out var am) && am == "0" ? "0" : "1",
                     ["modAsk"] = lobbyOpen ? ModAskView() : "",
@@ -1532,7 +1534,29 @@ namespace MPFever
                 if (lobbyOpen && hostName != null) { SetLobbyColor(BaseName(hostName), ix); }
                 else foreach (var cl in clients.ToList()) { try { cl.Send(Msg.Make("lobbycolor", name, "{[\"ix\"]=" + ix + "}")); } catch { } }
             }
-            else if (cmd == "aiadd" || cmd == "aidel" || cmd == "aicolor" || cmd == "ailevel")
+            else if (cmd == "startmoney" || cmd == "share")
+            {
+                // (0.5.14, the host, in the lobby or in its game's MPFever window) the start money of a new company, the sharing rules
+                // between companies on or off: every game takes them with the session, the host's game puts them into the game (and
+                // its savegame, see mpfever_eco.lua's co_rules)
+                if (cmd == "startmoney")
+                {
+                    if (!long.TryParse(arg, NumberStyles.Integer, CultureInfo.InvariantCulture, out long mo) || mo < 0 || mo > 10000000000L) return;
+                    SaveSetting("companystart", mo.ToString(CultureInfo.InvariantCulture));
+                    Log.W(F("Argent de départ d'une nouvelle entreprise : {0:N0}", "Start money of a new company: {0:N0}", mo));
+                }
+                else
+                {
+                    if (arg != "0" && arg != "1") return;
+                    SaveSetting("share", arg);
+                    Log.W(arg == "1" ? T("Règles de partage entre entreprises : activées", "Sharing rules between companies: on")
+                        : T("Règles de partage entre entreprises : désactivées (tout est ouvert et gratuit)", "Sharing rules between companies: off (everything open and free)"));
+                }
+                if (relay != null) BroadcastSession();
+                BroadcastLobby();
+                MenuStatus();
+            }
+            else if (cmd == "aiadd" || cmd == "aidel" || cmd == "aicolor" || cmd == "ailevel" || cmd == "aimoney")
             {
                 // (the host, one company per player) the lobby's computer companies
                 LobbyAiRequest(cmd.Substring(2), arg);
@@ -1762,7 +1786,7 @@ namespace MPFever
             lock (lobbyColorOf) lobbyColorOf.Clear();
             lobbyColors = ""; lobbyMode = "";
             lock (lobbyAi) lobbyAi.Clear();
-            lobbyAiText = "";
+            lobbyAiText = ""; lobbyRulesText = "";
             lobbyOpen = lobbyStarting = false; lobbySave = ""; lobbyPlayers = ""; lobbyPublic = ""; lobbyLocal = ""; lobbyMods = ""; modCheck = null;
             lock (modIssues) modIssues.Clear();
             joinedAddr = null;
@@ -1813,11 +1837,13 @@ namespace MPFever
             lock (lobbyColorOf) return string.Join(",", lobbyColorOf.Where(kv => here.Contains(kv.Key)).Select(kv => kv.Key + ":" + kv.Value));
         }
 
-        /// <summary>The lobby's computer companies for the menus: "n:colour:level:name;..." (names without ';' and ':').</summary>
+        /// <summary>The lobby's computer companies for the menus: "n:colour:level:money:name;..." (names without ';' and ':'; money
+        /// -1: the players', 0.5.14).</summary>
         string LobbyAiView()
         {
             lock (lobbyAi) return string.Join(";", lobbyAi.Select(kv => kv.Key.ToString(CultureInfo.InvariantCulture) + ":" + kv.Value.Color.ToString(CultureInfo.InvariantCulture)
-                + ":" + kv.Value.Level.ToString(CultureInfo.InvariantCulture) + ":" + (kv.Value.Name ?? "").Replace(";", " ").Replace(":", " ")));
+                + ":" + kv.Value.Level.ToString(CultureInfo.InvariantCulture) + ":" + kv.Value.Money.ToString(CultureInfo.InvariantCulture)
+                + ":" + (kv.Value.Name ?? "").Replace(";", " ").Replace(":", " ")));
         }
 
         /// <summary>The computer companies the host's game runs: "n:colour:level,..." (the session's ai=), "" without any.</summary>
@@ -1829,8 +1855,9 @@ namespace MPFever
                 // (the tests, without a lobby: MPFEVER_AI="n:colour,..." stands for the host's choice)
                 var env = Environment.GetEnvironmentVariable("MPFEVER_AI") ?? "";
                 if (lobbyAi.Count == 0 && env.Contains(":")) return env;
+                // (":money", 0.5.14: only when the host chose one for it, else the players')
                 return string.Join(",", lobbyAi.Select(kv => kv.Key.ToString(CultureInfo.InvariantCulture) + ":" + kv.Value.Color.ToString(CultureInfo.InvariantCulture)
-                    + ":" + kv.Value.Level.ToString(CultureInfo.InvariantCulture)));
+                    + ":" + kv.Value.Level.ToString(CultureInfo.InvariantCulture) + (kv.Value.Money >= 0 ? ":" + kv.Value.Money.ToString(CultureInfo.InvariantCulture) : "")));
             }
         }
 
@@ -1893,6 +1920,20 @@ namespace MPFever
                 }
                 Log.W(F("Entreprise de l'ordinateur {0} : niveau {1}", "Computer company {0}: level {1}", n, lv));
             }
+            else if (what == "money")
+            {
+                // (0.5.14) "n:amount": its start money, -1 = the players'
+                var parts = (arg ?? "").Split(':');
+                if (parts.Length != 2 || !int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out int n)
+                    || !long.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out long mo) || mo < -1 || mo > 10000000000L) return;
+                lock (lobbyAi)
+                {
+                    if (!lobbyAi.TryGetValue(n, out var a)) return;
+                    a.Money = mo;
+                }
+                Log.W(mo < 0 ? F("Entreprise de l'ordinateur {0} : argent de départ des joueurs", "Computer company {0}: the players' start money", n)
+                    : F("Entreprise de l'ordinateur {0} : argent de départ {1:N0}", "Computer company {0}: start money {1:N0}", n, mo));
+            }
             BroadcastLobby();
             MenuStatus();
         }
@@ -1909,6 +1950,8 @@ namespace MPFever
                     if (f == null) return;
                     var t0 = DateTime.UtcNow;
                     var list = SaveInfo.AiCompanies(f);
+                    // (0.5.14: the savegame's rules too, the lobby starts with them)
+                    try { LoadSaveRules(save, f); } catch (Exception e) { Log.W("savegame rules: " + e.Message); }
                     if (lobbySave != save || !lobbyOpen) return;
                     foreach (var c in list)
                     {
@@ -1937,8 +1980,13 @@ namespace MPFever
                 + (lobbySaveSha != "" ? ",[\"sha\"]=" + LuaLit.Quote(lobbySaveSha) + ",[\"size\"]=" + lobbySaveSize : "")
                 + ",[\"host\"]=" + LuaLit.Quote(BaseName(hostName ?? "")) + ",[\"mods\"]=" + LuaLit.Quote(lobbyMods)
                 + ",[\"colors\"]=" + LuaLit.Quote(LobbyColors()) + ",[\"cmode\"]=" + LuaLit.Quote(companyMode)
-                + ",[\"ai\"]=" + LuaLit.Quote(companyMode == "separate" ? LobbyAiView() : "") + "}"));
+                + ",[\"ai\"]=" + LuaLit.Quote(companyMode == "separate" ? LobbyAiView() : "")
+                // (0.5.14: the game's rules, shown to the players of the lobby)
+                + ",[\"rules\"]=" + LuaLit.Quote(companyMode == "separate" ? LobbyRulesView() : "") + "}"));
         }
+
+        /// <summary>The game's rules for the menus (0.5.14, one company per player): "start money|share 1/0|bankruptcy months".</summary>
+        string LobbyRulesView() => StartMoney() + "|" + ShareRules() + "|" + BankruptMonths();
 
         /// <summary>The host starts the game from its lobby: every player in it receives the host's savegame and every game
         /// (the host's too) loads it at once; the session starts when they are all ready, as after a resynchronisation. A
@@ -2532,6 +2580,7 @@ namespace MPFever
                             lobbyColors = S("colors");
                             lobbyMode = S("cmode");
                             lobbyAiText = S("ai");
+                            lobbyRulesText = S("rules");
                             SetHostMods(S("mods"), client, name);
                             // the host's savegame: maybe on this PC already (copied by hand): then nothing to download
                             if (S("sha") != "" && long.TryParse(S("size"), NumberStyles.Integer, CultureInfo.InvariantCulture, out long hsz)) CheckHostSave(S("sha"), hsz, S("save"), client, name);
@@ -2953,13 +3002,41 @@ namespace MPFever
             return long.TryParse(v ?? "", out long n) && n >= 0 ? n.ToString() : "2000000";
         }
 
+        /// <summary>The sharing rules between companies (0.5.14, one company per player): "1" on (each company's rules for its
+        /// tracks, stations, stops and depots), "0" off (everything open and free). MPFEVER_SHARE, else (dedicated server)
+        /// sharing-rules in mpfever_server.properties, else share= in mpfever_settings.txt (the host's choice), else on.</summary>
+        string ShareRules()
+        {
+            var v = Environment.GetEnvironmentVariable("MPFEVER_SHARE");
+            if (string.IsNullOrEmpty(v) && server != null) v = server.ShareRules ? "1" : "0";
+            if (string.IsNullOrEmpty(v)) LoadSettings().TryGetValue("share", out v);
+            return v == "0" ? "0" : "1";
+        }
+
+        /// <summary>(the host) the game's rules of a savegame, read from it when a lobby opens on it (0.5.14: the text "mpfrules:..."
+        /// the game keeps, see mpfever_eco.lua's co_rules): the lobby starts with them. A savegame without them leaves the host's
+        /// last choices.</summary>
+        void LoadSaveRules(string save, string file)
+        {
+            var r = SaveInfo.Rules(file);
+            if (r == null || lobbySave != save || !lobbyOpen) return;
+            var said = new List<string>();
+            if (r.TryGetValue("bankrupt", out var b) && int.TryParse(b, NumberStyles.Integer, CultureInfo.InvariantCulture, out int mo) && (mo == 0 || mo == 3 || mo == 6 || mo == 12 || mo == 24))
+            { SaveSetting("bankrupt", b); said.Add(F("faillite {0}", "bankruptcy {0}", mo == 0 ? T("jamais", "never") : mo + T(" mois", " months"))); }
+            if (r.TryGetValue("share", out var sh) && (sh == "0" || sh == "1"))
+            { SaveSetting("share", sh); said.Add(sh == "1" ? T("règles de partage activées", "sharing rules on") : T("règles de partage désactivées", "sharing rules off")); }
+            if (r.TryGetValue("start", out var s0) && long.TryParse(s0, NumberStyles.Integer, CultureInfo.InvariantCulture, out long st0) && st0 >= 0)
+            { SaveSetting("companystart", st0.ToString(CultureInfo.InvariantCulture)); said.Add(F("argent de départ {0:N0}", "start money {0:N0}", st0)); }
+            if (said.Count > 0) Log.W(F("Règles de la sauvegarde reprises : {0}", "The savegame's rules taken again: {0}", string.Join(", ", said)));
+        }
+
         string SessionPayload()
         {
             lock (sessionGate)
                 return "{[\"started\"]=" + (started ? "true" : "false") + ",[\"speed\"]=" + speed +
                        (pauseAt.HasValue ? ",[\"pauseAt\"]=" + pauseAt.Value : "") +
                        ",[\"cmode\"]=\"" + companyMode + "\"" +
-                       (companyMode == "separate" ? ",[\"cstart\"]=" + StartMoney() + ",[\"bankrupt\"]=" + BankruptMonths() : "") +
+                       (companyMode == "separate" ? ",[\"cstart\"]=" + StartMoney() + ",[\"bankrupt\"]=" + BankruptMonths() + ",[\"share\"]=" + (ShareRules() == "1" ? "true" : "false") : "") +
                        // the computer companies the host's game runs (its lobby's choice, "n:colour,...")
                        (AiPayload() != "" ? ",[\"ai\"]=" + LuaLit.Quote(AiPayload()) : "") +
                        // a dedicated server plays no company: the savegame's company goes to its owner (owner=, else nobody)
@@ -3073,7 +3150,7 @@ namespace MPFever
         // What only the host sends (its savegame, mods, lobby, settings, chat, status, resynchronisations, checks): from a player it is never passed on.
         // Relayed, a player could have sent the others a mod (code) or a savegame in the host's place.
         static readonly HashSet<string> HostOnlyKinds = new HashSet<string> { "modfile", "modoffer", "resync_file", "resync_bin",
-            "resync_use", "delta_bin", "lobby", "mpstatus", "chatmsg", "welcome", "session", "peerclock", "auth", "aijournal",
+            "resync_use", "delta_bin", "lobby", "mpstatus", "chatmsg", "welcome", "session", "peerclock", "auth", "aijournal", "namesync",
             "resync_save", "resync_load", "hash", "peerleft", "solo", "det_run", "test_save", "census_now", "tomenu", "camtour", "area_dump" };
         DateTime hostOnlyWarned;
 
@@ -3407,7 +3484,7 @@ namespace MPFever
                         if (from != null) hostGame?.ToGame(m);
                         relay.Broadcast(m, from);
                     }
-                    if (m.Kind != "chat" && m.Kind != "preview" && m.Kind != "aijournal") Log.W($"{m.From} : {m.Kind} {m.Payload}");
+                    if (m.Kind != "chat" && m.Kind != "preview" && m.Kind != "aijournal" && m.Kind != "namesync") Log.W($"{m.From} : {m.Kind} {m.Payload}");
                     break;
             }
         }

@@ -252,6 +252,8 @@ U.pollEco = function()
 		local k = f1[1]
 		if k == "mykey" then e.myKey = f1[2]
 		elseif k == "rules" then e.bankrupt = tonumber(f1[2])
+		elseif k == "share" then e.share = f1[2] ~= "0"
+		elseif k == "start" then e.start = tonumber(f1[2])
 		elseif k == "member" then local id = tonumber(f1[2]); e.members[id] = e.members[id] or {}; table.insert(e.members[id], f1[3])
 		elseif k == "chief" then e.chief[tonumber(f1[2])] = f1[3]
 		elseif k == "gone" then e.gone[tonumber(f1[2])] = f1[3]
@@ -295,7 +297,8 @@ U.pollRules = function(force)
 		local id = tonumber(f1[2])
 		if id and f1[1] == "stops" then r.stops[id] = { rule = f1[3], fee = tonumber(f1[4]) or 0, own = tonumber(f1[5]) or 0 }
 		elseif id and f1[1] == "depotco" then r.depotCo[id] = { rule = f1[3], toll = tonumber(f1[4]) or 0 }
-		elseif id and f1[1] == "gone" then r.gone[id] = true end
+		elseif id and f1[1] == "gone" then r.gone[id] = true
+		elseif f1[1] == "share" then r.off = f1[2] == "0" end
 	end
 	U.rules = r
 	U.rulesVersion = (U.rulesVersion or 0) + 1
@@ -411,6 +414,8 @@ end
 -- stop, and whether it is the station's own setting (else its company's rule). nil when no company owns it.
 U.stationRuleOf = function(key, co)
 	if not co then return nil, 0, false end
+	-- (the sharing rules switched off by the host, 0.5.14: everything open and free)
+	if U.rules and U.rules.off then return "open", 0, false end
 	local openDefault = os.getenv("MPFEVER_OPENDEFAULT") ~= "0"
 	local rs = U.rules or {}
 	if openDefault and rs.gone and rs.gone[co] then return "open", 0, false end
@@ -777,7 +782,11 @@ local function installOwnerLine(react, builtin)
 		if p.innerRecipe then inner = p.innerRecipe(p.innerParam)
 		elseif p.innerBuiltin then inner = p.innerBuiltin({ entity = p.innerParam and p.innerParam.keyEntity }) end
 		local children = { builtin.TextView { meta = { class = "font-scale-body" }, text = p.ownerText } }
-		if p.shareKey then
+		-- (the sharing rules switched off by the host, 0.5.14: no setting here, everything is open and free)
+		pcall(U.pollRules)
+		if (p.shareKey or p.depotKey) and U.rules and U.rules.off then
+			children[#children + 1] = builtin.TextView { meta = { class = "font-scale-body" }, text = T("Règles de partage désactivées par l'hôte : ouvert et gratuit pour toutes les entreprises.", "Sharing rules turned off by the host: open and free for every company.") }
+		elseif p.shareKey then
 			local rule, fee, own = U.stationRuleOf(p.shareKey, p.shareCo)
 			if rule and p.shareEdit then
 				-- the owner chooses the station's setting for the other companies' vehicles (0.5.2): its company's rule (shown
@@ -830,7 +839,7 @@ local function installOwnerLine(react, builtin)
 				children[#children + 1] = builtin.TextView { meta = { class = "font-scale-body" }, text = shareText(p.shareMine, rule, fee, own) }
 			end
 		end
-		if p.depotKey then
+		if p.depotKey and not (U.rules and U.rules.off) then
 			local cur = depotNow:old() or "co"
 			local function label(v)
 				if v == "co" then
@@ -1818,9 +1827,9 @@ U.saveAutoOpen = function(on)
 end
 
 -- ---------------------------------------------------------------- tabs, opening and closing
-U.TAB_IDS = { "session", "chat", "company", "ai", "rules", "settings" }
+U.TAB_IDS = { "session", "chat", "company", "ai", "rules", "game", "settings" }
 -- (the French names, for MPFEVER_SHOWTAB)
-U.TAB_ALIAS = { entreprise = "company", regles = "rules", reglages = "settings", discussion = "chat", ia = "ai" }
+U.TAB_ALIAS = { entreprise = "company", regles = "rules", reglages = "settings", discussion = "chat", ia = "ai", partie = "game" }
 U.tabName = function(tab)
 	tab = tostring(tab or "session"):lower()
 	return U.TAB_ALIAS[tab] or tab
@@ -1832,7 +1841,7 @@ U.tabsFor = function(st)
 	local ai = separate and U.eco ~= nil and next(U.eco.ai or {}) ~= nil
 	local t = {}
 	for _, id in ipairs(U.TAB_IDS) do
-		if (separate or (id ~= "company" and id ~= "rules")) and (id ~= "ai" or ai) then t[#t + 1] = id end
+		if (separate or (id ~= "company" and id ~= "rules" and id ~= "game")) and (id ~= "ai" or ai) then t[#t + 1] = id end
 	end
 	return t
 end
@@ -1851,6 +1860,7 @@ U.tabLabel = function(id)
 	if id == "company" then return T("Entreprise", "Company") end
 	if id == "ai" then return T("IA", "AI") end
 	if id == "rules" then return T("Règles", "Rules") end
+	if id == "game" then return T("Partie", "Game") end
 	return T("Réglages", "Settings")
 end
 
@@ -2651,6 +2661,93 @@ U.settingsRows = function(K, rows)
 	rows[#rows + 1] = K.muted(T("Ils se changent dans la fenêtre Réglages de MPFever.exe et comptent au prochain chargement de la partie.", "They are changed in MPFever.exe's settings window and count from the next load of the game."), W)
 end
 
+-- Game (0.5.14, one company per player): the game's rules, the host's choice in its lobby or here, kept in the savegame (see
+-- mpfever_eco.lua's co_rules): the start money of a new company (a player who arrives, a company started again after a
+-- bankruptcy), the sharing rules between companies on or off, the months in debt before a bankruptcy. Every player sees them;
+-- the host changes them (MPFever.exe's "startmoney", "share" and "bankrupt" requests; the value asked shows until the game has
+-- it, or 15 s). The computer companies' own start money is chosen in the lobby.
+U.START_MONEY = { 0, 500000, 1000000, 2000000, 5000000, 10000000, 20000000, 50000000 }
+U.TABS.game = function(K, st, ctx)
+	local builtin = K.builtin
+	local W = K.TEXT_W
+	local rows = {}
+	pcall(U.pollEco)
+	local eco = U.eco or {}
+	local host = U.isHost(st)
+	local function asked(field, cur)
+		local a = U[field]
+		if a and (cur == a.v or os.clock() - a.at > 15) then U[field] = nil; a = nil end
+		return a and a.v
+	end
+	rows[#rows + 1] = K.section(K.ICON_SETTINGS, T("Règles de la partie", "Game rules"))
+	rows[#rows + 1] = K.muted(host and T("Vous les choisissez pour tous les joueurs ; elles sont gardées dans la sauvegarde.", "You choose them for every player; they are kept in the savegame.")
+		or T("Choisies par l'hôte, gardées dans la sauvegarde.", "Chosen by the host, kept in the savegame."), W)
+	-- the start money of a new company
+	local start = math.floor(tonumber(eco.start) or 2000000)
+	local startCur = asked("startAsked", start) or start
+	rows[#rows + 1] = K.gap(1, 10)
+	rows[#rows + 1] = K.text(T("Argent de départ d'une nouvelle entreprise", "Start money of a new company"), nil, nil, W)
+	rows[#rows + 1] = K.muted(T("Un joueur qui arrive, une entreprise repartie après une faillite. Une entreprise déjà là garde son argent.", "A player who arrives, a company started again after a bankruptcy. A company already there keeps its money."), W)
+	if host then
+		local items, listed = {}, false
+		for _, n in ipairs(U.START_MONEY) do
+			if n == startCur then listed = true end
+			items[#items + 1] = builtin.ComboBoxItem { value = n, content = K.text(money(n)) }
+		end
+		if not listed then items[#items + 1] = builtin.ComboBoxItem { value = startCur, content = K.text(money(startCur)) } end
+		rows[#rows + 1] = K.row { builtin.ComboBox { value = startCur, items = items, onValueChange = function(v)
+			v = tonumber(v)
+			if v ~= nil and v ~= startCur and U.menuRequest("startmoney", v) then U.startAsked = { v = v, at = os.clock() }; U.winChanged() end
+		end } }
+	else
+		rows[#rows + 1] = K.text(money(startCur), nil, nil, W)
+	end
+	-- the sharing rules between companies
+	local share = eco.share ~= false
+	local a = asked("shareAsked", share)
+	local shareCur = share
+	if a ~= nil then shareCur = a end
+	rows[#rows + 1] = K.gap(1, 12)
+	rows[#rows + 1] = K.text(T("Règles de partage entre entreprises", "Sharing rules between companies"), nil, nil, W)
+	rows[#rows + 1] = K.muted(T("Activées : chaque entreprise décide si ses voies, gares, arrêts et dépôts sont privés, ouverts ou payants. Désactivées : tout est ouvert et gratuit pour toutes les entreprises.",
+		"On: each company decides whether its tracks, stations, stops and depots are private, open or paying. Off: everything is open and free for every company."), W)
+	if host then
+		rows[#rows + 1] = K.row { builtin.CheckBox {
+			value = shareCur and 1 or 0,
+			label = T("Règles de partage activées", "Sharing rules on"),
+			onValueChange = function(v)
+				local on = v == 1
+				if on ~= shareCur and U.menuRequest("share", on and 1 or 0) then U.shareAsked = { v = on, at = os.clock() }; U.winChanged() end
+			end,
+		} }
+	else
+		rows[#rows + 1] = K.text(shareCur and T("Activées", "On") or T("Désactivées : tout est ouvert et gratuit", "Off: everything is open and free"), nil, nil, W)
+	end
+	-- the months in debt before a bankruptcy (MPFever.exe's "bankrupt" request)
+	local lim = tonumber(eco.bankrupt) or 12
+	local limCur = asked("bankruptAsked", lim) or lim
+	rows[#rows + 1] = K.gap(1, 12)
+	rows[#rows + 1] = K.text(T("Faillite", "Bankruptcy"), nil, nil, W)
+	rows[#rows + 1] = K.muted(T("Mois de dette avant qu'une entreprise fasse faillite.", "Months in debt before a company goes bankrupt."), W)
+	if host then
+		local items = {}
+		for _, n in ipairs(U.BANKRUPT_MONTHS) do
+			items[#items + 1] = builtin.ComboBoxItem { value = n, content = K.text(n == 0 and T("Jamais", "Never") or C.Tf("%s mois", "%s months", n)) }
+		end
+		rows[#rows + 1] = K.row { builtin.ComboBox { value = limCur, items = items, onValueChange = function(v)
+			v = tonumber(v)
+			if v ~= nil and v ~= limCur and U.menuRequest("bankrupt", v) then U.bankruptAsked = { v = v, at = os.clock() }; U.winChanged() end
+		end } }
+	else
+		rows[#rows + 1] = K.text(limCur == 0 and T("Jamais", "Never") or C.Tf("Après %s mois de dette", "After %s months in debt", limCur), nil, nil, W)
+	end
+	if next(eco.ai or {}) ~= nil then
+		rows[#rows + 1] = K.gap(1, 12)
+		rows[#rows + 1] = K.muted(T("L'argent de départ de chaque entreprise de l'ordinateur se choisit dans le salon.", "Each computer company's start money is chosen in the lobby."), W)
+	end
+	return rows
+end
+
 -- Settings: whether the window opens by itself, the bankruptcy rule (the host, one company per player), the settings (read
 -- only), the problem report
 U.BANKRUPT_MONTHS = { 0, 3, 6, 12, 24 }
@@ -2673,25 +2770,7 @@ U.TABS.settings = function(K, st, ctx)
 			onValueChange = function(v) p.aichat = v == 1 and "1" or "0"; U.saveGlobalPrefs(); U.winChanged() end,
 		} }
 	end
-	-- the months in debt before a bankruptcy: the host's rule, sent by MPFever.exe to every game ("bankrupt" request)
-	if st and st.mode == "separate" and U.isHost(st) then
-		pcall(U.pollEco)
-		-- (the months just chosen show until the game has them, or 15 s)
-		local asked = U.bankruptAsked
-		if asked and ((U.eco and U.eco.bankrupt == asked.v) or os.clock() - asked.at > 15) then U.bankruptAsked = nil; asked = nil end
-		local cur = asked and asked.v or (U.eco and U.eco.bankrupt) or 12
-		local items = {}
-		for _, n in ipairs(U.BANKRUPT_MONTHS) do
-			items[#items + 1] = builtin.ComboBoxItem { value = n, content = K.text(n == 0 and T("Jamais", "Never") or C.Tf("%s mois", "%s months", n)) }
-		end
-		rows[#rows + 1] = K.gap(1, 12)
-		rows[#rows + 1] = K.section(K.ICON_ALERT, T("Faillite", "Bankruptcy"))
-		rows[#rows + 1] = K.muted(T("Mois de dette avant qu'une entreprise fasse faillite, pour toute la partie.", "Months in debt before a company goes bankrupt, for the whole game."), W)
-		rows[#rows + 1] = K.row { builtin.ComboBox { value = cur, items = items, onValueChange = function(v)
-			v = tonumber(v)
-			if v ~= nil and v ~= cur and U.menuRequest("bankrupt", v) then U.bankruptAsked = { v = v, at = os.clock() }; U.winChanged() end
-		end } }
-	end
+	-- (the bankruptcy rule is in the Game tab since 0.5.14, with the game's other rules)
 	U.settingsRows(K, rows)
 	rows[#rows + 1] = K.gap(1, 12)
 	rows[#rows + 1] = K.section(K.ICON_ALERT, T("Un problème ?", "A problem?"))

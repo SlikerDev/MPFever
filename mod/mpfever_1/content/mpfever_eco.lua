@@ -428,9 +428,17 @@ end
 -- bridge (eco.txt, shares.txt, the map's icons, the open tracks): what nothing set means is decided here, when read, so that no
 -- savegame needs to be changed and every game reads the same.
 
+-- The sharing rules switched off by the host (0.5.14, its lobby or its game settings; reg.rules.share, kept in the savegame):
+-- nothing between companies then, every track, station, stop and depot is open and free, whatever a company or one of its
+-- stations set (those settings are kept, and count again when the host switches the rules back on)
+function E.sharingOff(reg)
+	return type(reg) == "table" and type(reg.rules) == "table" and reg.rules.share == false
+end
+
 -- the rule of a company for its tracks: { rule = "private" | "open" | "toll", toll = n }; a gone company's tracks are open, and
 -- so are those of a company that set nothing (0.5.2; MPFEVER_OPENDEFAULT=0: private as before)
 function E.trackRule(reg, c)
+	if E.sharingOff(reg) then return { rule = "open", toll = E.TOLL_DEFAULT } end
 	local default = E.OPEN_DEFAULT and { rule = "open", toll = E.TOLL_DEFAULT } or { rule = "private" }
 	if not c then return default end
 	if c.gone then return { rule = "open", toll = E.TOLL_DEFAULT } end
@@ -441,6 +449,7 @@ end
 -- the rule of a company for its depots without a setting of their own (co_depot_default): { rule, toll }; open when nothing
 -- was set (0.5.2; MPFEVER_OPENDEFAULT=0: private as before), a gone company's depots are open
 function E.depotCoRule(reg, c)
+	if E.sharingOff(reg) then return { rule = "open", toll = E.TOLL_DEFAULT } end
 	if E.OPEN_DEFAULT and c and c.gone then return { rule = "open", toll = E.TOLL_DEFAULT } end
 	local r = c and reg and reg.depotCo and reg.depotCo[tostring(c.id)]
 	if r then return r end
@@ -450,6 +459,7 @@ end
 -- the rule of a depot (its key, see depotKey) of company ownerCo: its own setting (its window: reg.depots, private included since
 -- 0.5.2), else its company's rule
 function E.depotRule(reg, key, ownerCo)
+	if E.sharingOff(reg) then return { rule = "open", toll = E.TOLL_DEFAULT } end
 	local c = ownerCo and findCo(reg, ownerCo) or nil
 	if E.OPEN_DEFAULT and c and c.gone then return { rule = "open", toll = E.TOLL_DEFAULT } end
 	local r = reg and reg.depots and reg.depots[key]
@@ -461,6 +471,7 @@ end
 -- MPFEVER_OPENDEFAULT=0: a toll of $100 per stop as before), a gone company's stations are open. The fee is kept when the rule
 -- is not a toll: the amount the interface proposes when the toll is chosen again.
 function E.stopRule(reg, c)
+	if E.sharingOff(reg) then return { rule = "open", fee = E.STOP_FEE_DEFAULT } end
 	if E.OPEN_DEFAULT and c and c.gone then return { rule = "open", fee = E.STOP_FEE_DEFAULT } end
 	local r = c and reg and reg.stops and reg.stops[tostring(c.id)]
 	if r then return r end
@@ -485,6 +496,7 @@ end
 -- when no station has a setting of its own (the caller then needs not read it).
 function E.stationRule(reg, key, ownerCo)
 	if not ownerCo then return nil, 0, false end
+	if E.sharingOff(reg) then return "open", 0, false end
 	local c = findCo(reg, ownerCo)
 	if E.OPEN_DEFAULT and (not c or c.gone) then return "open", 0, false end
 	local o = key and reg.stationRule and reg.stationRule[key]
@@ -515,6 +527,7 @@ end
 -- whether a stop at some company's station may cost something (a company's rule or a station's own setting that is a toll, or
 -- private when those stops pay): when none does, the fees look at no line
 function E.anyStopFee(reg)
+	if E.sharingOff(reg) then return false end
 	local function costs(rule, fee)
 		if rule == "toll" then return (tonumber(fee) or 0) > 0 end
 		return rule == "private" and E.PRIVATE_FEE
@@ -845,7 +858,14 @@ function E.event(st, name, param, env)
 		if not ok then return refuse("months " .. tostring(param.bankrupt)) end
 		reg.rules = reg.rules or {}
 		reg.rules.bankrupt = b
-		env.log("companies: rules: bankruptcy after " .. b .. " month(s) in debt" .. (b == 0 and " (never)" or ""))
+		-- (0.5.14) the sharing rules on or off, the start money of a new company (none sent: unchanged)
+		if param.share ~= nil then reg.rules.share = param.share ~= false end
+		local s = tonumber(param.start)
+		if s and s >= 0 and s <= 1e10 then reg.rules.start = math.floor(s) end
+		-- (one text MPFever.exe finds in the savegame, to show this game's rules again in a lobby opened on it)
+		reg.rules.cfg = "mpfrules:bankrupt=" .. b .. ";share=" .. (reg.rules.share == false and "0" or "1") .. ";start=" .. tostring(reg.rules.start or "") .. ";"
+		env.log("companies: rules: bankruptcy after " .. b .. " month(s) in debt" .. (b == 0 and " (never)" or "")
+			.. ", sharing rules " .. (reg.rules.share == false and "OFF (everything open and free)" or "on") .. ", start money " .. tostring(reg.rules.start))
 	elseif name == "co_join_ask" then
 		local t = env.CO.find(reg, tonumber(param.to))
 		local cur = env.CO.memberOf(reg, key)

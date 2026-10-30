@@ -655,6 +655,8 @@ local function setup()
 		local addr = react.useState(st0.addr or "")
 		local password = react.useState("")            -- joining: the password of a dedicated server (none: empty)
 		local state = react.useState(st0)
+		-- (the host's lobby, one company per player: the game's rules shown, 0.5.14; MPFEVER_MENU_RULES=1: shown at first, tests)
+		local rulesOpen = react.useState(os.getenv("MPFEVER_MENU_RULES") == "1")
 		local leaving = react.useRef(false)
 		-- (the host's savegame, once received, is loaded by the application script mpfever_auto.lua)
 		react.onStepTimer(function()
@@ -800,9 +802,15 @@ local function setup()
 			-- the computer companies of the lobby (experimental): "n:colour:level:name;..." from MPFever.exe; their colours are taken too
 			local ais = {}
 			if separate then
-				for n, ix, lv, nm in (st.ai or ""):gmatch("(%d+):(%d+):(%d+):([^;]*)") do
-					ais[#ais + 1] = { n = tonumber(n), ix = tonumber(ix), lv = tonumber(lv) or 2, name = nm }
-					taken[tonumber(ix)] = true
+				-- ("n:colour:level:money:name", 0.5.14: its start money, -1 the players'; "n:colour:level:name" before)
+				for entry in (st.ai or ""):gmatch("[^;]+") do
+					local n, ix, lv, rest = entry:match("^(%d+):(%d+):(%d+):(.*)$")
+					if n then
+						local mo, nm = rest:match("^(%-?%d+):(.*)$")
+						if not mo then nm = rest end
+						ais[#ais + 1] = { n = tonumber(n), ix = tonumber(ix), lv = tonumber(lv) or 2, money = tonumber(mo) or -1, name = nm or "" }
+						taken[tonumber(ix)] = true
+					end
 				end
 			end
 			if separate then
@@ -888,21 +896,76 @@ local function setup()
 					end
 					below[#below + 1] = box(H, line, nil, { padding = { 4, 10, 4, 10 }, background = { 1, 1, 1, i % 2 == 1 and 0.06 or 0.02 }, size = { w, -1 } })
 				end
-			end			-- (the host) months in debt before a company goes bankrupt (its assets auctioned to the others, its players start
-			-- again with a new company): the game's rule, sent with the session (see MPFever.exe's BankruptMonths)
-			if separate and isHost then
-				local cur = tonumber(st.bankrupt) or 12
-				local opts = { box(H, { text(T("Faillite d'une entreprise endettée après :", "A company in debt goes bankrupt after:"), "font-scale-title-4", SIDE_W - PIC_W - 32) }), gap(1, 6) }
-				local row = {}
-				for _, mo in ipairs({ 0, 3, 6, 12, 24 }) do
-					local m = mo
-					row[#row + 1] = button(m == 0 and T("Jamais", "Never") or (T("%s mois", "%s months"):gsub("%%s", tostring(m))),
-						function() request("bankrupt", tostring(m), playerName()) end, { font = "font-scale-body", primary = cur == m })
-					row[#row + 1] = gap(6, 1)
+			end
+			-- (one company per player, 0.5.14) the game's rules: the start money of a new company, the sharing rules between
+			-- companies on or off, the months in debt before a bankruptcy (its assets auctioned to the others, its players start
+			-- again with a new company). Beside the picture, one line for every player of the lobby; the host opens them with a
+			-- button under it, in place of the list under the picture (the lobby stays in view without scrolling). MPFever.exe
+			-- sends them with the session ("rules" = "start|share|months"), the host's game keeps them in the savegame.
+			if separate then
+				local rStart, rShare, rMonths = (st.rules or ""):match("^(%d+)|(%d)|(%d+)$")
+				rStart, rMonths = tonumber(rStart) or 2000000, tonumber(rMonths) or tonumber(st.bankrupt) or 12
+				local shareOn = rShare ~= "0"
+				local function fmt(n)
+					if n >= 1000000 then return (string.format("%g", n / 1000000)) .. " M" end
+					if n >= 1000 then return (string.format("%g", n / 1000)) .. " k" end
+					return tostring(n)
 				end
-				opts[#opts + 1] = box(H, row)
+				local sw = SIDE_W - PIC_W - 32
+				local summary = T("Départ : %s", "Start: %s"):gsub("%%s", fmt(rStart)) .. "  ·  "
+					.. (shareOn and T("Partage activé", "Sharing on") or T("Partage désactivé", "Sharing off")) .. "  ·  "
+					.. (rMonths == 0 and T("Pas de faillite", "No bankruptcy") or (T("Faillite : %s mois", "Bankruptcy: %s months"):gsub("%%s", tostring(rMonths))))
 				side[#side + 1] = gap(1, 12)
-				side[#side + 1] = box(V, opts)
+				side[#side + 1] = text(T("Règles de la partie", "Game rules"), "font-scale-title-4", sw)
+				side[#side + 1] = text(summary, "font-scale-body", sw)
+				if isHost then
+					side[#side + 1] = gap(1, 6)
+					side[#side + 1] = button(rulesOpen:old() and T("Fermer les réglages", "Close the settings") or T("Réglages de la partie…", "Game settings…"),
+						function() rulesOpen:set(not rulesOpen:old()) end, { font = "font-scale-body", primary = rulesOpen:old() })
+				end
+				if isHost and rulesOpen:old() then
+					local w = SIDE_W - 24
+					local panel = { text(T("Réglages de la partie", "Game settings"), "font-scale-title-3", w),
+						text(T("Pour tous les joueurs ; gardés dans la sauvegarde.", "For every player; kept in the savegame."), "font-scale-body", w), gap(1, 10) }
+					local function choices(label, values, cur, show, send)
+						local row = { text(label, "font-scale-title-4", 300) }
+						for _, v in ipairs(values) do
+							local pick = v
+							row[#row + 1] = button(show(v), function() send(pick) end, { font = "font-scale-body", primary = cur == v })
+							row[#row + 1] = gap(4, 1)
+						end
+						panel[#panel + 1] = box(H, row, nil, { size = { w, -1 } })
+						panel[#panel + 1] = gap(1, 6)
+					end
+					local MONEY = { 0, 500000, 1000000, 2000000, 5000000, 10000000, 20000000 }
+					choices(T("Argent de départ d'une entreprise :", "Start money of a company:"), MONEY, rStart, fmt,
+						function(v) request("startmoney", tostring(v), playerName()) end)
+					panel[#panel + 1] = text(T("Celui de chaque nouvelle entreprise : un joueur qui arrive, une entreprise repartie après une faillite, et celle de l'hôte au début d'une nouvelle partie.",
+						"That of every new company: a player who arrives, a company started again after a bankruptcy, and the host's at the start of a new game."), "font-scale-body", w)
+					panel[#panel + 1] = gap(1, 10)
+					choices(T("Règles de partage :", "Sharing rules:"), { 1, 0 }, shareOn and 1 or 0,
+						function(v) return v == 1 and T("Activées", "On") or T("Désactivées", "Off") end,
+						function(v) request("share", tostring(v), playerName()) end)
+					panel[#panel + 1] = text(shareOn and T("Chaque entreprise décide si ses voies, gares, arrêts et dépôts sont privés, ouverts ou payants.", "Each company decides whether its tracks, stations, stops and depots are private, open or paying.")
+						or T("Tout est ouvert et gratuit pour toutes les entreprises : voies, gares, arrêts et dépôts.", "Everything is open and free for every company: tracks, stations, stops and depots."), "font-scale-body", w)
+					panel[#panel + 1] = gap(1, 10)
+					choices(T("Faillite d'une entreprise endettée après :", "A company in debt goes bankrupt after:"), { 0, 3, 6, 12, 24 }, rMonths,
+						function(m) return m == 0 and T("Jamais", "Never") or (T("%s mois", "%s months"):gsub("%%s", tostring(m))) end,
+						function(m) request("bankrupt", tostring(m), playerName()) end)
+					if #ais > 0 then
+						panel[#panel + 1] = gap(1, 10)
+						panel[#panel + 1] = text(T("Argent de départ des entreprises de l'ordinateur", "Start money of the computer companies"), "font-scale-title-4", w)
+						for _, a in ipairs(ais) do
+							local n = a.n
+							choices(a.name ~= "" and a.name or (T("Ordinateur %s", "Computer %s"):gsub("%%s", tostring(n))), { -1, 1000000, 2000000, 5000000, 10000000, 20000000 }, a.money,
+								function(v) return v < 0 and T("Comme les joueurs", "As the players") or fmt(v) end,
+								function(v) request("aimoney", tostring(n) .. ":" .. tostring(v), playerName()) end)
+						end
+					end
+					local list = { box(V, panel, nil, { padding = { 10, 12, 10, 12 }, background = { 1, 1, 1, 0.07 }, size = { w, -1 } }), gap(1, 12) }
+					for _, c in ipairs(below) do list[#list + 1] = c end
+					below = list
+				end
 			end
 			-- (the host) players who lack mods no Mod Hub has: send them from this PC? (with their size)
 			if isHost then

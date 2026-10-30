@@ -2997,6 +2997,126 @@ static void FixArrivals(SavedRegs* r) { SortEntityVector(r->rbp - 0x78, 4); }
 // 5: the vehicles at a line stop (the vector the getter returned, in rax) before the boarding loop
 static void FixVehiclesAtStop(SavedRegs* r) { SortEntityVector(r->rax, 5); }
 
+// 13: the road edges' entries (TPF3-MP's road-entry-order, docs/HOOKS.md "Road edge entries"; 0.5.14). transport::EdgeUseManager
+// keeps, per road edge, 20-byte entries {int entity, int component, float back, float front, bool forward} of the persons and
+// vehicles on it, in the order they were appended: Add (a person, from PersonMoveSystem) and AddRange (a vehicle on each edge of
+// its path, from LandVehicleMoveSystem) push them back, nothing reorders them, and the nearest-occupant searches take the first
+// of two at the same place. Appended in another order on another game (the history differs, or the callbacks came otherwise),
+// the vehicles queued at a stop took other places: friends' session of 2026-10-29, trucks of one line queued at a freight stop
+// 0.2 m apart on the two games, then "vehicles" drifted and the games reloaded (twice in 4 h). Both appenders are detoured whole
+// and the edges they appended to are then kept in entity order: one sorted list after each append, whatever order they came
+// in. The lists are found as the engine's GetOrAddEdgeData finds them: the manager's data, its entity-to-slot index [+0]..[+8]
+// (ints), its slots [+0x18]..[+0x20] (72 bytes each), a slot's edges [slot]..[slot+8] (32 bytes each), the entries vector at
+// edge+8; every bound is checked, a shape that does not fit leaves that edge alone (counted as refused). MPFEVER_NOROADORDER=1
+// on every game: the engine's order, as before.
+typedef u64 (*RoadFn9)(u64, u64, u64, u64, u64, u64, u64, u64, u64);
+static RoadFn9 g_roadAddOrig = 0, g_roadAddRangeOrig = 0;
+static volatile long g_roadOn = 0;
+static const int ROAD_W = 13;
+// the entries vector (&begin) of the edge an EdgeId (int entity, int index, int direction) names, or 0
+static u64 RoadEntriesOf(u64 data, u64 edgeId)
+{
+    if (!Readable((void*)edgeId, 8) || !Readable((void*)data, 0x28)) return 0;
+    i32 ent = *(i32*)edgeId, idx = *(i32*)(edgeId + 4);
+    if (ent < 0 || idx < 0) return 0;
+    u64 so = *(u64*)data, se = *(u64*)(data + 8);
+    if (se < so || (u64)ent >= (se - so) / 4 || !Readable((void*)(so + (u64)ent * 4), 4)) return 0;
+    i32 slot = *(i32*)(so + (u64)ent * 4);
+    if (slot < 0) return 0;
+    u64 sl = *(u64*)(data + 0x18), sle = *(u64*)(data + 0x20);
+    if (sle < sl || (sle - sl) % 72 || (u64)slot >= (sle - sl) / 72) return 0;
+    u64 at = sl + (u64)slot * 72;
+    if (!Readable((void*)at, 16)) return 0;
+    u64 eb = *(u64*)at, ee = *(u64*)(at + 8);
+    if (ee < eb || (ee - eb) % 32 || (u64)idx >= (ee - eb) / 32) return 0;
+    u64 vec = eb + (u64)idx * 32 + 8;
+    return Readable((void*)vec, 16) ? vec : 0;
+}
+// the entries of one edge put in entity order, in place (insertion: a kept list is out of order only in its appended last entry)
+static void RoadSortEdge(u64 data, u64 edgeId)
+{
+    _InterlockedIncrement(&g_orderSorts[ROAD_W]);
+    u64 vec = RoadEntriesOf(data, edgeId);
+    if (!vec) { _InterlockedIncrement(&g_orderRefused[ROAD_W]); return; }
+    u64 b = *(u64*)vec, e = *(u64*)(vec + 8);
+    if (b == e) return;
+    if (e < b || (e - b) % 20 || (e - b) / 20 > 65536 || !Writable((void*)b, e - b)) { _InterlockedIncrement(&g_orderRefused[ROAD_W]); return; }
+    u64 n = (e - b) / 20;
+    u8* p = (u8*)b;
+    bool sorted = true;
+    for (u64 i = 1; i < n; i++) if (*(i32*)(p + (i - 1) * 20) > *(i32*)(p + i * 20)) { sorted = false; break; }
+    if (sorted) return;
+    _InterlockedIncrement(&g_orderReorders[ROAD_W]);
+    u8 t[20];
+    for (u64 i = 1; i < n; i++) {
+        i32 k = *(i32*)(p + i * 20);
+        if (*(i32*)(p + (i - 1) * 20) <= k) continue;
+        memcpy(t, p + i * 20, 20);
+        u64 j = i;
+        while (j > 0 && *(i32*)(p + (j - 1) * 20) > k) { memcpy(p + j * 20, p + (j - 1) * 20, 20); j--; }
+        memcpy(p + j * 20, t, 20);
+    }
+}
+// Add(this = the manager, &edgeId, entity, component, {back, front}): the manager's data at [this+0x18]
+static u64 RoadAdd(u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, u64 a6, u64 a7, u64 a8, u64 a9)
+{
+    u64 r = g_roadAddOrig(a1, a2, a3, a4, a5, a6, a7, a8, a9);
+    if (g_roadOn && Readable((void*)(a1 + 0x18), 8)) RoadSortEdge(*(u64*)(a1 + 0x18), a2);
+    return r;
+}
+// AddRange(this = the data, entity, component, &path (12-byte EdgeIds), current, {back, front}, from, to, manager): the edges
+// path[from..to]; the manager's [+0x18] must name the data it was given
+static u64 RoadAddRange(u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, u64 a6, u64 a7, u64 a8, u64 a9)
+{
+    u64 r = g_roadAddRangeOrig(a1, a2, a3, a4, a5, a6, a7, a8, a9);
+    if (!g_roadOn) return r;
+    i32 from = (i32)(u32)a7, to = (i32)(u32)a8;
+    if (!Readable((void*)(a9 + 0x18), 8) || *(u64*)(a9 + 0x18) != a1 || !Readable((void*)a4, 16)) { _InterlockedIncrement(&g_orderRefused[ROAD_W]); return r; }
+    u64 pb = *(u64*)a4, pe = *(u64*)(a4 + 8);
+    if (pe < pb || (pe - pb) % 12 || from < 0 || to < from || (u64)to >= (pe - pb) / 12 || (pe - pb) / 12 > (1u << 20)) { _InterlockedIncrement(&g_orderRefused[ROAD_W]); return r; }
+    for (i32 i = from; i <= to; i++) RoadSortEdge(a1, pb + (u64)i * 12);
+    return r;
+}
+// a whole-function detour: the function's first 14 bytes (whole instructions, checked against `pro`, no rip-relative one) run
+// from a copy followed by a jump back; the function starts with a jump to `hook`
+static void* DetourWhole(u8*& mem, u32 rva, const u8* pro, int len, void* hook)
+{
+    u8* f = (u8*)(g_base + rva);
+    if (len < 14 || len > 32 || memcmp(f, pro, len) != 0) return 0;
+    Asm a{ mem };
+    u8* tramp = a.p;
+    a.bn(f, len);
+    a.b(0xFF); a.b(0x25); a.b(0); a.b(0); a.b(0); a.b(0); a.imm64((u64)(f + len));
+    mem = (u8*)(((u64)a.p + 15) & ~15ull);
+    DWORD old;
+    if (!VirtualProtect(f, len, PAGE_EXECUTE_READWRITE, &old)) return 0;
+    u8 patch[32];
+    patch[0] = 0xFF; patch[1] = 0x25; *(u32*)(patch + 2) = 0; *(u64*)(patch + 6) = (u64)hook;
+    for (int k = 14; k < len; k++) patch[k] = 0x90;
+    memcpy(f, patch, len);
+    VirtualProtect(f, len, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), f, len);
+    return tramp;
+}
+static bool InstallRoadOrder(u8*& mem)
+{
+    if (GetEnvironmentVariableA("MPFEVER_NOROADORDER", 0, 0) > 0) return false;
+    // (TPF3-MP's signatures for build 40425; both appenders or neither: one list kept and the other not is no order)
+    u32 add = FindSigRva("48 89 5C 24 18 48 89 74 24 20 55 57 41 56 48 8D 6C 24 C0 48 81 EC 40 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 38");
+    u32 rng = FindSigRva("48 8B C4 48 89 58 10 55 56 57 41 54 41 55 41 56 41 57 48 8D A8 08 FF FF FF 48 81 EC C0 01 00 00 C5 F8 29 70 B8 C5 F8 29 78 A8 C5 78 29 40 98 C5 78 29 48 88 C5 78 29 90 78 FF FF FF C5 78 29 98 68 FF FF FF 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 58");
+    if (!add || !rng) return false;
+    static const u8 proAdd[] = { 0x48, 0x89, 0x5C, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x55, 0x57, 0x41, 0x56 };
+    static const u8 proRng[] = { 0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x10, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55 };
+    void* t1 = DetourWhole(mem, add, proAdd, (int)sizeof(proAdd), (void*)RoadAdd);
+    if (!t1) return false;
+    g_roadAddOrig = (RoadFn9)t1;
+    void* t2 = DetourWhole(mem, rng, proRng, (int)sizeof(proRng), (void*)RoadAddRange);
+    if (!t2) return false;     // (Add then only forwards: g_roadOn stays 0)
+    g_roadAddRangeOrig = (RoadFn9)t2;
+    g_roadOn = 1;
+    return true;
+}
+
 // 12 (diagnostic, with the entity log MPFEVER_ENTLOG only): the animals' moves of ecs::AnimalMoveSystem's update (vfunc 12),
 // right after its thread pool's loop: 28-byte records {index in the system's list, new place} at [rsp+0x68] (begin, end), the
 // time step spilled at [rbp-0x30], the count of animals in edi. Every update goes to animupd.txt ("u <step> <animals> <dt bits>
@@ -3353,6 +3473,7 @@ static void InstallOrderFixes()
         if (i == 10) tickOn = ok;
         b.str(" ").str(f.name).str(ok ? " on" : " OFF").str(i + 1 < ORDER_N ? "," : "");
     }
+    b.str(", road entries").str(InstallRoadOrder(mem) ? " on" : " OFF");
     LogLine(b);
     // (the mod compares the segments' ages only where they are stamped: its check "ages")
     WriteSessionFile("native_state.txt", tickOn ? "tickepochs=1\n" : "tickepochs=0\n", 13);
@@ -3604,6 +3725,7 @@ static void LogOrderCounts()
 {
     Buf b; b.str("order fixes:");
     for (int i = 0; i < ORDER_N; i++) b.str(" ").str(ORDER_FIXES[i].name).str(" ").dec(g_orderSorts[i]).str("/").dec(g_orderReorders[i]).str("/").dec(g_orderRefused[i]);
+    b.str(" road entries ").dec(g_orderSorts[ROAD_W]).str("/").dec(g_orderReorders[ROAD_W]).str("/").dec(g_orderRefused[ROAD_W]);
     b.str("; tools' company written ").dec(g_toolWrites).str(" time(s); shared station icons let through ").dec(g_hudShareLet).str("; stop tool snaps on any owner ").dec(g_stopSnapLet).str("; open tracks let through ").dec(g_openLet);
     LogLine(b);
 }

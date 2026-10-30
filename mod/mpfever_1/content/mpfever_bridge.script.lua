@@ -411,6 +411,9 @@ local function correctMoney(own, host, n, sendCommand, reg)
 	log("host authority: money corrected by " .. entry.amount .. " (checkpoint " .. tostring(n) .. ")")
 end
 
+-- The host's game sends its names to the games of the other languages (issue #97, see R.nameChanges and H.namesync)
+function K.nameSyncOn() return C.ROLE == "host" and os.getenv("MPFEVER_NAMESYNC") ~= "0" end
+
 -- The terrain edits applied, for the checks: a note per edit (its time and the checksum of its cells) reaches the simulation when
 -- the interface sends it, a little after the edit's time and not at the same moment on every game. A check at time T counts the
 -- edits older than T by more than a note can take to arrive (they are then known everywhere), folded into st.terrainSig.
@@ -1111,6 +1114,33 @@ end
 -- a company takes another colour: its player entity and, when asked from the MPFever window, its lines (a little darker for
 -- each line, as a new line), on every game. The colour picked in the menu leaves the savegame's lines as their owner made them.
 -- (in a field of SIM: the main chunk is at Lua's limit of 200 locals)
+-- A new game of one company per player (0.5.14): the savegame's company (the host's) starts with the money every other company
+-- gets, once, when the registry is made, and only where it has nothing yet (no vehicle, no line): a game under way keeps
+-- everybody's money. Applied by the simulation of every game at the same step. (MPFEVER_SHARESWITCH=0: as before, the
+-- savegame's own money, often 0)
+SIM.coStartCanon = function(st, start)
+	if os.getenv("MPFEVER_SHARESWITCH") == "0" or not start or start < 0 or not st.co then return end
+	local canon = st.co.canon
+	local owned = 0
+	for _, v in ipairs(R.entitiesWith("TRANSPORT_VEHICLE")) do
+		local po = api.engine.getComponent(v, api.type.ComponentType.PLAYER_OWNED)
+		if po and po.player == canon then owned = owned + 1; break end
+	end
+	pcall(function() if #api.engine.system.lineSystem.getLinesForPlayer(canon) > 0 then owned = owned + 1 end end)
+	if owned > 0 then log("companies: the savegame's company already runs vehicles or lines: it keeps its money"); return end
+	local acc = api.engine.getComponent(canon, api.type.ComponentType.ACCOUNT)
+	local bal = acc and tonumber(acc.balance) or nil
+	if not bal then return end
+	local delta = math.floor(start - bal + 0.5)
+	if delta == 0 then return end
+	local entry = api.type.JournalEntry.new()
+	entry.amount = delta
+	entry.time = -1
+	entry.category.type = api.type.JournalEntry.Type.OTHER
+	api.cmd.sendCommand(api.cmd.makeJournalBookAssetCmd(canon, entry))
+	log("companies: a new game: the savegame's company takes the start money of every company (" .. start .. ", booked " .. delta .. ")")
+end
+
 SIM.coRecolor = function(st, c, withLines)
 	if not (c and c.ent) then return end
 	local r, g, b = CO.rgb(c.color)
@@ -1144,6 +1174,7 @@ local function coApply(st, a)
 		local r, g, b = CO.rgb(1)
 		pcall(function() api.cmd.sendCommand(api.cmd.makeEntitySetColorCmd(st.co.canon, api.type.Vec3f.new(r, g, b))) end)
 		log("companies: registry created, the savegame's company is player entity " .. tostring(st.co.canon))
+		pcall(SIM.coStartCanon, st, tonumber(p.start))
 	end
 	-- (a dedicated server names the player who gets the savegame's company)
 	if type(p.owner) == "string" then st.co.owner = p.owner end
@@ -1152,6 +1183,8 @@ local function coApply(st, a)
 		log("companies: two players announced the same Steam account (two games of one PC): their companies follow their names only")
 	end
 	local c, isNew, recolor, dropped = CO.join(st.co, tostring(p.key), tostring(p.name), p.host == true, p.cname, p.sid, tonumber(p.color))
+	-- (0.5.14: a new company's start money, its join's: the players' value of the session, or a computer company's own)
+	if isNew and c and not c.ent and tonumber(p.start) and os.getenv("MPFEVER_SHARESWITCH") ~= "0" then c.start = math.max(0, math.floor(tonumber(p.start))) end
 	if (dropped or 0) > 0 then log("companies: " .. dropped .. " member(s) written twice in a company dropped (a registry saved by 0.5.1 on one PC)") end
 	log("companies: player '" .. tostring(p.key) .. "' plays company " .. c.id .. (isNew and " (new)" or " (known)") .. " colour " .. tostring(c.color))
 	-- The company this join gave, for the interface of this game, which waits for it (see pumpCompanies): its copy of the
@@ -1246,7 +1279,14 @@ local function simApplyDue(state)
 				if a.kind == "hash" then
 					local c0 = os.clock()
 					local okA, auth = pcall(authValues, st.co)
+					local nameSync = K.nameSyncOn()
+					if nameSync then R.nameCollect = {} end
 					st.hash = { n = a.n, parts = simHash(terrainSigAt(st, now), st.co, a.n, st.buildIds, now), cost = os.clock() - c0, auth = okA and auth or nil }
+					if nameSync then
+						local col = R.nameCollect
+						R.nameCollect = nil
+						if col and next(col) ~= nil then st.hash.names = R.nameChanges(col) end
+					end
 					st.authOwn = st.authOwn or {}
 					st.authOwn[#st.authOwn + 1] = { n = a.n, auth = okA and auth or nil }
 					while #st.authOwn > 10 do table.remove(st.authOwn, 1) end
@@ -3365,6 +3405,8 @@ H.chat = function(from, p) log("chat " .. tostring(from) .. ": " .. tostring(p.t
 
 H.session = function(from, p)
 	if p.cmode ~= nil then G.cmode = p.cmode; G.coStart = p.cstart; G.coOwner = p.owner; G.coBankrupt = p.bankrupt end
+	-- (0.5.14: the sharing rules between companies on or off, the host's choice; none: on)
+	if p.cmode ~= nil then G.coShare = p.share ~= false and p.share ~= 0 end
 	-- (the computer companies the host chose in its lobby, "n:colour,...": run by the host's game, see mpfever_ai.lua)
 	if p.cmode ~= nil then G.coAi = p.ai end
 	G.session.started = p.started == true
@@ -4404,9 +4446,83 @@ local function depotExperiments(a, m, conv, rm, ctx)
 	log("DEPOTEXP " .. tostring(a.uid) .. ": " .. table.concat(out, " ; "))
 end
 
+-- The edit of a station that took its last own tracks away (issue #97: a modular street station, one module fewer, one
+-- segment and two nodes gone, no segment added). The conversion below makes two copies of the new construction to be
+-- refused: two constructions of one proposal are not checked against each other, only their segments are, and this one has
+-- none - the conversion was BUILT, two stations on this game, then the host's game was reloaded for everybody. The engine's
+-- own replacement of the station with the tool's parameters instead, built only if it takes away exactly what the tool took
+-- away; else nothing is built and the host's game is reloaded. (MPFEVER_EDITREPLACE=0: the conversion, as before)
+G.replayByReplace = function(a)
+	local function no(why)
+		log("NATIVE REPLAY " .. tostring(a.uid) .. " station edit by the engine's replacement: " .. why .. ": not built (desync)")
+		replayFailed(a, "station edit not replayed")
+		return true
+	end
+	local cArgs = C.deser(C.ser(a.args))
+	local miss = R.translateIn(cArgs, G.bind)
+	if #miss > 0 then return no("unresolved " .. table.concat(miss, ",")) end
+	local m = cArgs[1]
+	if #(m.toAdd or {}) ~= 1 or #(m.toRemove or {}) ~= 1 then return no(#(m.toAdd or {}) .. " construction(s) added, " .. #(m.toRemove or {}) .. " removed") end
+	local old = type(m.toRemove[1]) == "table" and m.toRemove[1].entity or m.toRemove[1]
+	local oc = type(old) == "number" and api.engine.getComponent(old, api.type.ComponentType.CONSTRUCTION) or nil
+	if not oc or tostring(oc.fileName) ~= tostring(m.toAdd[1].fileName) then return no("not the same construction") end
+	local params = C.plain(m.toAdd[1].params or {})
+	local okp, P = pcall(function() return api.engine.util.proposal.createProposalReplaceConstruction(old, params) end)
+	if not okp or not P then return no("no proposal (" .. shortErr(P) .. ")") end
+	-- (what it takes away and adds, against the tool's build: the same entities taken away, as many added)
+	local function ids(list)
+		local t = {}
+		pcall(function() for i = 1, #list do t[#t + 1] = tonumber(type(list[i]) == "table" and list[i].entity or list[i]) or -1 end end)
+		table.sort(t)
+		for i, v in ipairs(t) do t[i] = tostring(v) end
+		return table.concat(t, ",")
+	end
+	local tp, ep = m.proposal or {}, nil
+	pcall(function() ep = P.proposal end)
+	if not ep then return no("no street part") end
+	local cmp = {
+		{ "removed segments", ids(tp.removedSegments or {}), ids(ep.removedSegments) },
+		{ "removed nodes", ids(tp.removedNodes or {}), ids(ep.removedNodes) },
+		{ "added segments", tostring(#(tp.addedSegments or {})), tostring(#ep.addedSegments) },
+		{ "added nodes", tostring(#(tp.addedNodes or {})), tostring(#ep.addedNodes) },
+		{ "constructions", "1", tostring(#P.toAdd) },
+	}
+	local diff = {}
+	for _, c in ipairs(cmp) do if c[2] ~= c[3] then diff[#diff + 1] = c[1] .. " tool {" .. c[2] .. "} engine {" .. c[3] .. "}" end end
+	if #diff > 0 then return no(table.concat(diff, "; ")) end
+	local ctx = api.type.Context.new()
+	ctx.checkTerrainAlignment = true
+	ctx.cleanupStreetGraph = false
+	ctx.gatherBuildings = true
+	ctx.gatherFields = true
+	ctx.player = api.engine.util.getPlayer()
+	G.refundInto(ctx)
+	local okk, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(P, ctx, false, true) end)
+	if not okk or not cmd then return no("command " .. shortErr(cmd)) end
+	log("NATIVE REPLAY " .. tostring(a.uid) .. " station edit by the engine's replacement: takes away {" .. cmp[1][3] .. "} as the tool did")
+	toSim("replaying", { tok = a.tsTok })
+	replaySend(cmd, function(res, success)
+		if not success then
+			local why = ""
+			pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end)
+			log("NATIVE REPLAY " .. tostring(a.uid) .. " station edit by the engine's replacement: refused " .. why .. " (desync)")
+			logRefusal(a, res)
+			replayFailed(a, "station edit refused " .. why)
+			return
+		end
+		log("NATIVE REPLAY " .. tostring(a.uid) .. " station edit by the engine's replacement BUILT")
+		pcall(function()
+			local st = res.proposal.proposal
+			log("NATIVE REPLAY " .. tostring(a.uid) .. " engine applied: +nodes " .. #st.addedNodes .. " -nodes " .. #st.removedNodes .. " +segments " .. #st.addedSegments .. " -segments " .. #st.removedSegments .. " +constructions " .. #res.proposal.toAdd)
+		end)
+	end)
+	return true
+end
+
 local function replayNativeConstruction(a)
 	local m0 = a.args[1]
 	if not hasConstructionSegments(m0) and not a.industryEdit and not a.ownTracks then return false end
+	if a.ownTracks and not hasConstructionSegments(m0) and os.getenv("MPFEVER_EDITREPLACE") ~= "0" then return G.replayByReplace(a) end
 	local cArgs = C.deser(C.ser(a.args))
 	local miss = R.translateIn(cArgs, G.bind)
 	if #miss > 0 then log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: unresolved " .. table.concat(miss, ",")) return false end
@@ -6821,7 +6937,8 @@ local function coCreate(b, c)
 			log("companies: the engine refused the new company " .. tostring(c.id)); G.coBusy = nil; return
 		end
 		toSim("co_set", { id = c.id, ent = ent })
-		local start = (G.co and G.co.start) or 0
+		-- (its own start money, from its join, 0.5.14; else the registry's)
+		local start = tonumber(c.start) or (G.co and G.co.start) or 0
 		if start > 0 then
 			local entry = api.type.JournalEntry.new()
 			entry.amount = math.floor(start + 0.5)
@@ -7154,6 +7271,22 @@ local function replayAssets(a)
 	ctx.player = api.engine.util.getPlayer()
 	-- (a player's build, as the builder's: see G.assetPI)
 	local pi = G.assetPI()
+	-- (the game's own groups of trees: the factory throws on them every time, after an engine assertion that writes a crash dump
+	-- and holds the game a moment - four times in a 4-hour session of 2026-10-29. Straight to the engine's removal then; the mod's
+	-- own asset constructions still go to the factory. MPFEVER_ASSETFACTORYFIRST=1: the factory first, as before)
+	if #rm > 0 and os.getenv("MPFEVER_ASSETENGINERM") ~= "0" and os.getenv("MPFEVER_ASSETFACTORYFIRST") ~= "1" then
+		local gameGroups = 0
+		for _, e in ipairs(rm) do
+			pcall(function()
+				local c = api.engine.getComponent(e, api.type.ComponentType.CONSTRUCTION)
+				if not c or tostring(c.fileName) ~= tostring(assetConName()) then gameGroups = gameGroups + 1 end
+			end)
+		end
+		if gameGroups == #rm then
+			log("ASSET REPLAY " .. uid .. ": " .. #rm .. " group(s) of the game's trees to remove (" .. table.concat(rm, ","):sub(1, 80) .. "): the engine's removal")
+			return G.assetEngineRemoval(a, uid, rm, cons, ctx, strict)
+		end
+	end
 	local okc, cmd = pcall(function() return api.cmd.makeWorldBuildProposalCmd(sp, ctx, true, pi) end)
 	-- A script proposal with a group of trees in constructionsToRemove is refused by the factory ("Unknown exception", treeerase
 	-- 2026-10-25): every group is then removed with the engine's own removal proposal (createProposalRemove, what the game's scripts
@@ -7969,8 +8102,16 @@ local function runPausedActions()
 				G.authOwn = G.authOwn or {}
 				G.authOwn[a.n] = okA and auth or nil
 				-- (with the turns this game has applied in the pause: a game a turn behind the others is not compared, see the launcher)
+				local nameSync = K.nameSyncOn()
+				if nameSync then R.nameCollect = {} end
 				send("sync_hash", { n = a.n, parts = simHash(G.simTerrainSig, G.co, a.n, G.simBuildIds, now), cost = 0, auth = okA and auth or nil,
 					ptd = (G.ptOn and G.pt.seen) and G.pt.done or nil })
+				if nameSync then
+					local col = R.nameCollect
+					R.nameCollect = nil
+					local list = col and next(col) ~= nil and R.nameChanges(col) or nil
+					if list then send("namesync", { n = a.n, list = list }) end
+				end
 			elseif a.fn == "mpfCoJoin" or coIsLoanEvent({ co = G.co }, a) then
 				toSim("co_apply", a)
 			else
@@ -12557,6 +12698,40 @@ local function runCmds(p)
 	nextStep()
 end
 
+-- Names of another language scenario (issue #97): the given role names a station, a line and a vehicle on its own game only,
+-- as a game of another language names what it builds; the checks after it say whether the other games took the host's names
+-- (MPFEVER_NAMESYNC=0: they differ for good, "names" and "lines")
+H.langnames = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	-- (only the host's names are sent: a name only another game has is not a case of the game, which names a new entity on every game)
+	if C.ROLE ~= "host" then
+		AUTO.results[1] = "nothing named here (the host's names count)"
+		return autoFinish()
+	end
+	local picks = {}
+	for _, k in ipairs({ "STATION_GROUP", "LINE", "TRANSPORT_VEHICLE" }) do
+		local list = R.entitiesWith(k)
+		if #list > 0 then picks[#picks + 1] = { k = k, e = list[(#list > 1) and 2 or 1] } end
+	end
+	for i, pk in ipairs(picks) do
+		local nm = "MPF " .. C.ROLE .. " Sprache " .. i
+		local ok, err = pcall(function() O.sendCommand(api.cmd.makeEntitySetNameCmd(pk.e, nm)) end)
+		local line1 = pk.k .. " " .. pk.e .. " named here only: " .. (ok and nm or ("error " .. tostring(err)))
+		log("AUTOTEST langnames " .. line1)
+		AUTO.results[#AUTO.results + 1] = line1
+	end
+	-- (the checks after it decide; the scenario ends after four of them)
+	G.waits[#G.waits + 1] = { at = G.frames + 60 * 45, fn = function()
+		local same = 0
+		for _, pk in ipairs(picks) do if R.nameOf(pk.e):find("MPF " .. C.ROLE .. " Sprache", 1, true) then same = same + 1 end end
+		AUTO.results[#AUTO.results + 1] = same .. "/" .. #picks .. " names still this game's own"
+		autoFinish()
+	end }
+end
+
 -- Command latency scenario: how many interface frames the engine takes to answer a command, the game running or paused
 H.cmdlat = function(from, p)
 	if p.role ~= C.ROLE or AUTO.running then return end
@@ -14579,7 +14754,9 @@ G.coEco = function(st, reg, c)
 	local E = C.eco()
 	if not E then return end
 	local function clean(t) return (tostring(t or ""):gsub("[%c]", " ")) end
-	local L = { "mykey\t" .. G.coMyKey(), "rules\t" .. tostring((reg.rules or {}).bankrupt or E.BANKRUPT_DEFAULT) }
+	local L = { "mykey\t" .. G.coMyKey(), "rules\t" .. tostring((reg.rules or {}).bankrupt or E.BANKRUPT_DEFAULT),
+		-- (0.5.14: the sharing rules on or off, the start money of a new company)
+		"share\t" .. (E.sharingOff(reg) and "0" or "1"), "start\t" .. tostring(math.floor(tonumber((reg.rules or {}).start) or tonumber(reg.start) or 0)) }
 	local function num(t, id) return math.floor(tonumber(t and t[tostring(id)]) or 0) end
 	local rulesSig = {}
 	for _, co in ipairs(reg.list) do
@@ -14653,11 +14830,20 @@ G.coEco = function(st, reg, c)
 		end
 	end
 	if C.ROLE ~= "host" then return end
-	-- the host's rule into the game (once, and again if the game did not take it)
+	-- the host's rules into the game (once, and again if the game did not take it): months in debt before a bankruptcy, the
+	-- sharing rules on or off and the start money of a new company (0.5.14; kept in the savegame, MPFever.exe reads them back
+	-- when the host opens a lobby on it. MPFEVER_SHARESWITCH=0: the bankruptcy only, as before)
 	local want = tonumber(G.coBankrupt)
-	if want and want ~= tonumber((reg.rules or {}).bankrupt) and G.frames - (G.coRulesAt or -100000) > 600 then
+	local rules = reg.rules or {}
+	local newRules = os.getenv("MPFEVER_SHARESWITCH") ~= "0"
+	local shareWant = newRules and (G.coShare ~= false) or nil
+	local startWant = newRules and tonumber(G.coStart) or nil
+	local differs = (want and want ~= tonumber(rules.bankrupt))
+		or (shareWant ~= nil and shareWant ~= (rules.share ~= false))
+		or (startWant ~= nil and startWant ~= tonumber(rules.start))
+	if differs and G.frames - (G.coRulesAt or -100000) > 600 then
 		G.coRulesAt = G.frames
-		G.coEvent("co_rules", { bankrupt = want })
+		G.coEvent("co_rules", { bankrupt = want or tonumber(rules.bankrupt) or E.BANKRUPT_DEFAULT, share = shareWant, start = startWant })
 	end
 	-- each new month: the companies in debt on this game (the host's money is every game's), applied by all at the same step
 	if reg.month and reg.month ~= (reg.monthSeen or -1) and (G.coMonthSent ~= reg.month or G.frames - (G.coMonthAt or 0) > 900) then
@@ -15138,6 +15324,42 @@ end
 -- The computer companies' journal (the MPFever window's AI tab, and the chat): what they build and buy, and where. The host's
 -- module (mpfever_ai.lua) sends each entry to every game and gives it to its own; each game appends it to ai_journal.txt
 -- ("time co kind x y z a b", tab-separated), which the interface reads.
+-- The host's names (issue #97, see R.nameChanges): taken here once the entity is there, through the engine (a name changes
+-- nothing in the simulation, and it is no player's command to ship). A game in the host's language has them already.
+G.nameQueue = {}
+H.namesync = function(from, p)
+	if C.ROLE == "host" or os.getenv("MPFEVER_NAMESYNC") == "0" or type(p) ~= "table" or type(p.list) ~= "table" then return end
+	local till = G.frames + 1800
+	for _, v in ipairs(p.list) do
+		local e = type(v) == "table" and tonumber(v.e) or nil
+		if e and (v.k == "STATION_GROUP" or v.k == "LINE" or v.k == "TRANSPORT_VEHICLE") and type(v.nm) == "string" and #v.nm <= 200 then
+			G.nameQueue[e] = { k = v.k, nm = v.nm, till = till }
+		end
+	end
+end
+G.nameTick = function()
+	if next(G.nameQueue) == nil then return end
+	local seen = 0
+	for e, v in pairs(G.nameQueue) do
+		seen = seen + 1
+		if seen > 60 then break end
+		local okc, has = pcall(function() return api.engine.getComponent(e, api.type.ComponentType[v.k]) ~= nil end)
+		if okc and has then
+			if R.nameOf(e) ~= v.nm then
+				local oks, err = pcall(function() O.sendCommand(api.cmd.makeEntitySetNameCmd(e, v.nm)) end)
+				G.namesTaken = (G.namesTaken or 0) + 1
+				if G.namesTaken <= 20 or G.namesTaken % 100 == 0 then
+					log("names: " .. v.k .. " " .. e .. " takes the host's name " .. C.ser(v.nm):sub(1, 80) .. " (was " .. C.ser(R.nameOf(e)):sub(1, 80) .. ")"
+						.. (oks and "" or (": " .. tostring(err))) .. " [" .. G.namesTaken .. " so far]")
+				end
+			end
+			G.nameQueue[e] = nil
+		elseif G.frames > v.till then
+			G.nameQueue[e] = nil
+		end
+	end
+end
+
 H.aijournal = function(from, p)
 	if type(p) ~= "table" then return end
 	local function clean(v) return (tostring(v == nil and "" or v):gsub("%c", " "):sub(1, 120)) end
@@ -15198,6 +15420,7 @@ local function guiUpdate(userParams, state, guiState)
 	G.frames = G.frames + 1
 	G.stateObj = state
 	if G.frames % 15 == 0 then pcall(G.previewTick) end
+	if G.frames % 30 == 7 then pcall(G.nameTick) end
 	if G.frames % 600 == 0 then
 		local ps = G.pstat
 		log("gui alive frame " .. G.frames .. " t=" .. tostring(gameTime()) .. " | slowed by other clocks " .. ps.barrier .. "/" .. ps.frames .. " frames, by held actions " .. ps.hold)
@@ -15395,6 +15618,8 @@ local function guiUpdate(userParams, state, guiState)
 	if type(st.hash) == "table" and st.hash.n ~= G.hashSent then
 		G.hashSent = st.hash.n
 		send("sync_hash", { n = st.hash.n, parts = st.hash.parts, cost = st.hash.cost, auth = st.hash.auth })
+		-- (the host's names for the games of the other languages, see R.nameChanges)
+		if type(st.hash.names) == "table" and C.ROLE == "host" then send("namesync", { n = st.hash.n, list = st.hash.names }) end
 	end
 	for _, r in ipairs(st.results or {}) do
 		local key = tostring(r.uid) .. "@" .. tostring(r.at)

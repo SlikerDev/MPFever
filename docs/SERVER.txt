@@ -111,6 +111,9 @@ and on "restart".
                                on the company follows that player's Steam account). Empty:
                                nobody plays it (every player gets a new one).
   start-money=2000000          separate only: money of a new company.
+  sharing-rules=true           separate only: each company decides whether its tracks,
+                               stations, stops and depots are private, open or paying.
+                               false: everything is open and free for every company.
   start-speed=1                Game speed when the world starts: 1, 2 or 4.
   pause-when-empty=true        The world waits while nobody is connected. false: it always runs.
   player-speed-control=true    The players may pause and change the speed. false: only the

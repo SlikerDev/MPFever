@@ -971,6 +971,32 @@ local function nameOf(e)
 end
 R.nameOf = nameOf
 
+-- Names in each game's language (issue #97): the game names a new station, line or vehicle by itself, in its own language
+-- ("Ingolstadt Fishing Grounds West" on an English game, "Ingolstadt Fischzucht" on a German one), so the games of players of
+-- two languages differed in the checks ("names", "lines") and reloaded. The host's game sends the names that are new or changed
+-- since its last check (the names part fills R.nameCollect), and the other games take them: a name changes nothing in the
+-- simulation. Gives nil for the first call (nothing to compare with yet) and when nothing changed. (MPFEVER_NAMESYNC=0: off)
+R.NAMESYNC_MAX = 400
+function R.nameChanges(collected)
+	local prev = R.namesPrev
+	R.namesPrev = collected
+	if not prev then return nil end
+	local list = {}
+	for e, v in pairs(collected) do
+		local p = prev[e]
+		if not p or p.k ~= v.k or p.nm ~= v.nm then list[#list + 1] = { e = e, k = v.k, nm = v.nm } end
+	end
+	if #list == 0 then return nil end
+	table.sort(list, function(a, b) return a.e < b.e end)
+	-- (the rest goes with the next check: it counts as not seen yet)
+	for i = #list, R.NAMESYNC_MAX + 1, -1 do
+		local e = list[i].e
+		collected[e] = prev[e]
+		list[i] = nil
+	end
+	return list
+end
+
 function R.lineText(e)
 	local c = comp(e, "LINE")
 	if not c then return nil end
@@ -1101,10 +1127,14 @@ function R.contentHash(hashStr, dumpFn)
 	-- the names of stations, lines and vehicles
 	part("names", function()
 		local n, acc = 0, 0
+		-- (R.nameCollect, on the host's game: every name read here, for the games of the other languages, see R.nameChanges)
+		local col = R.nameCollect
 		for _, cname in ipairs({ "STATION_GROUP", "LINE", "TRANSPORT_VEHICLE" }) do
 			for _, e in ipairs(R.entitiesWith(cname)) do
 				n = n + 1
-				acc = (acc + hashStr(0, cname .. ":" .. nameOf(e))) % 4294967296
+				local nm = nameOf(e)
+				acc = (acc + hashStr(0, cname .. ":" .. nm)) % 4294967296
+				if col then col[e] = { k = cname, nm = nm } end
 			end
 		end
 		return n .. "/" .. acc

@@ -67,6 +67,29 @@ namespace MPFever
             return new List<Company>(found.Values);
         }
 
+        static readonly byte[] RulesMark = Encoding.ASCII.GetBytes("mpfrules:");
+
+        /// <summary>The game's rules of a savegame of one company per player (0.5.14): the text "mpfrules:k=v;k=v;..." the game
+        /// keeps (mpfever_eco.lua's co_rules), as keys and values (bankrupt, share, start); null when it has none.</summary>
+        public static Dictionary<string, string> Rules(string savePath)
+        {
+            byte[] d;
+            try { d = Zstd.DecompressFile(savePath); }
+            catch (Exception e) { Log.W("savegame rules: " + e.Message); return null; }
+            int i = IndexOf(d, RulesMark, 0);
+            if (i < 0) return null;
+            // (the text is a Lua string of the game's state: its length right before it)
+            int len = i >= 4 ? BitConverter.ToInt32(d, i - 4) : -1;
+            if (len < RulesMark.Length || len > 400 || i + len > d.Length) return null;
+            var r = new Dictionary<string, string>();
+            foreach (var kv in Encoding.ASCII.GetString(d, i + RulesMark.Length, len - RulesMark.Length).Split(';'))
+            {
+                int eq = kv.IndexOf('=');
+                if (eq > 0) r[kv.Substring(0, eq)] = kv.Substring(eq + 1);
+            }
+            return r.Count > 0 ? r : null;
+        }
+
         static bool Same(byte[] d, int at, byte[] p)
         {
             if (at < 0 || at + p.Length > d.Length) return false;
