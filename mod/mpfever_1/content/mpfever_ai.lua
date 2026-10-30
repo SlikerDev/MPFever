@@ -2362,7 +2362,8 @@ local function step(E)
 			local have, missing = townProject(E, co, town, stops)
 			-- (a town's line not begun yet: only when the company may grow, see mayExpand)
 			-- (a town with no stop of the company yet: a new project; one under way, begun when it could grow, goes on)
-			if not grow and #missing > 0 and #have == 0 then goto continue end
+			-- (a town whose own line the company began, A.townBegun: a stop of a line between towns does not count)
+			if not grow and #missing > 0 and not (A.townBegun and A.townBegun[town]) then goto continue end
 			if #missing > 0 then
 				-- (a town's line is begun only with the money to end it: its stops and two buses; stops left without a line cost
 				-- their upkeep for nothing)
@@ -2390,6 +2391,8 @@ local function step(E)
 				end
 				L(E, "stop near the " .. w.use .. " centre of " .. townName(E, town) .. " (" .. math.floor(s.d) .. " m from it)")
 				buildStop(E, co, s.e, town .. ":" .. w.use)
+				A.townBegun = A.townBegun or {}
+				A.townBegun[town] = true
 				-- (a refused stop counts against that centre: the next try takes the next segment)
 				A.busy.what = "stop " .. town .. ":" .. w.use
 				return
