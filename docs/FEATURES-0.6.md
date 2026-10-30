@@ -96,6 +96,12 @@ Simulation half (`env` of M.event / M.tick / M.month / M.onAction / M.onGameEven
   `env.month()` (the game month's number), `env.date()` ({ year, month, day } of the calendar at this game time, or nil:
   decide with env.month(), the calendar follows the game's calendar speed), `env.module(id)` (another feature module loaded
   in this Lua state, e.g. `env.module("tenders").wins`; nil when it is not there).
+  decide with env.month(), the calendar follows the game's calendar speed), `env.lots(coId)` (a company's lots as its auction
+  would list them, mpfever_eco.lua's E.lotsOf: `{ kind = "line"|"station"|"depot", key, label, vehicles, reserve }`, the same keys
+  on every game; nil without mpfever_eco.lua), `env.transferLot(fromId, toId, lot)` (the lot's assets, found again by its key,
+  become company toId's, as an auction's lot sold: mpfever_eco.lua's E.transferLot; `lot.withStations` a line with the stations
+  of its stops that the seller owns, `lot.frozen` the constructions' own tracks and nodes too; the stations' and depots' own
+  settings go; returns how many entities changed hands, or nil and why; books nothing: call it from an event).
 Every game runs this code; the host never decides alone here.
 
 GUI half (`env` of M.gui / M.request / M.allow; made by `F.guiEnv` from the bridge's `G.featBridge`): `env.log`, `env.on`,
@@ -124,6 +130,8 @@ the computer companies ask the territories so (mpfever_ai.lua's territoryCheck, 
 `env.realTime()` (os.clock, the GUI may), `env.gameTime()`, `env.R`, `env.CO`, `env.T(fr, en)` (the player's language),
 `env.pvPoints(param)` (the points of a tool's route from its builder.proposalCreate param, G.pvPoints: `{ {x, y[, r]}... }`),
 `env.players()` (the other players' session names), `env.owner` (a dedicated server's game only: the session's owner).
+`env.realTime()` (os.clock, the GUI may), `env.gameTime()`, `env.R`, `env.CO`, `env.T(fr, en)` (the player's language, C.T),
+`env.lots(coId)` (as the simulation's, for the window's lists).
 
 UI (`u` of M.ui, made by `U.featU` in mpfever_ui.script.lua): `u.T(fr, en)`, `u.Tf(fr, en, ...)`, `u.money(n)`, `u.W` (the
 text width), `u.isHost`, `u.me`, `u.mode`, `u.on(id)`, `u.param(id, pid)` (the session's options, as MPFever.exe sends them),

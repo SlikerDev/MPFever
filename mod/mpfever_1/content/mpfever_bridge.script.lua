@@ -1873,6 +1873,24 @@ SIM.featBridge = function()
 				end)
 				return ok and d or nil
 			end,
+			-- (a company's lots, as its auction would list them: mpfever_eco.lua's E.lotsOf; nil without it)
+			lots = function(st, id)
+				local E, reg = C.eco(), st and st.co
+				local c = E and E.lotsOf and type(reg) == "table" and CO.find(reg, tonumber(id)) or nil
+				if not (c and c.ent) then return nil end
+				return E.lotsOf(SIM.ecoEnv(), c)
+			end,
+			-- (a lot of company fromId to company toId, as an auction's lot sold, with the stations of a line's stops (lot.withStations)
+			-- and the constructions' own tracks (lot.frozen): mpfever_eco.lua's E.transferLot. How many entities change hands, or nil
+			-- and why. Money is not booked here: the module books it)
+			transferLot = function(st, fromId, toId, lot)
+				local E, reg = C.eco(), st and st.co
+				if not (E and E.transferLot) then return nil, "mpfever_eco.lua has no transfer" end
+				local from = type(reg) == "table" and CO.find(reg, tonumber(fromId)) or nil
+				local to = type(reg) == "table" and CO.find(reg, tonumber(toId)) or nil
+				if not (from and from.ent and to and to.ent) then return nil, "a company has no player entity on this game" end
+				return E.transferLot(SIM.ecoEnv(), from, to, lot, { withStations = lot.withStations == true, frozen = lot.frozen == true, reg = reg })
+			end,
 		}
 	end
 	return SIM.featB
@@ -12126,6 +12144,128 @@ H.cocheck = function(from, p)
 	G.waits[#G.waits + 1] = { at = G.frames + 30, fn = poll }
 end
 
+-- (0.6) Trade scenario (MPFEVER_SCENARIO=tradetest with MPFEVER_TOGETHER=1, companies mode, the host with MPFEVER_COAUTO=1, on a
+-- COPY of a test savegame whose savegame company has a line, a station or a depot): the host's game switches the options "sales"
+-- and "contracts" on for this session (as its lobby would: G.featOpts), then offers its first line (else its first station, else
+-- its first depot) to the client's company for 1000, through the trade module's request (its chief check included); the client's
+-- game accepts it. Each game then notes the lots of both companies and their money (both games must note the same). Then the
+-- client offers a supply contract (the host delivers a cargo at the client's first station, 10 a month for 3 months, 5 a unit),
+-- which the host's game signs. The checks then say whether every game did the same (mpfever_feat_trade.lua).
+H.tradetest = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local function note(t) AUTO.results[#AUTO.results + 1] = t; log("AUTOTEST " .. t) end
+	local F, E = C.feat(), C.eco()
+	if not (G.co and G.myCo and F and E) then note("tradetest: not in the companies mode, or no options host"); return autoFinish() end
+	F.load(log)
+	local TR = F.byId.trade
+	if not TR then note("tradetest: no trade module"); return autoFinish() end
+	if C.ROLE == "host" then G.featOpts = F.canon("contracts=1;sales=1", "separate") end
+	local function S() return G.featSt and G.featSt.feat and G.featSt.feat.trade end
+	local function req(kind, t) F.request("trade", kind, TR.encode(t), G.featSt or {}, G.featBridge()) end
+	local function otherCo()
+		for _, c in ipairs(G.co.list) do if c.id ~= G.myCo and c.ent and not c.gone and not E.isAi(c) then return c end end
+		return nil
+	end
+	local function lotsOf(id)
+		local c = CO.find(G.co, id)
+		if not (c and c.ent) then return {} end
+		local ok, l = pcall(E.lotsOf, { R = R, log = log, CO = CO }, c)
+		return ok and l or {}
+	end
+	local function holdings(tag)
+		for _, id in ipairs({ G.myCo, (otherCo() or {}).id }) do
+			local c = CO.find(G.co, id)
+			if c and c.ent then
+				local n = { line = 0, station = 0, depot = 0 }
+				for _, l in ipairs(lotsOf(id)) do n[l.kind] = (n[l.kind] or 0) + 1 end
+				local okB, b = pcall(api.engine.util.finance.getPlayersBalance, c.ent)
+				note(tag .. ": company " .. id .. " has " .. n.line .. " line(s), " .. n.station .. " station(s), " .. n.depot .. " depot(s), money "
+					.. tostring(okB and math.floor(b) or "?"))
+			end
+		end
+		local s = S()
+		note(tag .. ": trade state: seq " .. tostring(s and s.seq) .. ", " .. #(s and s.offers or {}) .. " offer(s), " .. #(s and s.ct or {}) .. " contract(s)")
+	end
+	local steps, offerId, myLot = {}, nil, nil
+	local function step(what, start, done) steps[#steps + 1] = { what = what, start = start, done = done } end
+	step("options on", function() end, function() local o = G.featSt and G.featSt.opts; return o and o.sales == "1" and o.contracts == "1" end)
+	if C.ROLE == "host" then
+		step("offer a lot", function()
+				local other = otherCo()
+				for _, l in ipairs(lotsOf(G.myCo)) do if not myLot or (l.kind == "line" and myLot.kind ~= "line") then myLot = l end end
+				if not (other and myLot) then note("host: nothing to offer (company " .. tostring(other and other.id) .. ")"); return end
+				note("host offers " .. myLot.kind .. " '" .. tostring(myLot.label) .. "' (" .. tostring(myLot.vehicles or 0) .. " vehicle(s)) to company " .. other.id)
+				holdings("before")
+				req("offer", { to = other.id, kind = myLot.kind, key = myLot.key, price = 1000 })
+			end,
+			function()
+				for _, o in ipairs((S() or {}).offers or {}) do if o.from == G.myCo and myLot and o.key == myLot.key then offerId = o.id; return true end end
+				return false
+			end)
+		step("sold", function() end, function()
+			for _, o in ipairs((S() or {}).offers or {}) do if o.id == offerId then return false end end
+			return true
+		end)
+		local signed = {}
+		step("sign the client's contract", function() end, function()
+			for _, c in ipairs((S() or {}).ct or {}) do
+				if c.state == "offer" and c.by ~= G.myCo and not signed[c.id] then signed[c.id] = true; req("ct_answer", { id = c.id, accept = true }) end
+				if c.state == "active" then return true end
+			end
+			return false
+		end)
+	else
+		step("accept the offer", function() end, function()
+			for _, o in ipairs((S() or {}).offers or {}) do
+				if o.to == G.myCo then
+					if offerId ~= o.id then offerId = o.id; holdings("before"); req("answer", { id = o.id, accept = true }) end
+					return false
+				end
+			end
+			return offerId ~= nil
+		end)
+		step("offer a contract", function()
+				local other = otherCo()
+				local station = nil
+				for _, l in ipairs(lotsOf(G.myCo)) do if l.kind == "station" and not station then station = l end end
+				local cargos = TR.rt.cargos()
+				local cargo = nil
+				for _, x in ipairs(cargos) do if x.name == "COAL" then cargo = x end end
+				cargo = cargo or cargos[1]
+				if not (other and station and cargo) then note("client: no contract offered (station " .. tostring(station and station.key) .. ", cargo " .. tostring(cargo and cargo.name) .. ")"); return end
+				note("client offers a contract: company " .. other.id .. " delivers 10 " .. cargo.name .. " a month at " .. tostring(station.label))
+				req("ct_offer", { to = other.id, role = "pay", station = station.key, cargo = cargo.name, per = 10, price = 5, penalty = 1, months = 3 })
+			end,
+			function() for _, c in ipairs((S() or {}).ct or {}) do if c.state == "active" then return true end end return false end)
+	end
+	local i, since = 0, 0
+	local function nextStep()
+		i = i + 1
+		local s = steps[i]
+		if not s then
+			G.waits[#G.waits + 1] = { at = G.frames + 300, fn = function()
+				holdings("after")
+				for _, n in ipairs((S() or {}).news or {}) do note("news " .. tostring(n.n) .. ": " .. tostring(n.kind) .. (n.why and (" " .. n.why) or "")) end
+				G.waits[#G.waits + 1] = { at = G.frames + 300, fn = autoFinish }
+			end }
+			return
+		end
+		pcall(s.start)
+		since = G.frames
+		local function poll()
+			local ok, d = pcall(s.done)
+			if ok and d then note(C.ROLE .. ": step '" .. s.what .. "': done in " .. (G.frames - since) .. " frames"); return nextStep() end
+			if G.frames - since > 2400 then note(C.ROLE .. ": step '" .. s.what .. "': NOT DONE within 40 s"); return nextStep() end
+			G.waits[#G.waits + 1] = { at = G.frames + 30, fn = poll }
+		end
+		G.waits[#G.waits + 1] = { at = G.frames + 30, fn = poll }
+	end
+	nextStep()
+end
+
 -- Bankruptcy scenario (MPFEVER_SCENARIO=cobroke, companies mode, MPFEVER_BANKRUPT=3 for the host's rule): the client's company
 -- spends all its money and 100000 more; the host's look at each new month counts it in debt; after 3 months it goes bankrupt
 -- and the client gets a new company. Waits at most 12 minutes (the game's speed: MPFEVER_SPEED).
@@ -16189,6 +16329,13 @@ G.featBridge = function()
 				for name in pairs(G.peers or {}) do out[#out + 1] = name end
 				table.sort(out)
 				return out
+			-- (the player's language) and a company's lots (mpfever_eco.lua's E.lotsOf, as the simulation's env.lots)
+			T = C.T,
+			lots = function(st, id)
+				local E, reg = C.eco(), st and st.co
+				local c = E and E.lotsOf and type(reg) == "table" and CO.find(reg, tonumber(id)) or nil
+				if not (c and c.ent) then return nil end
+				return E.lotsOf({ R = R, log = log, CO = CO }, c)
 			end }
 		G.featB = B
 	end
