@@ -1312,6 +1312,9 @@ local function garageFor(E, co, p, money, key)
 	local A = E.G.AI
 	local list = garagesNear(E, co.ent, p, 5000)
 	if list[1] and list[1].own then return list[1] end
+	-- (0.5.14: a garage open to it within 5 km does, another company's or the town's: a garage costs about 650 000 and a company of
+	-- the tests built three of them in its first minutes beside open ones. MPFEVER_AIOWNGARAGE=1: its own first, as before)
+	if list[1] and os.getenv("MPFEVER_AIOWNGARAGE") ~= "1" then return list[1] end
 	A.garageTried = A.garageTried or {}
 	-- (0.5.14: tried again after a year of game time, the town may have grown streets by then; before, one try per session.
 	-- MPFEVER_AIRETRY=0: one try)
@@ -2160,7 +2163,7 @@ local function roadProject(E, co, money)
 end
 
 -- the next freight step: deliveries to towns and routes between industries in turn (the kind the company has fewer lines of
--- first, the other one when it has nothing to do). MPFEVER_AITOWNFREIGHT=0: between industries only.
+-- first, the other one when it has nothing to do). Between industries only unless MPFEVER_AITOWNFREIGHT=1 (0.5.14).
 local function freightProject(E, co, stops, lines, vehicles, money)
 	-- (the routes left for want of a garage are tried again once their wait is over, see G_HOLD)
 	local A = E.G.AI
@@ -2175,7 +2178,9 @@ local function freightProject(E, co, stops, lines, vehicles, money)
 		local f = freightOf(E, l)
 		if f and f.town then nTown = nTown + 1 elseif f then nInd = nInd + 1 end
 	end
-	local towns = os.getenv("MPFEVER_AITOWNFREIGHT") ~= "0"
+	-- (0.5.14: off unless MPFEVER_AITOWNFREIGHT=1. In the tests a town stop took none of the cargo: the trucks stayed full, earned
+	-- nothing and cost their running costs; on before)
+	local towns = os.getenv("MPFEVER_AITOWNFREIGHT") == "1"
 	if towns and nTown <= nInd then
 		return townFreightProject(E, co, stops, lines, vehicles, money) or industryProject(E, co, lines, vehicles, money) or roadProject(E, co, money)
 	end
