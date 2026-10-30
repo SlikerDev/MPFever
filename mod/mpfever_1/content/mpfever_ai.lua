@@ -851,6 +851,8 @@ local function buyBus(E, co, depot)
 			color = { x = -1, y = -1, z = -1, __vec = true }, __ud = true }, purchaseTime = 0, maintenanceChange = 0, maintenanceState = 1,
 			autoLoadConfig = { true }, __ud = true } },
 		vehicleGroups = { 1 }, muFileNames = {}, __ud = true }
+	-- (0.5.14: the fleet of the line it is for changes now, see manageLines' settled)
+	do local A0 = E.G.AI; if A0.forLine then A0.changedAt = A0.changedAt or {}; A0.changedAt[A0.forLine] = E.gameTime() end end
 	act(E, co.id, "makeVehicleBuyCmd", { n = 3, [1] = co.ent, [2] = depot, [3] = cfg })
 	E.G.AI.busy = { what = "bus " .. bus.name, since = E.G.frames, vehBefore = #myVehicles(E, co.ent), moneyBefore = balanceOf(E, co.ent),
 		jr = { kind = "bus", pos = depotPos(E, depot), a = tostring(bus.name):match("([^/]+)%.mdl$") or bus.name } }
@@ -892,6 +894,24 @@ local function companyResult(E, lines)
 	return A.opResult
 end
 
+-- (0.5.14) The company's loans as the simulation books them (the registry's copy here, G.co.loan, as the bridge keeps it): how
+-- many, what is still owed and what they cost a month (amount / months, plus the interest). 0 when it has none or they cannot be read
+local function loanBook(E, co)
+	local n, owe, monthly = 0, 0, 0
+	pcall(function()
+		local lt = E.G.co and E.G.co.loan and E.G.co.loan[co.id]
+		local month = E.api.util.getDefaultMonthDuration()
+		for _, l in ipairs(lt and lt.obtainedLoans or {}) do
+			local months = math.max(1, math.floor((tonumber(l.duration) or 0) / month + 0.5))
+			local per = (tonumber(l.amount) or 0) / months
+			n = n + 1
+			owe = owe + math.max(0, (tonumber(l.amount) or 0) - (tonumber(l.timesPaid) or 0) * per)
+			monthly = monthly + per * (1 + (tonumber(l.percentage) or 0))
+		end
+	end)
+	return n, owe, monthly
+end
+
 -- (0.5.14) Whether the company may open something new (stops, a line, a garage for a new line): its first lines freely (the
 -- level's bootstrap); then not before its last new line had time to fill (settle, game time), and only while its lines earn
 -- together or it holds plenty of money besides its reserve (freeCash). The tests of 2026-10-29: three companies opened 6 to 10
@@ -911,7 +931,9 @@ local function mayExpand(E, co, lines, money)
 			local born = A.born and A.born[l.e]
 			-- (a line short of paying its vehicles for good, between the level's give-up share and 1, would hold it back for ever: only
 			-- one well under it counts; the fleet rules of manageLines deal with the others)
-			if (born and born <= now and now - born < (LV.ramp or 0)) or ((A.ratio or {})[l.e] or 0) < ((LV.giveUp or 0.5) + 1) / 2 then unproven = unproven + 1 end
+			-- (a line with no measure yet, no vehicle or MPFEVER_AIFLEET=0, by its age only: counted as 0 it held growth for good)
+			local r = A.ratio and A.ratio[l.e]
+			if (born and born <= now and now - born < (LV.ramp or 0)) or (os.getenv("MPFEVER_AIFLEET") ~= "0" and r ~= nil and r < ((LV.giveUp or 0.5) + 1) / 2) then unproven = unproven + 1 end
 		end
 		-- (the money of a loan just taken is not money to spare)
 		local spare = money - (A.loanCash or 0)
@@ -964,11 +986,20 @@ local function problemLines(E, ent)
 end
 
 -- one look at the lines every 2 minutes: a bus more on a full line, a line with a problem given up
-local function sellVehicle(E, co, v, why)
+local function sellVehicle(E, co, v, why, line)
+	-- (0.5.14: the line's fleet changed now: its next fleet decision waits until its balance shows it, see manageLines)
+	if line then local A0 = E.G.AI; A0.changedAt = A0.changedAt or {}; A0.changedAt[line] = E.gameTime() end
 	act(E, co.id, "makeVehicleSellCmd", { n = 1, [1] = { v } })
 	E.G.AI.busy = { what = "sale of vehicle " .. v, since = E.G.frames, until_ = E.G.frames + 120 }
 	L(E, "vehicle " .. v .. " sold (" .. why .. ")")
 	journal(E, co.id, "sold", nil)
+end
+
+-- (0.5.14) a line the company gave up (its fleet sold down to nothing, see manageLines): no purchase path buys it a vehicle any
+-- more, it is destroyed once empty. MPFEVER_AIFLEET=0: none (as before, it bought the vehicle back at the next look)
+local function dropped(E, line)
+	local d = E.G.AI.dropLine
+	return d ~= nil and d[line] == true
 end
 
 -- (freight, see below: a line's trucks and cargo)
@@ -996,7 +1027,7 @@ local function manageLines(E, co, lines, vehicles, money)
 		local liveL, liveV = {}, {}
 		for _, l in ipairs(lines) do liveL[l.e] = true end
 		for _, v in ipairs(vehicles) do liveV[v.e] = true end
-		for _, t in ipairs({ A.emptyRuns, A.trucksFor, A.problemSeen, A.useHist, A.seenAt, A.losing, A.born, A.ratio }) do
+		for _, t in ipairs({ A.emptyRuns, A.trucksFor, A.problemSeen, A.useHist, A.seenAt, A.losing, A.born, A.ratio, A.dropLine, A.changedAt }) do
 			if type(t) == "table" then for k in pairs(t) do if not liveL[k] then t[k] = nil end end end
 		end
 		if type(A.lineSent) == "table" then for k in pairs(A.lineSent) do if not liveV[k] then A.lineSent[k] = nil end end end
@@ -1033,6 +1064,8 @@ local function manageLines(E, co, lines, vehicles, money)
 			if not A.born[l.e] or A.born[l.e] > nowG then A.born[l.e] = nowG end
 			if nowG - A.born[l.e] < 240000 then empty = false end
 		end
+		-- (a line given up, see dropped: empty for good, its last vehicles sold and the line destroyed as the empty ones are)
+		if A.dropLine and A.dropLine[l.e] then empty = true; A.emptyRuns[l.e] = math.max(A.emptyRuns[l.e] or 0, emptyLooks - 1) end
 		if not grace or period == 7200 then A.emptyRuns[l.e] = empty and ((A.emptyRuns[l.e] or 0) + 1) or 0 end
 		l.use, l.bal = use, bal
 		-- (0.5.14) what the line earns against what its vehicles cost to run, over the same two months: its income (the balance
@@ -1124,10 +1157,13 @@ local function manageLines(E, co, lines, vehicles, money)
 	end
 	-- (in debt with no line losing money: a loan, as a player would take, rather than waiting in debt; one ask every 2 minutes at
 	-- most, the game refuses more than its loans' maximum. MPFEVER_AILOAN=0: none)
-	if money < 0 and losingOnly and os.getenv("MPFEVER_AILOAN") ~= "0" and G.frames - (A.loanAsked or -100000) > 7200 then
+	-- (0.5.14, MPFEVER_AILOANPICK: one loan at most, the offer of the lowest monthly payment, see the bridge's ai_loan; the first
+	-- offer was taken before, 5 to 70 million over 1 to 24 years: a short one cost more a month than the company earned)
+	local pickLoan = os.getenv("MPFEVER_AILOANPICK") ~= "0"
+	if money < 0 and losingOnly and os.getenv("MPFEVER_AILOAN") ~= "0" and G.frames - (A.loanAsked or -100000) > 7200 and (not pickLoan or (A.loanCount or 0) < 1) then
 		A.loanAsked = G.frames
 		A.loanAskMoney = money
-		act(E, co.id, "makeScriptingSendEventCmd", { n = 4, [1] = "mpfever", [2] = "mpfever", [3] = "ai_loan", [4] = {} })
+		act(E, co.id, "makeScriptingSendEventCmd", { n = 4, [1] = "mpfever", [2] = "mpfever", [3] = "ai_loan", [4] = pickLoan and { pick = 1, max = 1 } or {} })
 		A.busy = { what = "loan", since = G.frames, until_ = G.frames + 120 }
 		L(E, "in debt (" .. math.floor(money) .. "): a loan asked")
 		return true
@@ -1136,7 +1172,7 @@ local function manageLines(E, co, lines, vehicles, money)
 	-- game, see the bridge's ai_repay), at most every 6 game months. Before, a loan was never repaid and its money was spent as
 	-- profit. MPFEVER_AIREPAY=0: never
 	local nowT = E.gameTime()
-	if os.getenv("MPFEVER_AIREPAY") ~= "0" and money > 2 * RESERVE + 1000000 and (not A.repayAt or A.repayAt > nowT or nowT - A.repayAt > 720000) then
+	if os.getenv("MPFEVER_AIREPAY") ~= "0" and (A.loanCount == nil or A.loanCount > 0) and money > 2 * RESERVE + 1000000 and (not A.repayAt or A.repayAt > nowT or nowT - A.repayAt > 720000) then
 		A.repayAt = nowT
 		act(E, co.id, "makeScriptingSendEventCmd", { n = 4, [1] = "mpfever", [2] = "mpfever", [3] = "ai_repay", [4] = { keep = math.floor(RESERVE) } })
 		A.busy = { what = "loan repaid", since = G.frames, until_ = G.frames + 120 }
@@ -1144,9 +1180,12 @@ local function manageLines(E, co, lines, vehicles, money)
 		return true
 	end
 	-- (a loan's money, seen at the next look after asking: kept apart from the money to spare, see mayExpand; spent down with it)
-	if A.loanAskMoney and money - A.loanAskMoney > 500000 then A.loanCash = (A.loanCash or 0) + money - A.loanAskMoney end
-	A.loanAskMoney = nil
-	if A.loanCash and money < RESERVE + A.loanCash then A.loanCash = math.max(0, money - RESERVE) end
+	-- (MPFEVER_AILOANBOOK=0 only: else the loan book read in step says it, see loanBook)
+	if os.getenv("MPFEVER_AILOANBOOK") == "0" then
+		if A.loanAskMoney and money - A.loanAskMoney > 500000 then A.loanCash = (A.loanCash or 0) + money - A.loanAskMoney end
+		A.loanAskMoney = nil
+		if A.loanCash and money < RESERVE + A.loanCash then A.loanCash = math.max(0, money - RESERVE) end
+	end
 	local reinvest = os.getenv("MPFEVER_AIREINVEST") ~= "0"
 	local bestBuy = nil
 	for _, l in ipairs(lines) do
@@ -1155,6 +1194,14 @@ local function manageLines(E, co, lines, vehicles, money)
 		local use = l.use
 		L(E, string.format("line %d: %d bus(es), %s of the seats used on average, balance of the last 2 months %s%s", l.e, n,
 			use and (math.floor(use * 100) .. "%") or "?", l.bal and tostring(math.floor(l.bal)) or "?", probs[l.e] and (", problem " .. tostring(probs[l.e])) or ""))
+		-- (0.5.14, MPFEVER_AIPROBLEMSELL: its vehicles sold first, one a look, the line destroyed with the last as an empty one; the
+		-- engine keeps a line that still has a vehicle. MPFEVER_AIPROBLEMSELL=0: destroyed at once, as before)
+		if probs[l.e] and n > 0 and (A.problemSeen or {})[l.e] and os.getenv("MPFEVER_AIPROBLEMSELL") ~= "0" then
+			L(E, "line " .. l.e .. " has a problem (" .. tostring(probs[l.e]) .. "): its vehicles sold, then the line")
+			A.dropLine = A.dropLine or {}; A.dropLine[l.e] = true
+			sellVehicle(E, co, last, "line " .. l.e .. " with a problem", l.e)
+			return true
+		end
 		if probs[l.e] and n > 0 and (A.problemSeen or {})[l.e] then
 			-- (a problem seen twice in a row: the line is given up, its buses go to the company's other lines)
 			L(E, "line " .. l.e .. " given up (problem " .. tostring(probs[l.e]) .. ")")
@@ -1183,7 +1230,10 @@ local function manageLines(E, co, lines, vehicles, money)
 			local under
 			if fleet then
 				local r = l.econ and l.econ.ratio
-				under = r ~= nil and age > LV.ramp and ((n > 1 and r < 1) or (n == 1 and r < LV.giveUp))
+				-- (not before its balance shows its last fleet change, two game months)
+				local ch = A.changedAt and A.changedAt[l.e]
+				local settled = not ch or ch > nowG or nowG - ch >= 240000
+				under = settled and r ~= nil and age > LV.ramp and ((n > 1 and r < 1) or (n == 1 and r < LV.giveUp))
 			else
 				under = n > 2 and l.bal and l.bal < 0 and age > 720000
 			end
@@ -1192,7 +1242,9 @@ local function manageLines(E, co, lines, vehicles, money)
 				A.losing[l.e] = 0
 				L(E, string.format("line %d does not pay its vehicles (%s of their running costs, balance %d over 2 months) with %d vehicle(s): one less",
 					l.e, l.econ and l.econ.ratio and (math.floor(l.econ.ratio * 100) .. "%") or "?", math.floor(l.bal or 0), n))
-				sellVehicle(E, co, last, "line " .. l.e .. " does not pay its vehicles")
+				-- (its last one: the line is given up, nothing buys it back, see dropped)
+				if fleet and n == 1 then A.dropLine = A.dropLine or {}; A.dropLine[l.e] = true end
+				sellVehicle(E, co, last, "line " .. l.e .. " does not pay its vehicles", l.e)
 				return true
 			end
 		end
@@ -1217,14 +1269,16 @@ local function manageLines(E, co, lines, vehicles, money)
 				end)
 			end
 		end
-		if busy and money > RESERVE + ((l.freight and A.truckCost or A.busCost) or BUS_COST) then
+		if busy and not dropped(E, l.e) and money > RESERVE + ((l.freight and A.truckCost or A.busCost) or BUS_COST) then
 			if reinvest then
 				-- (0.5.14) the busy line that earns the most per vehicle gets the next one; a full line that loses money gets none on
 				-- Normal and Hard (each more of its vehicles loses more). MPFEVER_AIREINVEST=0: the first busy line, as before
 				local per = (l.bal or 0) / math.max(1, n)
 				-- (with MPFEVER_AIFLEET: only while one more vehicle would still pay, its income shared by one more, with the level's margin)
 				local pays
-				if fleet and l.econ and l.econ.perVeh then pays = l.econ.income / (n + 1) >= l.econ.perVeh * LV.addMargin
+				local ch = A.changedAt and A.changedAt[l.e]
+				local settled = not ch or ch > nowG or nowG - ch >= 240000
+				if fleet and l.econ and l.econ.perVeh then pays = settled and l.econ.income / (n + 1) >= l.econ.perVeh * LV.addMargin
 				else pays = LV.name == "easy" or l.bal == nil or l.bal >= 0 end
 				if pays and (not bestBuy or per > bestBuy.per) then bestBuy = { l = l, per = per } end
 			else
@@ -1424,7 +1478,7 @@ local function pairProject(E, co, stops, lines, vehicles, money, grow)
 	local n = 0
 	for _, v in ipairs(vehicles) do if v.line == line.e then n = n + 1 end end
 	-- (0.5.14, MPFEVER_AIFLEET: two buses to begin with, more as it earns, see manageLines; three before)
-	if n < ((os.getenv("MPFEVER_AIFLEET") ~= "0") and 2 or 3) then
+	if n < ((os.getenv("MPFEVER_AIFLEET") ~= "0") and 2 or 3) and not dropped(E, line.e) then
 		if money < RESERVE + (A.busCost or BUS_COST) then return "wait" end
 		A.forLine = line.e
 		buyBus(E, co, g.depot)
@@ -1673,6 +1727,8 @@ local function buyTruck(E, co, depot, cargo)
 			color = { x = -1, y = -1, z = -1, __vec = true }, __ud = true }, purchaseTime = 0, maintenanceChange = 0, maintenanceState = 1,
 			autoLoadConfig = { true }, __ud = true } },
 		vehicleGroups = { 1 }, muFileNames = {}, __ud = true }
+	-- (0.5.14: the fleet of the line it is for changes now, see manageLines' settled)
+	do local A0 = E.G.AI; if A0.forLine then A0.changedAt = A0.changedAt or {}; A0.changedAt[A0.forLine] = E.gameTime() end end
 	act(E, co.id, "makeVehicleBuyCmd", { n = 3, [1] = co.ent, [2] = depot, [3] = cfg })
 	E.G.AI.busy = { what = "truck " .. truck.name, since = E.G.frames, vehBefore = #myVehicles(E, co.ent), moneyBefore = balanceOf(E, co.ent),
 		jr = { kind = "truck", pos = depotPos(E, depot), a = tostring(truck.name):match("([^/]+)%.mdl$") or truck.name, b = cargo } }
@@ -1937,7 +1993,7 @@ local function townFreightProject(E, co, stops, lines, vehicles, money)
 	end
 	local n = 0
 	for _, v in ipairs(vehicles) do if v.line == line.e then n = n + 1 end end
-	if n < 2 then
+	if n < ((os.getenv("MPFEVER_AIFLEET") ~= "0") and 1 or 2) and not dropped(E, line.e) then
 		if money < RESERVE + (A.truckCost or BUS_COST) then return true end
 		A.forLine = line.e
 		buyTruck(E, co, g.depot, f.cargo)
@@ -2006,7 +2062,7 @@ local function industryProject(E, co, lines, vehicles, money)
 	end
 	local n = 0
 	for _, v in ipairs(vehicles) do if v.line == line.e then n = n + 1 end end
-	if n < 2 then
+	if n < ((os.getenv("MPFEVER_AIFLEET") ~= "0") and 1 or 2) and not dropped(E, line.e) then
 		if money < RESERVE + (A.truckCost or BUS_COST) then return true end
 		A.forLine = line.e
 		buyTruck(E, co, g.depot, f.cargo)
@@ -2239,6 +2295,13 @@ local function step(E)
 	local co = aiCompany(E)
 	if not co then return join(E) end
 	if not co.ent then return end
+	-- (0.5.14: a new company under this number, after a bankruptcy: the last one's memory of its towns, lines and garages is
+	-- dropped, it named entities of another company. MPFEVER_AIRETRY=0: kept)
+	if A.ent ~= nil and A.ent ~= co.ent and os.getenv("MPFEVER_AIRETRY") ~= "0" then
+		for k in pairs(A) do A[k] = nil end
+		L(E, "a new company (entity " .. co.ent .. "): the last one's memory dropped")
+	end
+	A.ent = co.ent
 	-- the colour the host gave it in the lobby (a savegame's company keeps its own until then): asked once, as a player would
 	if AICOLOR and co.color ~= AICOLOR and not A.recolorAsked and E.CO.colorFree(G.co, AICOLOR, co.id) then
 		A.recolorAsked = true
@@ -2289,6 +2352,13 @@ local function step(E)
 		end
 		RESERVE = math.max(LV.reserve, LV.reserve / 2 + (A.runCost or 0) * (LV.runMonths or 4) / 12)
 	end
+	-- (0.5.14) and its loans' monthly payments for as many months; the loans' money is no money to spare (see mayExpand).
+	-- MPFEVER_AILOANBOOK=0: as before
+	if os.getenv("MPFEVER_AILOANBOOK") ~= "0" then
+		A.loanCount, A.loanOwe, A.loanMonthly = loanBook(E, co)
+		RESERVE = RESERVE + A.loanMonthly * (LV.runMonths or 4)
+		A.loanCash = A.loanOwe
+	end
 	if G.frames - (A.reportAt or -100000) > 1800 then
 		A.reportAt = G.frames
 		-- (0.5.14: what it keeps back, its lines' result together over the last two months and its fleet's running costs a year)
@@ -2314,6 +2384,17 @@ local function step(E)
 				A.lineSent[v.e] = G.frames
 				local target = lines[#lines].e
 				for _, l in ipairs(lines) do if l.e == A.forLine then target = l.e end end
+				-- (0.5.14: only to the line it was bought for, still running; else it is sold - the company's last line could be of
+				-- another kind, a bus on a truck line. MPFEVER_AISTRAY=0: the last line, as before)
+				if os.getenv("MPFEVER_AISTRAY") ~= "0" then
+					local own = nil
+					for _, l in ipairs(lines) do if l.e == A.forLine and not dropped(E, l.e) then own = l.e end end
+					if not own then
+						sellVehicle(E, co, v.e, "bought for a line that is gone")
+						return
+					end
+					target = own
+				end
 				act(E, co.id, "makeVehicleSetLineCmd", { n = 3, [1] = v.e, [2] = target, [3] = 0 })
 				A.busy = { what = "vehicle " .. v.e .. " to line " .. target, since = G.frames, until_ = G.frames + 120 }
 				L(E, "vehicle " .. v.e .. " sent to line " .. target)
@@ -2339,7 +2420,7 @@ local function step(E)
 			-- (0.5.14: the trucks it has, not the ones asked for: two refused purchases left a line with no truck, given up as empty
 			-- soon after; at most 5 asks. MPFEVER_AIRETRY=0: two asks as before)
 			local asks = os.getenv("MPFEVER_AIRETRY") == "0" and 2 or 5
-			if f and (A.trucksFor[l.e] or 0) < asks then
+			if f and (A.trucksFor[l.e] or 0) < asks and not dropped(E, l.e) then
 				local n = 0
 				for _, v in ipairs(vehicles) do if v.line == l.e then n = n + 1 end end
 				-- (0.5.14, MPFEVER_AIFLEET: one truck to begin with, more as cargo waits and the line earns; two before)
@@ -2377,6 +2458,8 @@ local function step(E)
 			-- the garage of the town's buses (see garageFor)
 			local tc = centre(E, town, E.api.type.enum.LandUseType.RESIDENTIAL)
 			if not tc then goto continue end
+			-- (0.5.14: no garage for a town whose own line the company has not begun while its growth waits, see mayExpand)
+			if not grow and not (A.townBegun and A.townBegun[town]) then goto continue end
 			local g = garageFor(E, co, tc, money, townName(E, town))
 			if g == "building" then return end
 			if not g then
@@ -2458,7 +2541,7 @@ local function step(E)
 			-- (0.5.14, MPFEVER_AIFLEET: one bus to begin with, more as it fills and earns, see manageLines: one bus well filled was the
 			-- only town line that earned in the tests of 2026-10-29, two to five at 20-30 % lost money)
 			local wantBuses = (os.getenv("MPFEVER_AIFLEET") ~= "0") and 1 or math.min(5, LV.maxBus, 2 + math.floor(#groups / 2))
-			if onLine < wantBuses and not A.noBuses then
+			if onLine < wantBuses and not A.noBuses and not dropped(E, line.e) then
 				if money < RESERVE + (A.busCost or BUS_COST) then return end
 				A.forLine = line.e
 				buyBus(E, co, depot.depot)
@@ -2471,7 +2554,7 @@ local function step(E)
 	for _, l in ipairs(lines) do
 		local n = 0
 		for _, v in ipairs(vehicles) do if v.line == l.e then n = n + 1 end end
-		if n < ((os.getenv("MPFEVER_AIFLEET") ~= "0") and 1 or 2) and not A.noBuses and money > RESERVE + (A.busCost or BUS_COST) and ((A.emptyRuns or {})[l.e] or 0) == 0 then
+		if n < ((os.getenv("MPFEVER_AIFLEET") ~= "0") and 1 or 2) and not A.noBuses and not dropped(E, l.e) and money > RESERVE + (A.busCost or BUS_COST) and ((A.emptyRuns or {})[l.e] or 0) == 0 then
 			local f = os.getenv("MPFEVER_AIFREIGHT") ~= "0" and freightOf(E, l)
 			local depot = garagesNear(E, co.ent, l.mid or (f and f.from.pos) or { x = 0, y = 0 }, 5000)[1]
 			if depot then

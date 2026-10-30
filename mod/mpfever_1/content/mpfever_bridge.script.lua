@@ -747,6 +747,14 @@ local function executeActionOnce(a, sendCommand, useCallback, bind, done)
 		pcall(function()
 			for _, i in ipairs(C.OWNER_ARGS[a.fn]) do
 				local e = a.args[i]
+				-- (0.5.14: a list of entities, a sale of several vehicles: each one is checked; before, a list was never checked and
+				-- a company could sell another's vehicles. MPFEVER_OWNERLISTS=0: as before)
+				if type(e) == "table" and os.getenv("MPFEVER_OWNERLISTS") ~= "0" then
+					for _, x in ipairs(e) do
+						local o = type(x) == "number" and CO.idOfEntity(R.CO, R.ownerOf(x)) or nil
+						if o and o ~= a.co then e = x; break end
+					end
+				end
 				local owner = type(e) == "number" and CO.idOfEntity(R.CO, R.ownerOf(e)) or nil
 				if owner and owner ~= a.co then
 					-- (a depot its company opened to the others, 0.5.0: a vehicle bought there or sent there, for a toll or not; the
@@ -2783,9 +2791,20 @@ local function handleEvent(userParams, state, src, id, name, param)
 				if not (c and type(c.key) == "string" and c.key:sub(1, 3) == "ai:") then log("companies: ai_loan refused to company " .. tostring(param.mpfCo)); return end
 				local lt = coLoanTable(st, c.id)
 				local now = gameTime()
-				local offer = nil
+				-- (0.5.14) at most param.max loans; with param.pick == 1 the offer of the lowest monthly payment (amount / months, plus
+				-- its interest). The command's parameters and this simulation's offers are the same on every game: the same choice.
+				-- Without them: the first offer, as before
+				local most = tonumber(param.max)
+				if most and #(lt and lt.obtainedLoans or {}) >= most then log("companies: computer company " .. c.id .. " has " .. most .. " loan(s) already"); return end
+				local M = tonumber(param.pick) == 1 and loanMods() or nil
+				local offer, pay = nil, nil
 				for _, loan in ipairs(lt and lt.availableLoans or {}) do
-					if not offer and type(loan.amount) == "number" and not (loan.cooldownUntil and loan.cooldownUntil > now) then offer = loan end
+					if type(loan.amount) == "number" and not (loan.cooldownUntil and loan.cooldownUntil > now) then
+						if M then
+							local p = loan.amount / math.max(1, M.lu.getDurationInMonths(loan.duration or 0)) * (1 + (loan.percentage or 0))
+							if not pay or p < pay then offer, pay = loan, p end
+						elseif not offer then offer = loan end
+					end
 				end
 				if not offer then log("companies: no loan on offer to computer company " .. c.id); return end
 				coLoanEvent(st, c.id, "Obtain", { offer, offer })
