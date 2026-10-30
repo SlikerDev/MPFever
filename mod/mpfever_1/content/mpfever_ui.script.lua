@@ -2196,6 +2196,9 @@ U.openHub = function(page, wapi)
 	local ok, err = pcall(function() wapi.addSingletonWindow(U.HubWindow, { onClose = function() U.closeHub() end }) end)
 	if not ok then log("hub: not opened: " .. tostring(err)) return false end
 	U.hubOpen, U.hubApi = true, wapi
+	-- (the small window, the quick view, stood out behind the Hub: it closes while the Hub is open, not as the player's choice,
+	-- so it still opens by itself after a reload. MPFEVER_HUBHIDESMALL=0: it stays)
+	if U.winOpen and os.getenv("MPFEVER_HUBHIDESMALL") ~= "0" then pcall(U.closeWindow, false) end
 	log("hub: opened on the " .. U.hubValid(U.hubPage, U.status) .. " page")
 	U.refreshChat()
 	U.winChanged()
@@ -2220,6 +2223,13 @@ U.setHubSize = function(d)
 	U.hubSize = math.max(1, math.min(#U.HUB_SCALES, (U.hubSize or 2) + d))
 	p.hubsize = tostring(U.hubSize)
 	U.savePrefs()
+	-- (the game keeps a window where it was put for its first size: a larger Hub grew to the right, off the middle of the screen.
+	-- Opened again at its new size, it is centred again. MPFEVER_HUBRECENTER=0: as before)
+	if U.hubOpen and os.getenv("MPFEVER_HUBRECENTER") ~= "0" then
+		local page = U.hubPage
+		pcall(U.closeHub)
+		pcall(U.openHub, page)
+	end
 	U.winChanged()
 end
 
@@ -2593,7 +2603,10 @@ U.chatBody = function(K, st, chat, ctx)
 	rows[#rows + 1] = K.gap(1, 10)
 	rows[#rows + 1] = K.row {
 		builtin.TextInputField {
-			meta = { class = "font-scale-body", localKey = "mpfever-chat-input-" .. tostring(ctx.chatGen:old()), styleSheet = K.style { size = { 440, -1 } } },
+			-- (the Hub: a page of a fixed height gave the field all the height left, a big dark box; there it has the height of a
+			-- line and the page's width)
+			meta = { class = "font-scale-body", localKey = "mpfever-chat-input-" .. tostring(ctx.chatGen:old()),
+				styleSheet = K.style { size = U.hubDrawing and { math.max(440, W - 140), 34 } or { 440, -1 } } },
 			value = "",
 			placeholderText = T("Écrire un message…", "Write a message…"),
 			maxLength = 300,
@@ -3395,7 +3408,7 @@ U.featU = function(K, st, M)
 	-- In the Hub a text is made only where it goes (u.row, u.card, a cell of u.table, the page: U.featTabRows), at the width it
 	-- gets there: u.text and u.muted give a token (an empty table, its text in `deferred`) that u.resolve turns into the node. No
 	-- node is made and then left out (the game's react makes each node in its tree as it is asked for).
-	local made, deferred = {}, {}
+	local made, deferred, nodes = {}, {}, {}
 	u.resolve = function(x, w)
 		local d = x ~= nil and deferred[x] or nil
 		if not d then return x end
@@ -3601,10 +3614,12 @@ U.featU = function(K, st, M)
 			for j = 1, n do
 				local cell = line[j]
 				if cell == nil then cell = "" end
+				-- (each text in a box of its column's width: the game sizes a lone text to its letters, and the columns ran together)
 				if deferred[cell] then
-					cells[#cells + 1] = u.resolve(cell, ws[j])
-				elseif type(cell) == "string" or type(cell) == "number" then
-					cells[#cells + 1] = head and K.colored(tostring(cell), K.color("NeutralLight"), ws[j]) or K.text(tostring(cell), nil, nil, ws[j])
+					cells[#cells + 1] = K.box({ u.resolve(cell, ws[j] - 8) }, { size = { ws[j], -1 } }, K.H)
+				elseif type(cell) == "string" or (type(cell) == "number" and not (made[cell] or nodes[cell])) then
+					local t = head and K.colored(tostring(cell), K.color("NeutralLight"), ws[j] - 8) or K.text(tostring(cell), nil, nil, ws[j] - 8)
+					cells[#cells + 1] = K.box({ t }, { size = { ws[j], -1 } }, K.H)
 				else
 					cells[#cells + 1] = K.box({ cell }, { size = { ws[j], -1 } }, K.H)
 				end
@@ -3617,6 +3632,22 @@ U.featU = function(K, st, M)
 			out[#out + 1] = K.box(cells, { size = { inner + 16, -1 }, padding = { 4, 8, 4, 8 }, background = bg }, K.H)
 		end
 		return K.col(out)
+	end
+	-- (the Hub) the game's components are numbers: every one the helpers make is noted, so that a table tells a cell holding a
+	-- component (a row of buttons) from a cell holding a number to write (the territories' « View » and « Claim » showed as a
+	-- number). MPFEVER_HUBNODES=0: as before
+	if rich and os.getenv("MPFEVER_HUBNODES") ~= "0" then
+		local plain = { T = true, Tf = true, money = true, on = true, param = true, read = true, request = true, send = true,
+			coColor = true, resolve = true, table = true }
+		for k, f in pairs(u) do
+			if type(f) == "function" and not plain[k] then
+				u[k] = function(...)
+					local r = f(...)
+					if type(r) == "number" then nodes[r] = true end
+					return r
+				end
+			end
+		end
 	end
 	return u
 end

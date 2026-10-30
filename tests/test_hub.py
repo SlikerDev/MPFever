@@ -240,12 +240,12 @@ local tb = u.table({ { "#", "Company", "Value" }, { "1", "Bob", "$5" }, { "2", "
   { highlight = function(i, line) return line[2] == "Ann" end })
 local tr = tb.p.children
 check("hub: u.table a head and a row each", tb.kind == "BoxLayout" and #tr == 3)
-check("hub: u.table's head on its band, muted", same(bgOf(tr[1]), U.HUB_TINT.head) and tr[1].p.layout.p.children[2].p.text == "Company")
+check("hub: u.table's head on its band, muted", same(bgOf(tr[1]), U.HUB_TINT.head) and tr[1].p.layout.p.children[2].p.layout.p.children[1].p.text == "Company")
 check("hub: u.table's rows striped, this player's on the blue band", same(bgOf(tr[2]), U.HUB_TINT.odd) and same(bgOf(tr[3]), U.HUB_TINT.mine))
 local cw = {}
-for i, cell in ipairs(tr[2].p.layout.p.children) do cw[i] = cell.p.width end
+for i, cell in ipairs(tr[2].p.layout.p.children) do cw[i] = sizeOf(cell).x end
 check("hub: u.table's columns stretched to the page (the last one takes the rest)", cw[1] + cw[2] + cw[3] == 700 - 16 and cw[2] > cw[1] * 9, table.concat(cw, ","))
-check("hub: u.table's widths the same on every row", tr[3].p.layout.p.children[1].p.width == cw[1] and sizeOf(tr[3].p.layout.p.children[3]).x == cw[3])
+check("hub: u.table's widths the same on every row", sizeOf(tr[3].p.layout.p.children[1]).x == cw[1] and sizeOf(tr[3].p.layout.p.children[3]).x == cw[3])
 check("hub: u.table a node in a cell", tr[3].p.layout.p.children[3].p.layout.p.children[1] == btn)
 local s = u.stats({ { "Value", "$5" }, { "Money", "$3", "success" } }, 200)
 check("hub: u.stats the boxes side by side", s.p.children[1].kind == "BoxLayout" and texts(s) == "Value|$5|Money|$3" and sizeOf(s.p.children[1].p.children[1]).x == 200)

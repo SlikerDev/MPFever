@@ -1335,7 +1335,9 @@ local function setup()
 				local fs = fv and featSummary(fv)
 				local fc = fv and featCount(fv)
 				if fc then side[#side + 1] = text(fc, "font-scale-body", sw) end
-				if fs and not (isHost and rulesOpen:old() and not OPTSPAGE) then
+				-- (with the page of the game options, the number and its button are enough: the full list of 15 options covered the
+				-- lobby under the picture)
+				if fs and not OPTSPAGE and not (isHost and rulesOpen:old()) then
 					table.insert(below, 1, text(fs, "font-scale-body", SIDE_W - 24))
 					table.insert(below, 2, gap(1, 10))
 				end
