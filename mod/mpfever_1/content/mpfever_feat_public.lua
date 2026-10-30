@@ -17,8 +17,8 @@ M.ID = "public"
 M.OPTIONS = {
 	{ id = "public",
 		title = { "Partie publique", "Public game" },
-		desc = { "Le salon apparaît dans la liste publique des parties : n'importe quel joueur de la même version peut le rejoindre par Steam, sans port à ouvrir.",
-			"The lobby shows in the public list of games: any player with the same version can join it through Steam, with no port to open." },
+		desc = { "Le salon apparaît dans la liste publique des parties, avec votre identifiant Steam : n'importe quel joueur de la même version peut le rejoindre par Steam, sans port à ouvrir.",
+			"The lobby shows in the public list of games, with your Steam id: any player with the same version can join it through Steam, with no port to open." },
 		modes = "both",
 		params = {
 			{ id = "max", label = { "Joueurs au maximum", "Players at most" }, values = { 2, 3, 4, 5, 6, 7, 8 }, default = 8 },

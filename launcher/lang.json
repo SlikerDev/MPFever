@@ -12429,18 +12429,18 @@
       "zh-CN": "公开游戏",
       "zh-TW": "公開遊戲"
     },
-    "The lobby shows in the public list of games: any player with the same version can join it through Steam, with no port to open.": {
-      "de": "Die Lobby erscheint in der öffentlichen Spieleliste: jeder Spieler mit derselben Version kann über Steam beitreten, ohne Port zu öffnen.",
-      "es": "La sala aparece en la lista pública de partidas: cualquier jugador con la misma versión puede unirse por Steam, sin abrir ningún puerto.",
-      "it": "La stanza compare nell'elenco pubblico delle partite: qualsiasi giocatore con la stessa versione può unirsi tramite Steam, senza aprire porte.",
-      "nl": "De lobby verschijnt in de openbare lijst van spellen: elke speler met dezelfde versie kan via Steam meedoen, zonder een poort te openen.",
-      "pl": "Poczekalnia pojawia się na publicznej liście gier: każdy gracz z tą samą wersją może dołączyć przez Steam, bez otwierania portu.",
-      "pt-BR": "A sala aparece na lista pública de jogos: qualquer jogador com a mesma versão pode entrar pela Steam, sem abrir porta.",
-      "ru": "Лобби появляется в публичном списке игр: любой игрок с той же версией может присоединиться через Steam, без открытия порта.",
-      "ja": "ロビーが公開ゲームリストに表示されます。同じバージョンのプレイヤーなら誰でも、ポートを開けずに Steam 経由で参加できます。",
-      "ko": "로비가 공개 게임 목록에 표시됩니다: 같은 버전의 플레이어라면 누구나 포트를 열지 않고 Steam으로 참가할 수 있습니다.",
-      "zh-CN": "大厅会显示在公共游戏列表中：任何版本相同的玩家都可以通过 Steam 加入，无需开放端口。",
-      "zh-TW": "大廳會顯示在公開遊戲列表中：任何版本相同的玩家都可以透過 Steam 加入，無需開放連接埠。"
+    "The lobby shows in the public list of games, with your Steam id: any player with the same version can join it through Steam, with no port to open.": {
+      "de": "Die Lobby erscheint mit deiner Steam-ID in der öffentlichen Spieleliste: jeder Spieler mit derselben Version kann über Steam beitreten, ohne Port zu öffnen.",
+      "es": "La sala aparece en la lista pública de partidas, con tu ID de Steam: cualquier jugador con la misma versión puede unirse por Steam, sin abrir ningún puerto.",
+      "it": "La stanza compare nell'elenco pubblico delle partite, con il tuo ID Steam: qualsiasi giocatore con la stessa versione può unirsi tramite Steam, senza aprire porte.",
+      "nl": "De lobby verschijnt in de openbare lijst van spellen, met je Steam-ID: elke speler met dezelfde versie kan via Steam meedoen, zonder een poort te openen.",
+      "pl": "Poczekalnia pojawia się na publicznej liście gier, z twoim identyfikatorem Steam: każdy gracz z tą samą wersją może dołączyć przez Steam, bez otwierania portu.",
+      "pt-BR": "A sala aparece na lista pública de jogos, com seu ID da Steam: qualquer jogador com a mesma versão pode entrar pela Steam, sem abrir porta.",
+      "ru": "Лобби появляется в публичном списке игр вместе с вашим Steam ID: любой игрок с той же версией может присоединиться через Steam, без открытия порта.",
+      "ja": "ロビーがあなたの Steam ID とともに公開ゲームリストに表示されます。同じバージョンのプレイヤーなら誰でも、ポートを開けずに Steam 経由で参加できます。",
+      "ko": "로비가 내 Steam ID와 함께 공개 게임 목록에 표시됩니다: 같은 버전의 플레이어라면 누구나 포트를 열지 않고 Steam으로 참가할 수 있습니다.",
+      "zh-CN": "大厅会连同你的 Steam ID 显示在公共游戏列表中：任何版本相同的玩家都可以通过 Steam 加入，无需开放端口。",
+      "zh-TW": "大廳會連同你的 Steam ID 顯示在公開遊戲列表中：任何版本相同的玩家都可以透過 Steam 加入，無需開放連接埠。"
     },
     "Players at most": {
       "de": "Maximale Spielerzahl",
