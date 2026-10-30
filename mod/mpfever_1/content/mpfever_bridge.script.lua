@@ -11475,7 +11475,8 @@ H.wintabs = function(from, p)
 	AUTO.running = true
 	AUTO.results = {}
 	AUTO.points = {}
-	local tabs = { "session", "chat", "company", "rules", "settings" }
+	-- (the Game tab of 0.5.14 too: the game's rules, one company per player only, else Session is drawn in its place)
+	local tabs = { "session", "chat", "company", "rules", "game", "settings" }
 	local frames = math.max(3, tonumber(os.getenv("MPFEVER_WINTABSECONDS") or "") or 10) * 60
 	local function ask(i)
 		if i > #tabs then return autoFinish() end
