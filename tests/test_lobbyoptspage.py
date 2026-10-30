@@ -71,6 +71,7 @@ function icon(path, size) return { kind = "icon", path = path, size = size } end
 function box(dir, c, class, st) return { kind = "box", dir = dir, c = c, st = st } end
 function gap(w, h) return { kind = "gap", w = w, h = h } end
 function hfill() return { kind = "fill" } end
+function vfill() return { kind = "vfill" } end
 function button(label, fn, opts) return { kind = "btn", t = tostring(label), fn = fn, primary = opts and opts.primary or false } end
 builtin = { type = { ScrollBarPolicy = { AlwaysOff = 0, AsNeeded = 1 } },
   ScrollArea = function(p) return { kind = "scroll", c = { p.content }, size = p.meta.styleSheet.size } end }
@@ -101,7 +102,10 @@ function page(mode, opts, host, width, extra)
       G[#G + 1] = { title = it.t, cards = {}, rows = {} }
     elseif it.kind == "box" and it.dir == H then
       local g, n = G[#G], 0
-      for _, x in ipairs(it.c) do
+      for _, x0 in ipairs(it.c) do
+        -- (each card sits at the top of a column box of its own, see featPage)
+        local x = x0
+        if x0.kind == "box" and x0.dir == V and x0.c and x0.c[1] and x0.c[1].kind == "box" then x = x0.c[1] end
         if x.kind == "box" and x.st and x.st.image1 == CARD_SURFACE then
           n = n + 1
           local r = { texts = {}, buttons = {}, icons = {} }

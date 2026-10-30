@@ -728,7 +728,8 @@ local function setup()
 		local inner = cardW - 24
 		local head = { icon(type(e.opt.icon) == "string" and e.opt.icon or FEAT_ICONS[id] or FEAT_ICON_OTHER, 28), gap(10, 1) }
 		if o.host then
-			head[#head + 1] = text(FEAT.text(e.opt.title or id, T), "font-scale-title-4", inner - 38 - 170)
+			-- (room for the two buttons: « Désactivée » alone takes about 100 px; the title wraps when longer)
+			head[#head + 1] = text(FEAT.text(e.opt.title or id, T), "font-scale-title-4", inner - 38 - 210)
 			head[#head + 1] = hfill()
 			head[#head + 1] = button(T("Activée", "On"), function() request("opt", id .. "=1", o.playerName()) end, { font = "font-scale-body", primary = on })
 			head[#head + 1] = gap(4, 1)
@@ -802,7 +803,8 @@ local function setup()
 		local w, h = o.width, o.height
 		local GAP, CARD_MIN = 12, 440
 		local cols = math.max(1, math.min(3, math.floor((w - 20 + GAP) / (CARD_MIN + GAP))))
-		local cardW = math.floor((w - 20 - (cols - 1) * GAP) / cols)
+		-- (a margin for the scroll bar and the cards' own padding: the third column was cut by the page's right edge)
+		local cardW = math.floor((w - 60 - (cols - 1) * GAP) / cols)
 		local groups = {
 			{ title = T("Coopération", "Co-op"), ids = { "journal", "builtby", "playerview", "perms", "plans" } },
 			{ title = T("Compétition", "Competition"), ids = { "goal", "stats", "yearly", "market", "territory", "handicap", "tenders" } },
@@ -839,10 +841,13 @@ local function setup()
 					local row = {}
 					for k = r, math.min(r + cols - 1, #g.cards) do
 						if k > r then row[#row + 1] = gap(GAP, 1) end
-						row[#row + 1] = featCard(g.cards[k], fv, o, cardW)
+						-- (each card at the top of its row, whatever the height of the others)
+						row[#row + 1] = box(V, { featCard(g.cards[k], fv, o, cardW), vfill() })
 					end
+					-- (a row of fewer cards than columns starts at the left, as the full ones)
+					row[#row + 1] = hfill()
 					if r > 1 then list[#list + 1] = gap(1, GAP) end
-					list[#list + 1] = box(H, row)
+					list[#list + 1] = box(H, row, nil, { size = { w - 40, -1 } })
 				end
 			end
 		end
