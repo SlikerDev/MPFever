@@ -887,7 +887,9 @@ local function mayExpand(E, co, lines, money)
 		local unproven = 0
 		for _, l in ipairs(lines) do
 			local born = A.born and A.born[l.e]
-			if (born and born <= now and now - born < (LV.ramp or 0)) or ((A.ratio or {})[l.e] or 0) < 1 then unproven = unproven + 1 end
+			-- (a line short of paying its vehicles for good, between the level's give-up share and 1, would hold it back for ever: only
+			-- one well under it counts; the fleet rules of manageLines deal with the others)
+			if (born and born <= now and now - born < (LV.ramp or 0)) or ((A.ratio or {})[l.e] or 0) < ((LV.giveUp or 0.5) + 1) / 2 then unproven = unproven + 1 end
 		end
 		-- (the money of a loan just taken is not money to spare)
 		local spare = money - (A.loanCash or 0)
