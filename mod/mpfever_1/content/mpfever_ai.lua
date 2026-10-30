@@ -433,6 +433,41 @@ end
 local function streetSegmentsNear(E, p, radius, avoid)
 	local api, R = E.api, E.R
 	local list = {}
+	-- (0.5.14) the free town segments read once for every computer company every 10 s, like the garages (see roadGarages); each one
+	-- found is checked again here (still there, still free: a segment a build replaced since must not get a stop).
+	-- MPFEVER_AICACHE=0: every segment read at every call, as before
+	local T = E.G.AIT or {}
+	if os.getenv("MPFEVER_AICACHE") ~= "0" then
+		if not (T.segs and T.segsAt and E.G.frames - T.segsAt < 600 and E.G.frames >= T.segsAt) then
+			local all = {}
+			for _, e in ipairs(R.allEdges()) do
+				local c = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
+				if c and c.type == 0 and #c.objects == 0 and api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE_STREET)
+					and tostring(c.roadTemplate):find("/town/", 1, true) then
+					local okC, con = pcall(function() return api.engine.system.streetConnectorSystem.getConstructionEntityForEdge(e) end)
+					if not (okC and type(con) == "number" and con >= 0) then
+						local a, b = E.nodePosition(c.node0), E.nodePosition(c.node1)
+						if a and b then
+							local len = math.sqrt((a.x - b.x) ^ 2 + (a.y - b.y) ^ 2)
+							if len > 40 and len < 160 then all[#all + 1] = { e = e, a = a, b = b, m = { x = (a.x + b.x) / 2, y = (a.y + b.y) / 2, z = (a.z + b.z) / 2 } } end
+						end
+					end
+				end
+			end
+			T.segs, T.segsAt = all, E.G.frames
+		end
+		for _, s in ipairs(T.segs) do
+			local d = dist(s.m, p)
+			local ok = d < radius
+			if ok then for _, q in ipairs(avoid or {}) do if dist(s.m, q) < 120 then ok = false; break end end end
+			if ok then
+				local c = api.engine.getComponent(s.e, api.type.ComponentType.BASE_EDGE)
+				if c and #c.objects == 0 then list[#list + 1] = { e = s.e, d = d, a = s.a, b = s.b, m = s.m } else T.segsAt = nil end
+			end
+		end
+		table.sort(list, function(x, y) if x.d ~= y.d then return x.d < y.d end return x.e < y.e end)
+		return list
+	end
 	for _, e in ipairs(R.allEdges()) do
 		local c = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
 		if c and c.type == 0 and #c.objects == 0 and api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE_STREET)
