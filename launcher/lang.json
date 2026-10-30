@@ -11817,6 +11817,19 @@
       "ko": "각 컴퓨터 회사의 초기 자금은 로비에서 정합니다.",
       "zh-CN": "每家电脑公司的初始资金在大厅中选择。",
       "zh-TW": "每家電腦公司的初始資金在大廳中選擇。"
+    },
+    "{0} computer company(ies) with their level": {
+      "de": "{0} Computerfirma(en) mit ihrem Level",
+      "es": "{0} empresa(s) del ordenador con su nivel",
+      "it": "{0} compagnia/e del computer con il loro livello",
+      "nl": "{0} computerbedrijf/-bedrijven met hun niveau",
+      "pl": "{0} firm(y) komputerowe z ich poziomem",
+      "pt-BR": "{0} empresa(s) do computador com seu nível",
+      "ru": "{0} компьютерн. компани(я/и) с их уровнем",
+      "ja": "コンピューター会社 {0} 社とそのレベル",
+      "ko": "컴퓨터 회사 {0}개와 그 난이도",
+      "zh-CN": "{0} 家电脑公司及其等级",
+      "zh-TW": "{0} 家電腦公司及其等級"
     }
   }
 }

@@ -862,8 +862,11 @@ function E.event(st, name, param, env)
 		if param.share ~= nil then reg.rules.share = param.share ~= false end
 		local s = tonumber(param.start)
 		if s and s >= 0 and s <= 1e10 then reg.rules.start = math.floor(s) end
+		-- (the computer companies' colours, levels and start money, "n:colour:level[:money],...": digits, ':', ',' and '-' only)
+		if type(param.ai) == "string" and #param.ai <= 300 and not param.ai:find("[^%d:,%-]") then reg.rules.ai = param.ai end
 		-- (one text MPFever.exe finds in the savegame, to show this game's rules again in a lobby opened on it)
-		reg.rules.cfg = "mpfrules:bankrupt=" .. b .. ";share=" .. (reg.rules.share == false and "0" or "1") .. ";start=" .. tostring(reg.rules.start or "") .. ";"
+		reg.rules.cfg = "mpfrules:bankrupt=" .. b .. ";share=" .. (reg.rules.share == false and "0" or "1") .. ";start=" .. tostring(reg.rules.start or "")
+			.. ";ai=" .. tostring(reg.rules.ai or "") .. ";"
 		env.log("companies: rules: bankruptcy after " .. b .. " month(s) in debt" .. (b == 0 and " (never)" or "")
 			.. ", sharing rules " .. (reg.rules.share == false and "OFF (everything open and free)" or "on") .. ", start money " .. tostring(reg.rules.start))
 	elseif name == "co_join_ask" then

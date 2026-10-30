@@ -14860,12 +14860,16 @@ G.coEco = function(st, reg, c)
 	local newRules = os.getenv("MPFEVER_SHARESWITCH") ~= "0"
 	local shareWant = newRules and (G.coShare ~= false) or nil
 	local startWant = newRules and tonumber(G.coStart) or nil
+	-- (the computer companies with their colour, level and start money, "n:colour:level[:money],...": a lobby on this savegame
+	-- gives them their level and money again)
+	local aiWant = newRules and type(G.coAi) == "string" and G.coAi or nil
 	local differs = (want and want ~= tonumber(rules.bankrupt))
 		or (shareWant ~= nil and shareWant ~= (rules.share ~= false))
 		or (startWant ~= nil and startWant ~= tonumber(rules.start))
+		or (aiWant ~= nil and aiWant ~= (rules.ai or ""))
 	if differs and G.frames - (G.coRulesAt or -100000) > 600 then
 		G.coRulesAt = G.frames
-		G.coEvent("co_rules", { bankrupt = want or tonumber(rules.bankrupt) or E.BANKRUPT_DEFAULT, share = shareWant, start = startWant })
+		G.coEvent("co_rules", { bankrupt = want or tonumber(rules.bankrupt) or E.BANKRUPT_DEFAULT, share = shareWant, start = startWant, ai = aiWant })
 	end
 	-- each new month: the companies in debt on this game (the host's money is every game's), applied by all at the same step
 	if reg.month and reg.month ~= (reg.monthSeen or -1) and (G.coMonthSent ~= reg.month or G.frames - (G.coMonthAt or 0) > 900) then

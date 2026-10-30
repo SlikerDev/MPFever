@@ -1951,7 +1951,6 @@ namespace MPFever
                     var t0 = DateTime.UtcNow;
                     var list = SaveInfo.AiCompanies(f);
                     // (0.5.14: the savegame's rules too, the lobby starts with them)
-                    try { LoadSaveRules(save, f); } catch (Exception e) { Log.W("savegame rules: " + e.Message); }
                     if (lobbySave != save || !lobbyOpen) return;
                     foreach (var c in list)
                     {
@@ -1963,6 +1962,7 @@ namespace MPFever
                         if (taken) ix = FreeLobbyColor(c.Number);
                         lock (lobbyAi) lobbyAi[c.Number].Color = ix;
                     }
+                    try { LoadSaveRules(save, f); } catch (Exception e) { Log.W("savegame rules: " + e.Message); }
                     if (list.Count > 0)
                         Log.W(F("Sauvegarde : {0} entreprise(s) de l'ordinateur reprise(s) ({1:0.0} s)", "Savegame: {0} computer company(ies) taken again ({1:0.0} s)", list.Count, (DateTime.UtcNow - t0).TotalSeconds));
                     BroadcastLobby();
@@ -3027,6 +3027,21 @@ namespace MPFever
             { SaveSetting("share", sh); said.Add(sh == "1" ? T("règles de partage activées", "sharing rules on") : T("règles de partage désactivées", "sharing rules off")); }
             if (r.TryGetValue("start", out var s0) && long.TryParse(s0, NumberStyles.Integer, CultureInfo.InvariantCulture, out long st0) && st0 >= 0)
             { SaveSetting("companystart", st0.ToString(CultureInfo.InvariantCulture)); said.Add(F("argent de départ {0:N0}", "start money {0:N0}", st0)); }
+            // (the computer companies of the savegame, already in the lobby: their level and start money, "n:colour:level[:money],...")
+            if (r.TryGetValue("ai", out var ais) && ais != "")
+            {
+                int n0 = 0;
+                foreach (var part in ais.Split(','))
+                {
+                    var f = part.Split(':');
+                    if (f.Length < 3 || !int.TryParse(f[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out int n)
+                        || !int.TryParse(f[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out int lv) || lv < 1 || lv > 3) continue;
+                    long mo = -1;
+                    if (f.Length >= 4 && (!long.TryParse(f[3], NumberStyles.Integer, CultureInfo.InvariantCulture, out mo) || mo < -1)) mo = -1;
+                    lock (lobbyAi) { if (lobbyAi.TryGetValue(n, out var a)) { a.Level = lv; a.Money = mo; n0++; } }
+                }
+                if (n0 > 0) said.Add(F("{0} entreprise(s) de l'ordinateur avec leur niveau", "{0} computer company(ies) with their level", n0));
+            }
             if (said.Count > 0) Log.W(F("Règles de la sauvegarde reprises : {0}", "The savegame's rules taken again: {0}", string.Join(", ", said)));
         }
 
