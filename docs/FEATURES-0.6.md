@@ -145,8 +145,11 @@ nodes (they come after those added). The window draws again about once a second.
 
 ## The options' journey
 
-1. Lobby (`mpfever_menu.lua`): the host switches an option or picks a parameter in its "Game settings…" panel (both company
-   modes) → `request("opt", "<id>=<0|1>")` or `request("opt", "<id>.<param>=<value>")`.
+1. Lobby (`mpfever_menu.lua`): the host switches an option or picks a parameter on the lobby's page of the game options (its
+   "Game options (N on)" button beside "Game settings…": one card per option, grouped by theme, the parameters only while the
+   option is on; the players read it from "See the options"; MPFEVER_LOBBYOPTSPAGE=0: in the "Game settings…" panel as in
+   0.6 before, both company modes) → `request("opt", "<id>=<0|1>")` or `request("opt", "<id>.<param>=<value>")`. A card's
+   icon is the lobby's choice for the option (`FEAT_ICONS`), or the option's own `icon` field (a `::/gui/....tga` path).
 2. MPFever.exe (`launcher/GameOpts.cs`, `MainForm.cs`) keeps the options of the session (string `id=1;id.param=v;...`: the
    options on and the parameters of those only, keys in byte order; an option switched off forgets its parameters), sends them
    to every lobby view (`opts` of menu_state.txt), to the in-game windows (`opts=` of mp_status.txt) and with the session to
@@ -241,7 +244,7 @@ A module whose allow fails lets the action through (logged).
 | bridge, `shipNativeBuilds`, `shipTerrain`, `runNativeReplays` | `G.featNativeAct` | a tool's build with its builder, to the modules with `M.digest` (f_act `only`) |
 | bridge, helpers | `SIM.featBridge`, `G.featBridge`, `G.featChat` | what the env is made of |
 | window | `U.featView`, `U.featTabs`, `U.featGameTab`, `U.featGameRows`, `U.featAsk`, `U.featU`, `U.featTabRows` | Game tab, modules' tabs |
-| lobby (`setup`) | `featView`, `featSection`, `featSummary` | the host's panel, the players' line |
+| lobby (`setup`) | `featView`, `featSection`, `featSummary`, `featCount`, `featPage` (`featCard`) | the page of the game options, the host's panel, the players' line |
 | MPFever.exe | `GameOpts` (Parse, Canon, Apply), `GameOptions()`, `LoadSaveOpts`, `SaveInfo.Opts`, `ServerConfig.GameOptions`, request "opt" | the session's options |
 
 The options host (mpfever_feat.lua): `F.MODULES`, `F.loader` (tests), `F.load`, `F.parse`, `F.encode`, `F.canon`, `F.on`,

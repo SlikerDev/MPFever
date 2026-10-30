@@ -659,6 +659,218 @@ local function setup()
 		return (T("Options de partie : %s activée(s)", "Game options: %s on"):gsub("%%s", tostring(n)))
 	end
 
+	-- (0.6) The page of the game options: in the lobby, a page of their own in place of the lobby (the host's "Game options (N on)"
+	-- button, the players' "See the options"), the options as cards grouped by theme, two or three columns as the width allows. Each
+	-- card: the option's icon, its title, its text, the host's On / Off buttons (a player reads whether it is on), and only while it
+	-- is on, its parameters (the host's buttons, a player reads the values; a perPlayer one with one row per player but the host).
+	-- Same requests as the settings panel. MPFEVER_LOBBYOPTSPAGE=0: no page, the options in the host's settings panel as before.
+	local OPTSPAGE = os.getenv("MPFEVER_LOBBYOPTSPAGE") ~= "0"
+	-- the icon of each option (the game's own pictures; a module may give its own: the option's field icon), others the settings one
+	local FEAT_ICONS = {
+		journal = "::/gui/menu/icons/news.tga",
+		builtby = "::/gui/entity_window/icons/building_stations.tga",
+		playerview = "::/gui/game_bar/icons/symbol_eye.tga",
+		perms = "::/gui/builtin/window/icons/lock.tga",
+		plans = "::/gui/game_bar/icons/infrastructure_tracks_30.tga",
+		goal = "::/gui/menu/icons/symbol_crown_laurels.tga",
+		stats = "::/gui/radial_menu/icons/symbol_chart_arrow_up_48.tga",
+		yearly = "::/gui/radial_menu/icons/symbol_calendar_48.tga",
+		market = "::/gui/statistics/icons/symbol_person_multiple.tga",
+		territory = "::/gui/menu/icons/map_town.tga",
+		handicap = "::/gui/menu/icons/earnings.tga",
+		tenders = "::/gui/game_bar/icons/notifications.tga",
+		sales = "::/gui/entity_window/icons/symbol_shopping_cart.tga",
+		contracts = "::/gui/entity_window/icons/symbol_cargo.tga",
+		stock = "::/gui/radial_menu/icons/symbol_coin_stack_48.tga",
+		public = "::/gui/menu/icons/mod_management/mod-public.tga",
+		join_bans = "::/gui/builtin/window/icons/cancel.tga",
+		join_approve = "::/gui/menu/icons/symbol_check.tga",
+		join_steamfriends = "::/gui/menu/icons/mod_management/platform_steam.tga",
+	}
+	local FEAT_ICON_OTHER = "::/gui/menu/icons/settings.tga"
+	-- the width a button of the page takes (its label's characters at the body font, its margins): rows of values are cut to the card
+	-- (the characters: the bytes that do not continue a UTF-8 character; no backslash in this file, see its top)
+	local UTF8_START = "[^" .. string.char(128) .. "-" .. string.char(191) .. "]"
+	local function featLabelW(s)
+		local _, n = tostring(s):gsub(UTF8_START, "")
+		return n * 7 + 26
+	end
+	-- buttons { label, on, pick } in rows that fit in the width w, one under the other
+	local function featChoices(list, w)
+		local rows, row, used = {}, {}, 0
+		for _, c in ipairs(list) do
+			local bw = featLabelW(c.label)
+			if #row > 0 and used + bw > w then
+				rows[#rows + 1] = box(H, row)
+				rows[#rows + 1] = gap(1, 4)
+				row, used = {}, 0
+			end
+			row[#row + 1] = button(c.label, c.pick, { font = "font-scale-body", primary = c.on })
+			row[#row + 1] = gap(4, 1)
+			used = used + bw + 4
+		end
+		if #row > 0 then rows[#rows + 1] = box(H, row) end
+		return box(V, rows)
+	end
+	-- a parameter shows while the option's other parameters have the values its `when` asks (the game goal's tenders won: only for
+	-- the tenders criterion), always without one
+	local function featShown(p, map, id)
+		if type(p.when) ~= "table" then return true end
+		for k, v in pairs(p.when) do
+			if tostring(FEAT.param(map, id, k)) ~= tostring(v) then return false end
+		end
+		return true
+	end
+	-- one option's card (o: host = the host's switches and buttons, else read only; playerName; players = the lobby's, the host first)
+	local function featCard(e, fv, o, cardW)
+		local id = e.opt.id
+		local on = FEAT.on(fv.map, id)
+		local inner = cardW - 24
+		local head = { icon(type(e.opt.icon) == "string" and e.opt.icon or FEAT_ICONS[id] or FEAT_ICON_OTHER, 28), gap(10, 1) }
+		if o.host then
+			head[#head + 1] = text(FEAT.text(e.opt.title or id, T), "font-scale-title-4", inner - 38 - 170)
+			head[#head + 1] = hfill()
+			head[#head + 1] = button(T("Activée", "On"), function() request("opt", id .. "=1", o.playerName()) end, { font = "font-scale-body", primary = on })
+			head[#head + 1] = gap(4, 1)
+			head[#head + 1] = button(T("Désactivée", "Off"), function() request("opt", id .. "=0", o.playerName()) end, { font = "font-scale-body", primary = not on })
+		else
+			head[#head + 1] = text(FEAT.text(e.opt.title or id, T), "font-scale-title-4", inner - 38 - 110)
+			head[#head + 1] = hfill()
+			head[#head + 1] = text(on and T("Activée", "On") or T("Désactivée", "Off"), on and "font-scale-title-4, success" or "font-scale-body")
+		end
+		local c = { box(H, head, nil, { size = { inner, -1 } }) }
+		if e.opt.desc then
+			c[#c + 1] = gap(1, 4)
+			c[#c + 1] = text(FEAT.text(e.opt.desc, T), "font-scale-body", inner)
+		end
+		if on then
+			local colon = FEAT.text({ " : ", ": " }, T)
+			for _, p in ipairs(e.params) do
+				if featShown(p, fv.map, id) then
+					local label = FEAT.text(p.label or p.id, T)
+					local cur = FEAT.param(fv.map, id, p.id)
+					c[#c + 1] = gap(1, 8)
+					if o.host then
+						local list = {}
+						for _, v in ipairs(p.values) do
+							local pick = tostring(v)
+							list[#list + 1] = { label = FEAT.showValue(p, v, T), on = tostring(cur) == pick,
+								pick = function() request("opt", id .. "." .. p.id .. "=" .. pick, o.playerName()) end }
+						end
+						c[#c + 1] = text(label, "font-scale-title-4", inner)
+						c[#c + 1] = gap(1, 4)
+						c[#c + 1] = featChoices(list, inner)
+					else
+						c[#c + 1] = text(label .. colon .. FEAT.showValue(p, cur, T), "font-scale-body", inner)
+					end
+					-- (perPlayer) one row per player but the host (its company, the savegame's, keeps its money): the player's own value,
+					-- the parameter's while it has none (see FEAT.playerPid). MPFEVER_FEATPERPLAYER=0: the parameter's row only
+					if p.perPlayer == true and FEAT.playerPid and os.getenv("MPFEVER_FEATPERPLAYER") ~= "0" then
+						for i, name in ipairs(o.players or {}) do
+							local base = name:gsub("%s*%(.*$", "")
+							local ppid = i > 1 and FEAT.playerPid(p.id, base:lower()) or nil
+							if ppid then
+								local own = FEAT.param(fv.map, id, p.id .. "." .. base:lower())
+								local val = own ~= nil and own or cur
+								c[#c + 1] = gap(1, 4)
+								if o.host then
+									local list = {}
+									for _, v in ipairs(p.values) do
+										local pick = tostring(v)
+										list[#list + 1] = { label = FEAT.showValue(p, v, T), on = tostring(val) == pick,
+											pick = function() request("opt", id .. "." .. ppid .. "=" .. pick, o.playerName()) end }
+									end
+									c[#c + 1] = box(H, {
+										box(H, { text(base, "font-scale-body", 110) }, nil, { size = { 120, -1 } }),
+										featChoices(list, inner - 120),
+									})
+								else
+									c[#c + 1] = text("   " .. base .. colon .. FEAT.showValue(p, val, T), "font-scale-body", inner)
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+		return box(V, c, nil, { size = { cardW, -1 }, padding = { 10, 12, 12, 12 }, image1 = CARD_SURFACE,
+			background1 = on and { 0.17, 0.31, 0.43, 1 } or { 0.16, 0.24, 0.32, 1 } })
+	end
+	-- The page (w x h): its title and the « Back to the lobby » button (o.onBack), then the groups' cards in a scroll area. The options
+	-- of the session's mode only (fv.offered); an option of no group (a later module's) under « Other ».
+	local function featPage(fv, o)
+		local w, h = o.width, o.height
+		local GAP, CARD_MIN = 12, 440
+		local cols = math.max(1, math.min(3, math.floor((w - 20 + GAP) / (CARD_MIN + GAP))))
+		local cardW = math.floor((w - 20 - (cols - 1) * GAP) / cols)
+		local groups = {
+			{ title = T("Coopération", "Co-op"), ids = { "journal", "builtby", "playerview", "perms", "plans" } },
+			{ title = T("Compétition", "Competition"), ids = { "goal", "stats", "yearly", "market", "territory", "handicap", "tenders" } },
+			{ title = T("Économie entre joueurs", "Trade between players"), ids = { "sales", "contracts", "stock" } },
+			{ title = T("Partie publique", "Public game"), ids = { "public" }, prefix = "join_" },
+			{ title = T("Autres", "Other"), ids = {} },
+		}
+		-- each offered option in its group: the group's order first, then (join_*, others) the modules' order
+		local byId = {}
+		for _, e in ipairs(fv.offered) do byId[e.opt.id] = e end
+		local placed = {}
+		for _, g in ipairs(groups) do
+			g.cards = {}
+			for _, id in ipairs(g.ids) do
+				if byId[id] and not placed[id] then placed[id] = true; g.cards[#g.cards + 1] = byId[id] end
+			end
+		end
+		for _, e in ipairs(fv.offered) do
+			local id = e.opt.id
+			if not placed[id] then
+				placed[id] = true
+				local g = groups[#groups]
+				for _, gg in ipairs(groups) do if gg.prefix and id:sub(1, #gg.prefix) == gg.prefix then g = gg end end
+				g.cards[#g.cards + 1] = e
+			end
+		end
+		local list = {}
+		for _, g in ipairs(groups) do
+			if #g.cards > 0 then
+				if #list > 0 then list[#list + 1] = gap(1, 16) end
+				list[#list + 1] = text(g.title, "font-scale-title-3", w - 40)
+				list[#list + 1] = gap(1, 8)
+				for r = 1, #g.cards, cols do
+					local row = {}
+					for k = r, math.min(r + cols - 1, #g.cards) do
+						if k > r then row[#row + 1] = gap(GAP, 1) end
+						row[#row + 1] = featCard(g.cards[k], fv, o, cardW)
+					end
+					if r > 1 then list[#list + 1] = gap(1, GAP) end
+					list[#list + 1] = box(H, row)
+				end
+			end
+		end
+		local n = #FEAT.summary(fv.map, fv.mode, T)
+		local sub = o.host and T("Désactivées par défaut. Pour tous les joueurs ; gardées dans la sauvegarde.", "Off by default. For every player; kept in the savegame.")
+			or T("Choisies par l'hôte, pour tous les joueurs.", "Chosen by the host, for every player.")
+		local head = box(H, {
+			icon(FEAT_ICON_OTHER, 32),
+			gap(12, 1),
+			box(V, {
+				text(T("Options de partie", "Game options"), "font-scale-title-1"),
+				text((featCount(fv) or (T("Options de partie : %s activée(s)", "Game options: %s on"):gsub("%%s", tostring(n)))) .. "   ·   " .. sub, "font-scale-body", w - 420),
+			}),
+			hfill(),
+			button(T("Retour au salon", "Back to the lobby"), o.onBack, { primary = true, icon = "::/gui/menu/icons/back.tga" }),
+		}, nil, { size = { w, -1 } })
+		return box(V, {
+			head,
+			gap(1, 10),
+			builtin.ScrollArea{
+				meta = { styleSheet = style{ size = { w, h - 74 } } },
+				content = box(V, list, nil, { size = { w - 20, -1 } }),
+				horizontalPolicy = builtin.type.ScrollBarPolicy.AlwaysOff,
+				verticalPolicy = builtin.type.ScrollBarPolicy.AsNeeded,
+			},
+		}, nil, { size = { w, h } })
+	end
+
 	-- the colour of the player's company (one company per player): a palette index, kept between sessions in the folder of every
 	-- session (company_color.txt there) and given to this session (company_color.txt in the session folder, read by the
 	-- bridge when the player announces itself; a colour another company already has gives the first free one)
@@ -747,6 +959,10 @@ local function setup()
 		local state = react.useState(st0)
 		-- (the host's lobby, one company per player: the game's rules shown, 0.5.14; MPFEVER_MENU_RULES=1: shown at first, tests)
 		local rulesOpen = react.useState(os.getenv("MPFEVER_MENU_RULES") == "1")
+		-- (0.6, the lobby's page of the game options shown in place of the lobby; MPFEVER_MENU_OPTSPAGE=1: shown at first, tests and
+		-- screenshots. Closed when the lobby ends: the next lobby opens on the lobby itself)
+		local optsPage = react.useState(os.getenv("MPFEVER_MENU_OPTSPAGE") == "1")
+		local wasLobby = react.useRef(false)
 		-- (0.6, the host's public game) its name as the host types it, nil while it shows the name MPFever.exe has
 		local pubEdit = react.useState(nil)
 		local leaving = react.useRef(false)
@@ -760,6 +976,9 @@ local function setup()
 				else left:set(false) end
 			end
 			state:set(s)
+			local inLobby = s.lobby == "host" or s.lobby == "client"
+			if wasLobby:get() and not inLobby and optsPage:old() then optsPage:set(false) end
+			wasLobby:set(inLobby)
 			-- the game is about to load (the host's own, or the host's game received by a player who joins) or is loaded: the
 			-- page has done its job, the main menu shows its main page again while the game loads
 			if s.phase == "hosting" or s.phase == "loading" or s.phase == "ingame" then
@@ -777,6 +996,12 @@ local function setup()
 		local st = state:old()
 		local busy = busyPhase(st.phase)
 		local playerName = function() return sanitizeName(name:old()) end
+		-- (0.6) the button of the page of the game options: the host's with the number of options on, a player's to read them
+		local function optsButton(fv)
+			local label = st.lobby == "host" and (T("Options de partie (%s activées)", "Game options (%s on)"):gsub("%%s", tostring(#FEAT.summary(fv.map, fv.mode, T))))
+				or T("Voir les options", "See the options")
+			return button(label, function() optsPage:set(true) end, { font = "font-scale-body", icon = "::/gui/menu/icons/settings.tga" })
+		end
 
 		-- header: the two tabs, then the player's name ------------------------------------------------------------
 		local function tabButton(id, label, iconPath)
@@ -1096,19 +1321,24 @@ local function setup()
 				side[#side + 1] = text(T("Règles de la partie", "Game rules"), "font-scale-title-4", sw)
 				side[#side + 1] = text(summary, "font-scale-body", sw)
 				-- (0.6) the game options on, for every player of the lobby: their number beside the picture, their list with their
-				-- parameters at the top of the scroll area under it (in the host's settings panel while it is open)
+				-- parameters at the top of the scroll area under it (in the host's settings panel while it is open, without the page of
+				-- the game options); the button of that page beside the host's "Game settings…" button, a player's under the number
 				local fv = featView(st)
 				local fs = fv and featSummary(fv)
 				local fc = fv and featCount(fv)
 				if fc then side[#side + 1] = text(fc, "font-scale-body", sw) end
-				if fs and not (isHost and rulesOpen:old()) then
+				if fs and not (isHost and rulesOpen:old() and not OPTSPAGE) then
 					table.insert(below, 1, text(fs, "font-scale-body", SIDE_W - 24))
 					table.insert(below, 2, gap(1, 10))
 				end
 				if isHost then
 					side[#side + 1] = gap(1, 6)
-					side[#side + 1] = button(rulesOpen:old() and T("Fermer les réglages", "Close the settings") or T("Réglages de la partie…", "Game settings…"),
+					local settingsButton = button(rulesOpen:old() and T("Fermer les réglages", "Close the settings") or T("Réglages de la partie…", "Game settings…"),
 						function() rulesOpen:set(not rulesOpen:old()) end, { font = "font-scale-body", primary = rulesOpen:old() })
+					side[#side + 1] = (OPTSPAGE and fv) and box(H, { settingsButton, gap(8, 1), optsButton(fv) }) or settingsButton
+				elseif OPTSPAGE and fv then
+					side[#side + 1] = gap(1, 6)
+					side[#side + 1] = optsButton(fv)
 				end
 				if isHost and rulesOpen:old() then
 					local w = SIDE_W - 24
@@ -1150,25 +1380,37 @@ local function setup()
 								function(v) request("aimoney", tostring(n) .. ":" .. tostring(v), playerName()) end)
 						end
 					end
-					-- (0.6) the game options of the separate mode (the list of those on first, see above)
-					if fs then panel[#panel + 1] = gap(1, 10); panel[#panel + 1] = text(fs, "font-scale-body", w) end
-					if fv then featSection(panel, w, fv, playerName, players) end
+					-- (0.6) the game options of the separate mode (the list of those on first, see above); on their own page unless
+					-- MPFEVER_LOBBYOPTSPAGE=0
+					if not OPTSPAGE then
+						if fs then panel[#panel + 1] = gap(1, 10); panel[#panel + 1] = text(fs, "font-scale-body", w) end
+						if fv then featSection(panel, w, fv, playerName, players) end
+					end
 					local list = { box(V, panel, nil, { padding = { 10, 12, 10, 12 }, background = { 1, 1, 1, 0.07 }, size = { w, -1 } }), gap(1, 12) }
 					for _, c in ipairs(below) do list[#list + 1] = c end
 					below = list
 				end
 			end
 			-- (0.6) everybody plays one company: the game options only, when a module offers some in the co-op. The players' line under
-			-- the players; the host's "Game settings…" button there, its panel over the mods under a smaller picture (see leftCol)
+			-- the players; the host's "Game settings…" button there, its panel over the mods under a smaller picture (see leftCol).
+			-- With the page of the game options (no rules in the co-op, so no settings panel): the number of options on and its button
 			local sharedPanel = nil
 			if not separate and (st.lobby == "host" or st.lobby == "client") then
 				local fv = featView(st)
 				local fs = fv and featSummary(fv)
-				if fs then
+				if OPTSPAGE and fv then
+					local fc = featCount(fv)
+					if fc then
+						right[#right + 1] = gap(1, 10)
+						right[#right + 1] = text(fc, "font-scale-body", RIGHT_W - 40)
+					end
+					right[#right + 1] = gap(1, 8)
+					right[#right + 1] = optsButton(fv)
+				elseif fs then
 					right[#right + 1] = gap(1, 10)
 					right[#right + 1] = text(fs, "font-scale-body", RIGHT_W - 40)
 				end
-				if fv and isHost then
+				if fv and isHost and not OPTSPAGE then
 					right[#right + 1] = gap(1, 8)
 					right[#right + 1] = button(rulesOpen:old() and T("Fermer les réglages", "Close the settings") or T("Réglages de la partie…", "Game settings…"),
 						function() rulesOpen:set(not rulesOpen:old()) end, { font = "font-scale-body", primary = rulesOpen:old() })
@@ -1458,21 +1700,28 @@ local function setup()
 			else
 				leftCol = { SavePicture{ save = lobbySave, size = { SIDE_W, SIDE_W * 9 / 16 }, fallback = "::/gui/menu/images/main.tga" } }
 			end
-			-- (0.5.13: the right column takes the page's whole height, the buttons at its bottom)
-			body[#body + 1] = box(H, {
-				box(V, leftCol, nil, { size = { SIDE_W, LOBBY_H } }),
-				gap(24, 1),
-				box(V, {
-					builtin.ScrollArea{
-						meta = { styleSheet = style{ size = { RIGHT_W, LOBBY_H - 56 } } },
-						content = box(V, right, nil, { size = { RIGHT_W - 20, -1 } }),
-						horizontalPolicy = builtin.type.ScrollBarPolicy.AlwaysOff,
-						verticalPolicy = builtin.type.ScrollBarPolicy.AsNeeded,
-					},
-					vfill(),
-					actionsBox,
-				}, nil, { size = { RIGHT_W, LOBBY_H } }),
-			})
+			-- (0.6) the page of the game options in place of the lobby, the whole width (a lobby whose mode offers none: the lobby)
+			local pageFv = OPTSPAGE and optsPage:old() and (st.lobby == "host" or st.lobby == "client") and featView(st) or nil
+			if pageFv then
+				body[#body + 1] = featPage(pageFv, { host = isHost, playerName = playerName, players = players, width = PAGE_W - 16, height = LOBBY_H,
+					onBack = function() optsPage:set(false) end })
+			else
+				-- (0.5.13: the right column takes the page's whole height, the buttons at its bottom)
+				body[#body + 1] = box(H, {
+					box(V, leftCol, nil, { size = { SIDE_W, LOBBY_H } }),
+					gap(24, 1),
+					box(V, {
+						builtin.ScrollArea{
+							meta = { styleSheet = style{ size = { RIGHT_W, LOBBY_H - 56 } } },
+							content = box(V, right, nil, { size = { RIGHT_W - 20, -1 } }),
+							horizontalPolicy = builtin.type.ScrollBarPolicy.AlwaysOff,
+							verticalPolicy = builtin.type.ScrollBarPolicy.AsNeeded,
+						},
+						vfill(),
+						actionsBox,
+					}, nil, { size = { RIGHT_W, LOBBY_H } }),
+				})
+			end
 		elseif tab:old() == "host" then
 			-- the « Host » tab ------------------------------------------------------------------------------------------
 			body[#body + 1] = text(T("Mode des entreprises", "Company mode"), "font-scale-title-3")
