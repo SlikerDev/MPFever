@@ -19,6 +19,13 @@ local DEPOT_FILE = "::/depots/road/road_maint_station.con"
 local TICK = 60            -- frames between two looks at the world
 local RESERVE = 400000     -- money kept back (the lines' first months cost more than they earn): the level's, see LEVELS
 local BUS_COST = 180000    -- a bus, until the first purchase measures it
+-- (0.6) The floor: money no purchase or build ever takes the company under (see spendOk), whatever the project: two months of
+-- its vehicles' running costs and of its loans' payments, at least FLOOR_MIN, never above its reserve (set in step). A computer
+-- company never goes bankrupt any more (mpfever_eco.lua), it keeps itself solvent: under its reserve it opens nothing new and
+-- sells the vehicles of its losing lines; under its floor it sells faster, then takes a loan (see manageLines).
+-- MPFEVER_AIFLOOR=0: no floor (the reserve of each project only, as before); MPFEVER_AISOLVENT=0: the old rules in debt
+local FLOOR_MIN = 100000
+local FLOOR = FLOOR_MIN
 
 -- The levels (0.5.13), the host's choice for each company in its lobby: how often it looks at the world (frames), the money it
 -- keeps back, the vehicles a line may get, when a line gets one more (seats used, cargo waiting), how many of its lines carry
@@ -308,6 +315,8 @@ local function bestBus(E)
 				end)
 				if seats > 0 and (not best or seats > best.seats or (seats == best.seats and from > best.from)) then
 					best = { id = id, name = name, seats = seats, from = from }
+					-- (0.6: its price on the model, for the floor, see spendOk)
+					pcall(function() best.price = tonumber(md.cost.price) end)
 				end
 			end
 		end
@@ -323,6 +332,30 @@ local function act(E, coId, fn, margs)
 	E.R.translateOut(fn, margs, E.G.rev)
 	A.reqId = (A.reqId or 0) + 1
 	E.C.appendFile(E.C.DIR .. E.BS .. "ui.log", E.C.line("act_req", { tok = "ai", id = A.reqId, fn = fn, args = margs, co = coId }))
+end
+
+-- (0.6) the floor of a company, see FLOOR: two months of its vehicles' running costs (runCost: a year's) and of its loans'
+-- payments (loanMonthly: a month's), at least FLOOR_MIN, at most its reserve
+local function floorOf(runCost, loanMonthly, reserve)
+	local f = math.max(FLOOR_MIN, ((tonumber(runCost) or 0) / 12 + (tonumber(loanMonthly) or 0)) * 2)
+	if reserve and f > reserve then f = math.max(0, reserve) end
+	return f
+end
+
+-- (0.6) whether the company may spend that much now: its money read at this moment, less the cost, stays at its floor (FLOOR) or
+-- above. Every purchase and build goes through it (buses, trucks, stops, garages, streets): the projects check their own reserve
+-- with the money of the look's start and a price guessed before the first purchase measured one; this is the last word. A
+-- refusal is logged once every 30 s. MPFEVER_AIFLOOR=0: always, as before
+local function spendOk(E, co, cost, what)
+	if os.getenv("MPFEVER_AIFLOOR") == "0" then return true end
+	local money = balanceOf(E, co.ent)
+	if money - (tonumber(cost) or 0) >= FLOOR then return true end
+	local A = E.G.AI
+	if E.G.frames - (A.floorSaid or -100000) > 1800 then
+		A.floorSaid = E.G.frames
+		L(E, string.format("%s not bought: %d less %d would leave it under its floor %d", tostring(what), math.floor(money), math.floor(tonumber(cost) or 0), math.floor(FLOOR)))
+	end
+	return false
 end
 
 -- An entry of the companies' journal, on every game (the MPFever window's AI tab and the chat, see the bridge's H.aijournal):
@@ -353,6 +386,36 @@ end
 -- cleaned up, 32 known. The depot tool builds with 39: without the clean-up the maintenance station's lanes were never linked
 -- to the street (no exit node), and a bus of it sent to a line stopped the simulation of every game.
 local CTX_STOP, CTX_DEPOT = 32, 39
+-- (0.6) A build of a computer company never takes a town building down (the owner's rule of 2026-10-30): a context without
+-- bit 1, the buildings in the way are kept and the build is refused instead (a tool's build gathers them: the street tool and
+-- the depot tool take the houses in their way down and charge for them). Its streets and garages are built so (the garage's
+-- replay: the act's keepBuildings, see buildGarage); its stops never gathered any (CTX_STOP). MPFEVER_AIKEEPBUILDINGS=0:
+-- gathered, as before
+local function keepBuildings() return os.getenv("MPFEVER_AIKEEPBUILDINGS") ~= "0" end
+local function withoutBuildings(bits) return (bits % 2 == 1) and (bits - 1) or bits end
+
+-- (0.6) the town buildings a proposal's dry run would take down or runs into (makeProposalData: collisionInfo.buildingEntities,
+-- the buildings it gathers, and the colliding entities that are town buildings or their constructions); -1 when it cannot be read
+local function buildingsHit(E, pd)
+	local n = -1
+	pcall(function()
+		local api = E.api
+		local ci = pd.collisionInfo
+		n = #(ci.buildingEntities or {})
+		for _, x in ipairs(ci.collisionEntities or {}) do
+			local e = x.entity
+			local hit = false
+			pcall(function()
+				if api.engine.getComponent(e, api.type.ComponentType.TOWN_BUILDING) then hit = true return end
+				local c = api.engine.getComponent(e, api.type.ComponentType.CONSTRUCTION)
+				if c and #c.townBuildings > 0 then hit = true end
+			end)
+			if hit then n = n + 1 end
+		end
+	end)
+	return n
+end
+
 local function context(E, ent, bits)
 	local api = E.api
 	local ctx = api.type.Context.new()
@@ -396,6 +459,8 @@ end
 -- a stop on a town street segment, as the stop tool builds it (see H.dstop): the segment replaced by a copy carrying the stop
 local function buildStop(E, co, seg, n)
 	local api, C, G = E.api, E.C, E.G
+	-- (0.6: never under the floor, see spendOk; a stop of 1972 costs 30 000 to 60 000. False: not built)
+	if not spendOk(E, co, 60000, "stop " .. tostring(n)) then return false end
 	local c = api.engine.getComponent(seg, api.type.ComponentType.BASE_EDGE)
 	local sp = api.type.SimpleProposal.new()
 	local ssp = sp.streetProposal
@@ -437,6 +502,7 @@ local function buildStop(E, co, seg, n)
 	local cmd = api.cmd.makeWorldBuildProposalCmd(sp, context(E, co.ent, CTX_STOP), false, true, true)
 	local pa, pb = E.nodePosition(c.node0), E.nodePosition(c.node1)
 	build(E, co.id, cmd, "stop " .. n, CTX_STOP, { kind = "stop", pos = pa and pb and { x = (pa.x + pb.x) / 2, y = (pa.y + pb.y) / 2, z = (pa.z + pb.z) / 2 } or nil })
+	return true
 end
 
 -- free town street segments near a point, the nearest first
@@ -536,8 +602,10 @@ local function findDepotPlace(E, co, p)
 			ce.playerEntity = co.ent
 			pcall(function() ce.name = "" end)
 			sp.constructionsToAdd = { ce }
-			local okd, pd = pcall(function() return api.engine.util.proposal.makeProposalData(sp, context(E, co.ent, CTX_DEPOT)) end)
-			if okd and pd and #pd.errorState.messages == 0 and not pd.errorState.critical then
+			-- (0.6, dev probes only: the dry run without the buildings gathered, see keepBuildings, a house in the way is a refusal)
+			local bits = keepBuildings() and withoutBuildings(CTX_DEPOT) or CTX_DEPOT
+			local okd, pd = pcall(function() return api.engine.util.proposal.makeProposalData(sp, context(E, co.ent, bits)) end)
+			if okd and pd and #pd.errorState.messages == 0 and not pd.errorState.critical and not (keepBuildings() and buildingsHit(E, pd) > 0) then
 				return sp, s, pd.costs
 			end
 		end
@@ -611,6 +679,8 @@ local function garagePlaces(E, co, p, maxD)
 				end
 				if free then
 					out[#out + 1] = { seg = s.e, c = c, a = s.a, b = s.b, P = P, O = O, n = { x = nx, y = ny }, side = side }
+					-- (0.6: the garage's price as the dry run says it, for the floor, see buildGarage)
+					pcall(function() out[#out].cost = tonumber(pd.costs) end)
 					break
 				end
 			end
@@ -672,11 +742,19 @@ end
 local function buildGarage(E, co, place)
 	local G = E.G
 	local A = G.AI
+	-- (0.6: never under the floor, see spendOk: the dry run's price of the garage, 650 000 when unknown, and its entrance.
+	-- False: not built)
+	if not spendOk(E, co, (tonumber(place.cost) or 650000) + 20000, "garage on segment " .. tostring(place.seg)) then return false end
 	local margs = garageCapture(E, co, place)
 	local now = E.gameTime()
 	G.oseq = G.oseq + 1
 	local a = { fn = "makeWorldBuildProposalCmd", args = margs, origin = G.me, oseq = G.oseq, uid = G.me .. ":" .. G.oseq,
 		at = E.stampFor(now) + E.STEP, native = true, co = co.id, ctx = CTX_DEPOT }
+	-- (0.6) never a town building taken down for it: every game replays the garage with the buildings in its way kept (a building
+	-- there makes the build fail everywhere instead of being demolished; the depot tool of a player gathers them, see the bridge's
+	-- replayNativeConstruction). Its place was chosen free of buildings (garagePlaces); this covers a building grown there since.
+	-- MPFEVER_AIKEEPBUILDINGS=0: gathered, as before
+	if os.getenv("MPFEVER_AIKEEPBUILDINGS") ~= "0" then a.keepBuildings = true end
 	E.send("act", a)
 	a.recvFrame = G.frames
 	G.nativeQueue[#G.nativeQueue + 1] = a
@@ -846,6 +924,8 @@ end
 local function buyBus(E, co, depot)
 	local bus, year = bestBus(E)
 	if not bus then L(E, "no bus on sale in " .. year); return false end
+	-- (0.6: never under the floor, see spendOk; the price the last purchase measured, or the model's when higher)
+	if not spendOk(E, co, math.max(E.G.AI.busCost or BUS_COST, bus.price or 0), "bus " .. tostring(bus.name)) then return false end
 	local cfg = {
 		vehicles = { { part = { modelId = bus.id, reversed = false, compartment2loadConfig = { { loadConfigIndex = 0, cargoTypeId = 0, __ud = true } },
 			color = { x = -1, y = -1, z = -1, __vec = true }, __ud = true }, purchaseTime = 0, maintenanceChange = 0, maintenanceState = 1,
@@ -858,6 +938,80 @@ local function buyBus(E, co, depot)
 		jr = { kind = "bus", pos = depotPos(E, depot), a = tostring(bus.name):match("([^/]+)%.mdl$") or bus.name } }
 	L(E, "bus requested: " .. bus.name .. " (" .. bus.seats .. " seats, " .. year .. ") at depot " .. depot)
 	return true
+end
+
+-- ------------------------------------------------------------------ long-term freight (0.6): the rules
+-- In 1972 an industry makes 50 to 270 units a year until its cargo is carried, and no freight line of the tests of 2026-10-29
+-- paid its truck (160 000 a year). An industry grows only with what is shipped from it: the game's industries script
+-- (game_mechanics/industries) tries every half game year to extend each industry, with a chance that goes from 0 to 1 as its
+-- production rating times the share of its output shipped goes from 0.25 to 0.75, one level more each time up to its most, and
+-- its production grows with its level. So a freight line is an investment: one at a time, a line from a raw producer that can
+-- still grow to an industry that takes its cargo (or, once the company feeds a processing industry, from that industry to one
+-- that takes its product), whose loss is accepted within a budget (LT.share of the company's money to spare, at most LT.cap) and
+-- a time (LT.horizonY game years), judged on its trend (its producer's production and its result over the last months, LT.proofY
+-- after its start) rather than on one month, never under the company's floor. Once it pays its trucks it is a line like the
+-- others and the next one can start; after a line given up the next one waits LT.cooldownY, longer each time (see ltEnd).
+-- Its first trucks come as any freight line's (see step), and it starts only while the company may grow. MPFEVER_AILONGFREIGHT=0: none, as in
+-- 0.5.14 (freight only with plenty of money). MPFEVER_AILTTREND=0: judged on its budget and time only; MPFEVER_AILTTRUCKS=0: its
+-- trucks as any line's (no truck more for the cargo waiting); MPFEVER_AILTCHAIN=0: raw producers only
+local LT = { share = 0.2, cap = 1500000, min = 300000, horizonY = 3, proofY = 1, grow = 1.25, cooldownY = 0.5, maxTrucks = 4, sample = 240000, keep = 8 }
+
+local function ltOn() return os.getenv("MPFEVER_AILONGFREIGHT") ~= "0" and os.getenv("MPFEVER_AIFREIGHT") ~= "0" end
+
+local function yearOf(E)
+	local y = 1461000
+	pcall(function() local v = E.api.util.getDefaultYearDuration(); if type(v) == "number" and v > 0 then y = v end end)
+	return y
+end
+
+-- the budget of a new long-term line: LT.share of the money to spare (its money less its loans' money), at most LT.cap; nil
+-- while under LT.min (not affordable yet)
+local function ltBudget(spare)
+	local b = math.min(LT.cap, LT.share * math.max(0, tonumber(spare) or 0))
+	if b < LT.min then return nil end
+	return math.floor(b)
+end
+
+-- The verdict on a long-term line at a sample (pure, see tests/test_ai_longfreight.py): "paid" once its income covered its
+-- trucks' running costs two samples in a row (a line like the others then), "end" when its budget is spent or its time is up, or
+-- (trend) when its proof time is over and neither its producer's production grew by LT.grow nor its result over the last four
+-- months got better than over its first four; else "keep".
+-- lt = { born, budget, spent, prod0, proofFrom, samples = { { t, bal, prod, ratio }... } }; P = { horizon, proof, grow } (ms)
+local function ltJudge(lt, now, P, trend)
+	local s = lt.samples or {}
+	local n = #s
+	if n >= 2 and (s[n].ratio or 0) >= 1 and (s[n - 1].ratio or 0) >= 1 then return "paid", "it pays its trucks" end
+	if (lt.spent or 0) >= (lt.budget or 0) then return "end", "its budget is spent" end
+	if now - (lt.born or now) >= P.horizon then return "end", "its time is up" end
+	if trend and n >= 1 and now - (lt.proofFrom or lt.born or now) >= P.proof then
+		local grew = (s[n].prod or 0) >= math.max(1, tonumber(lt.prod0) or 0) * P.grow
+		local better = false
+		if n >= 4 then
+			local first, last = (s[1].bal or 0) + (s[2].bal or 0), (s[n].bal or 0) + (s[n - 1].bal or 0)
+			better = last > first + 0.2 * math.abs(first)
+		end
+		if not grew and not better then return "end", "its producer does not grow and its result gets no better" end
+	end
+	return "keep"
+end
+
+-- A long-term line's investment ends (its budget, its time, no growth, the floor): the fleet rules take it from now on, its route
+-- is not tried again as a long-term line, and the next one waits LT.cooldownY, twice as long after each one given up (at most 8
+-- times: the company does not throw a share of its money away every half year)
+local function ltEnd(A, lt, why, now, yearMs)
+	lt.state, lt.why = "ended", why
+	A.ltFailed = A.ltFailed or {}; A.ltFailed[lt.key or ""] = true
+	A.ltFails = (A.ltFails or 0) + 1
+	A.ltNextAt = now + LT.cooldownY * yearMs * 2 ^ math.min(3, A.ltFails - 1)
+end
+
+-- a long-term line in its investment (its loss accepted, see above): not judged by the fleet rules, not sold in debt before the
+-- other lines, not counted against the company's growth
+local function ltProtected(E, line)
+	if not ltOn() then return false end
+	local t = E.G.AI.lt
+	local lt = t and t[line]
+	return lt ~= nil and lt.state == "invest"
 end
 
 -- ------------------------------------------------------------------ running the lines
@@ -880,9 +1034,21 @@ local function lineBalance(E, line)
 end
 
 -- The result of the company's lines together over the last two months (earnings less upkeep), read at most every 10 s; nil
--- when no line has one yet
-local function companyResult(E, lines)
+-- when no line has one yet. (0.6: tag, another list's result kept apart: the lines without the long-term ones, see mayExpand)
+local function companyResult(E, lines, tag)
 	local A = E.G.AI
+	if tag then
+		A.opTag = A.opTag or {}
+		local c = A.opTag[tag]
+		if c and E.G.frames - c.at < 600 then return c.r end
+		local sum, known = 0, 0
+		for _, l in ipairs(lines) do
+			local b = lineBalance(E, l.e)
+			if b then sum = sum + b; known = known + 1 end
+		end
+		A.opTag[tag] = { at = E.G.frames, r = known > 0 and sum or nil }
+		return A.opTag[tag].r
+	end
 	if A.opAt and E.G.frames - A.opAt < 600 then return A.opResult end
 	A.opAt = E.G.frames
 	local sum, known = 0, 0
@@ -922,17 +1088,27 @@ local function mayExpand(E, co, lines, money)
 	local A = E.G.AI
 	local now = E.gameTime()
 	local why
+	-- (0.6) nothing new while its money is under its reserve, its first lines included: it keeps itself solvent (see manageLines).
+	-- MPFEVER_AISOLVENT=0: as before
+	if os.getenv("MPFEVER_AISOLVENT") ~= "0" and money < RESERVE then why = "its money is under its reserve (" .. math.floor(money) .. " for " .. math.floor(RESERVE) .. ")" end
+	-- (0.6) its long-term freight line in its investment is neither a line still filling nor part of its lines' result: its loss is
+	-- planned and budgeted (see ltJudge), it must not hold the growth of the others for years
+	local others = lines
+	if ltOn() and A.lt then
+		others = {}
+		for _, l in ipairs(lines) do if not ltProtected(E, l.e) then others[#others + 1] = l end end
+	end
 	-- (its first lines, the level's bootstrap, freely; then not before its last new line had time to fill, and with plenty of
 	-- money besides its reserve and its loans whatever its lines do; else not while the level's number of its lines are still
 	-- filling or about to be given up, and only while its lines earn together)
-	if #lines >= (LV.bootstrap or 0) then
+	if not why and #lines >= (LV.bootstrap or 0) then
 		local spare = money - (A.loanCash or 0)
 		if A.lastNewAt and A.lastNewAt <= now and now - A.lastNewAt < (LV.settle or 0) then
 			why = "its last new line fills (" .. math.floor((LV.settle - (now - A.lastNewAt)) / 4000) .. " day(s) left)"
 		elseif spare < RESERVE + (LV.freeCash or 0) then
 			local unproven = 0
 			local fleetOn = os.getenv("MPFEVER_AIFLEET") ~= "0"
-			for _, l in ipairs(lines) do
+			for _, l in ipairs(others) do
 				local born = A.born and A.born[l.e]
 				-- (a line with no measure yet, no vehicle or MPFEVER_AIFLEET=0, by its age only; a measured one while under the level's
 				-- give-up share, which the fleet rules end: one paying a little less than its vehicles no longer holds growth for good)
@@ -942,7 +1118,7 @@ local function mayExpand(E, co, lines, money)
 			if unproven >= (LV.maxUnproven or 99) then
 				why = unproven .. " line(s) still filling or about to be given up"
 			else
-				local r = companyResult(E, lines)
+				local r = (others == lines) and companyResult(E, lines) or companyResult(E, others, "grow")
 				if r == nil or r <= 0 then why = "its lines do not earn yet (" .. tostring(r and math.floor(r)) .. " over 2 months)" end
 			end
 		end
@@ -1018,7 +1194,11 @@ local function manageLines(E, co, lines, vehicles, money)
 	local G = E.G
 	local A = G.AI
 	-- (in debt: a bus of the emptiest line sold every 20 s until the account is back above zero)
-	local period = money < 0 and 1200 or 7200
+	-- (0.6, MPFEVER_AISOLVENT: under its floor already, FLOOR, not in debt only: it keeps itself solvent, a computer company never
+	-- goes bankrupt any more. MPFEVER_AISOLVENT=0: at zero, as before)
+	local solvent = os.getenv("MPFEVER_AISOLVENT") ~= "0"
+	local low = solvent and FLOOR or 0
+	local period = money < low and 1200 or 7200
 	if G.frames - (A.manageAt or -100000) < period then return false end
 	A.manageAt = G.frames
 	local probs = problemLines(E, co.ent)
@@ -1062,7 +1242,12 @@ local function manageLines(E, co, lines, vehicles, money)
 		local bal = lineBalance(E, l.e)
 		-- (0.5.14, MPFEVER_AIGRACE: not a line still filling up, every young line loses money its first months)
 		local young = grace and A.born[l.e] and A.born[l.e] <= nowG and nowG - A.born[l.e] < (LV.ramp or 0)
-		if n > 0 and not young and (not losingOnly or (bal ~= nil and bal < 0)) and (not eUse or use < eUse) then emptiest, eUse = { line = l, last = last, n = n }, use end
+		-- (0.6, MPFEVER_AISOLVENT: the losing line that loses the most per vehicle first, not the emptiest, and never a long-term line in
+		-- its investment, whose loss is planned: it comes last, see below)
+		local protected = ltProtected(E, l.e)
+		if solvent and losingOnly then
+			if n > 0 and not young and not protected and bal ~= nil and bal < 0 and (not emptiest or bal / n < emptiest.per) then emptiest = { line = l, last = last, n = n, per = bal / n } end
+		elseif n > 0 and not young and not protected and (not losingOnly or (bal ~= nil and bal < 0)) and (not eUse or use < eUse) then emptiest, eUse = { line = l, last = last, n = n }, use end
 		-- (a freight line: its trucks come back empty, and a producer starts slowly once served: emptier, and given more time)
 		l.freight = os.getenv("MPFEVER_AIFREIGHT") ~= "0" and freightOf(E, l) or nil
 		local emptyUse, emptyLooks = l.freight and 0.04 or 0.08, l.freight and 6 or 3
@@ -1076,6 +1261,9 @@ local function manageLines(E, co, lines, vehicles, money)
 			if not A.born[l.e] or A.born[l.e] > nowG then A.born[l.e] = nowG end
 			if nowG - A.born[l.e] < 240000 then empty = false end
 		end
+		-- (0.6: a long-term line in its investment with its trucks is not empty: its producer makes little until it grows, its trucks
+		-- wait at it for their load)
+		if protected and n > 0 then empty = false end
 		-- (a line given up, see dropped: empty for good, its last vehicles sold and the line destroyed as the empty ones are)
 		if A.dropLine and A.dropLine[l.e] then empty = true; A.emptyRuns[l.e] = math.max(A.emptyRuns[l.e] or 0, emptyLooks - 1) end
 		if not grace or period == 7200 then A.emptyRuns[l.e] = empty and ((A.emptyRuns[l.e] or 0) + 1) or 0 end
@@ -1153,7 +1341,8 @@ local function manageLines(E, co, lines, vehicles, money)
 		local used = {}
 		for _, l in ipairs(lines) do for _, g in ipairs(l.groups) do used[g] = true end end
 		for _, s in ipairs(myStops(E, co.ent)) do
-			if A.deadGroups[s.group] and not used[s.group] then
+			-- (0.6: its removal is paid too: never under the floor, see spendOk)
+			if A.deadGroups[s.group] and not used[s.group] and spendOk(E, co, 20000, "demolition of stop " .. s.station) then
 				local api = E.api
 				local sp = api.type.SimpleProposal.new()
 				local ssp = sp.streetProposal
@@ -1165,8 +1354,14 @@ local function manageLines(E, co, lines, vehicles, money)
 			end
 		end
 	end
-	if money < 0 and emptiest and #vehicles > 0 then
-		sellVehicle(E, co, emptiest.last, "in debt, emptiest line " .. emptiest.line.e)
+	if money < low and emptiest and #vehicles > 0 then
+		sellVehicle(E, co, emptiest.last, (solvent and losingOnly) and ("under its floor, the line losing the most per vehicle " .. emptiest.line.e) or ("in debt, emptiest line " .. emptiest.line.e))
+		return true
+	end
+	-- (0.6, MPFEVER_AISOLVENT) under its reserve, not yet under its floor: one vehicle of its line losing the most per vehicle at each
+	-- regular look (every 2 minutes), its new projects wait meanwhile (see mayExpand). Before, it waited until it was in debt
+	if solvent and losingOnly and period == 7200 and money < RESERVE and emptiest and #vehicles > 0 then
+		sellVehicle(E, co, emptiest.last, "under its reserve, the line losing the most per vehicle " .. emptiest.line.e, emptiest.line.e)
 		return true
 	end
 	-- (in debt with no line losing money: a loan, as a player would take, rather than waiting in debt; one ask every 2 minutes at
@@ -1174,13 +1369,27 @@ local function manageLines(E, co, lines, vehicles, money)
 	-- (0.5.14, MPFEVER_AILOANPICK: one loan at most, the offer of the lowest monthly payment, see the bridge's ai_loan; the first
 	-- offer was taken before, 5 to 70 million over 1 to 24 years: a short one cost more a month than the company earned)
 	local pickLoan = os.getenv("MPFEVER_AILOANPICK") ~= "0"
-	if money < 0 and losingOnly and os.getenv("MPFEVER_AILOAN") ~= "0" and G.frames - (A.loanAsked or -100000) > 7200 and (not pickLoan or (A.loanCount or 0) < 1) then
+	-- (0.6, MPFEVER_AISOLVENT: under its floor, before it is in debt)
+	local loanFree = losingOnly and os.getenv("MPFEVER_AILOAN") ~= "0" and (not pickLoan or (A.loanCount or 0) < 1)
+	if money < low and loanFree and G.frames - (A.loanAsked or -100000) > 7200 then
 		A.loanAsked = G.frames
 		A.loanAskMoney = money
 		act(E, co.id, "makeScriptingSendEventCmd", { n = 4, [1] = "mpfever", [2] = "mpfever", [3] = "ai_loan", [4] = pickLoan and { pick = 1, max = 1 } or {} })
 		A.busy = { what = "loan", since = G.frames, until_ = G.frames + 120 }
-		L(E, "in debt (" .. math.floor(money) .. "): a loan asked")
+		L(E, (money < 0 and "in debt (" or "under its floor (") .. math.floor(money) .. "): a loan asked")
 		return true
+	end
+	-- (0.6) under its floor with no other losing line to sell from and no loan to take (it has one, or the game gave none): its
+	-- long-term line's investment ends there, the floor comes first; its trucks are sold as a losing line's from the next look
+	-- (MPFEVER_AISOLVENT=0: in debt)
+	if money < low and not (loanFree and G.frames - (A.loanAsked or -100000) <= 7200) then
+		for e, lt in pairs(A.lt or {}) do
+			if lt.state == "invest" then
+				ltEnd(A, lt, "money under its floor", nowG, yearMs)
+				L(E, "long-term line " .. e .. " ended: its money is under its floor (" .. math.floor(money) .. " for " .. math.floor(FLOOR) .. ")")
+				return true
+			end
+		end
 	end
 	-- (0.5.14) money to spare: its oldest loan repaid, if it has one (the simulation decides on its own balance, the same on every
 	-- game, see the bridge's ai_repay), at most every 6 game months. Before, a loan was never repaid and its money was spent as
@@ -1248,6 +1457,8 @@ local function manageLines(E, co, lines, vehicles, money)
 				local ch = A.changedAt and A.changedAt[l.e]
 				local settled = not ch or ch > nowG or nowG - ch >= 240000
 				under = settled and r ~= nil and age > LV.ramp and ((n > 1 and r < 1) or (n == 1 and r < LV.giveUp))
+				-- (0.6: not a long-term line in its investment, its loss is planned, see ltJudge)
+				if ltProtected(E, l.e) then under = false end
 			else
 				under = n > 2 and l.bal and l.bal < 0 and age > 720000
 			end
@@ -1268,6 +1479,16 @@ local function manageLines(E, co, lines, vehicles, money)
 			local waiting = 0
 			pcall(function() waiting = E.api.engine.system.simEntityAtTerminalSystem.getLineStopSimEntitiesCount(l.e, 0, l.freight.cargo) end)
 			busy = n < LV.maxTruck and (waiting >= LV.waiting or (use and use > LV.truckUse))
+			-- (0.6) a long-term line in its investment: a truck more only for the cargo waiting at its producer (its producer grows only
+			-- with what is shipped from it, a quarter left behind and it stops growing), up to LT.maxTrucks, while its budget left pays
+			-- one more truck a year; it then comes before the other lines, see bestBuy. MPFEVER_AILTTRUCKS=0: as any line
+			l.ltBuy = nil
+			if ltProtected(E, l.e) and os.getenv("MPFEVER_AILTTRUCKS") ~= "0" then
+				local lt = A.lt[l.e]
+				local perYear = ((l.econ and l.econ.perVeh) or 0) * yearMs / 240000
+				busy = n < LT.maxTrucks and waiting >= LV.waiting and (lt.budget or 0) - (lt.spent or 0) >= perYear
+				l.ltBuy = busy or nil
+			end
 			if busy then L(E, string.format("line %d: %d %s waiting at the producer", l.e, waiting, cargoName(E, l.freight.cargo))) end
 			-- (0.5.14, diagnostic: what the producer ships and what the industry at the other end receives and uses of that cargo a
 			-- year: trucks full both ways that earn nothing showed in the tests of 2026-10-29, the reason is still to find)
@@ -1294,6 +1515,8 @@ local function manageLines(E, co, lines, vehicles, money)
 				local settled = not ch or ch > nowG or nowG - ch >= 240000
 				if fleet and l.econ and l.econ.perVeh then pays = settled and l.econ.income / (n + 1) >= l.econ.perVeh * LV.addMargin
 				else pays = LV.name == "easy" or l.bal == nil or l.bal >= 0 end
+				-- (0.6: a long-term line's truck for its waiting cargo, see l.ltBuy: first, once its last change shows)
+				if l.ltBuy then pays, per = settled, math.huge end
 				if pays and (not bestBuy or per > bestBuy.per) then bestBuy = { l = l, per = per } end
 			else
 				local depot = garagesNear(E, co.ent, l.mid or (l.freight and l.freight.from.pos) or { x = 0, y = 0 }, 5000)[1]
@@ -1309,7 +1532,8 @@ local function manageLines(E, co, lines, vehicles, money)
 		local l = bestBuy.l
 		local depot = garagesNear(E, co.ent, l.mid or (l.freight and l.freight.from.pos) or { x = 0, y = 0 }, 5000)[1]
 		if depot then
-			L(E, string.format("line %d gets a vehicle more (it earns %d per vehicle over 2 months)", l.e, math.floor(bestBuy.per)))
+			L(E, bestBuy.per == math.huge and string.format("long-term line %d gets a truck more for the cargo waiting at its producer", l.e)
+				or string.format("line %d gets a vehicle more (it earns %d per vehicle over 2 months)", l.e, math.floor(bestBuy.per)))
 			A.forLine = l.e
 			buyFor(E, co, l, depot.depot)
 			return true
@@ -1404,7 +1628,8 @@ local function stopNear(E, co, stops, p, key)
 	local s = segs[1 + tries]
 	if not s or tries > 4 then return false end
 	L(E, "stop " .. key .. " (" .. math.floor(s.d) .. " m from its point)")
-	buildStop(E, co, s.e, key)
+	-- (0.6: not built under the floor: the project waits, "wait" counts as acted for its callers, the place is not given up)
+	if buildStop(E, co, s.e, key) == false then return "wait" end
 	return true
 end
 
@@ -1427,7 +1652,8 @@ local function garageFor(E, co, p, money, key)
 		local pl = garagePlaces(E, co, p, 900)[1]
 		if pl then
 			L(E, "garage near " .. key .. " on segment " .. pl.seg)
-			buildGarage(E, co, pl)
+			-- (0.6: not built under the floor: tried again in two months, the project waits meanwhile)
+			if buildGarage(E, co, pl) == false then A.garageTried[key] = nowT - 1440000 + 240000 end
 			return "building"
 		end
 		L(E, "no free place for a garage near " .. key)
@@ -1590,6 +1816,8 @@ local function industries(E)
 			local m = E.C.marshal(con.transf)
 			local it = { e = e, con = ind.construction, stockList = ind.stockList, pos = { x = m[13], y = m[14], z = m[15] },
 				file = tostring(con.fileName), outputs = {}, inputs = {}, inputSets = {} }
+			-- (0.6: its level and its most, the room it has to grow, see the long-term freight)
+			pcall(function() it.level, it.maxLevel = tonumber(ind.level), tonumber(ind.maxLevel) end)
 			for k = 1, #sl.stocks do
 				local s = sl.stocks[k]
 				if s.type == OUT and s.cargoType >= 0 then it.outputs[#it.outputs + 1] = s.cargoType end
@@ -1703,6 +1931,8 @@ local function bestTruck(E, cargo)
 				end)
 				if cap > 0 and (not best or cap > best.seats or (cap == best.seats and from > best.from)) then
 					best = { id = id, name = name, seats = cap, from = from }
+					-- (0.6: its price on the model, for the floor, see spendOk)
+					pcall(function() best.price = tonumber(md.cost.price) end)
 				end
 			end
 		end
@@ -1750,6 +1980,8 @@ end
 local function buyTruck(E, co, depot, cargo)
 	local truck, year = bestTruck(E, cargo)
 	if not truck then L(E, "no truck for " .. cargoName(E, cargo) .. " on sale in " .. year); return false end
+	-- (0.6: never under the floor, see spendOk)
+	if not spendOk(E, co, math.max(E.G.AI.truckCost or BUS_COST, truck.price or 0), "truck " .. tostring(truck.name)) then return false end
 	local cfg = {
 		vehicles = { { part = { modelId = truck.id, reversed = false, compartment2loadConfig = { { loadConfigIndex = 0, cargoTypeId = 0, __ud = true } },
 			color = { x = -1, y = -1, z = -1, __vec = true }, __ud = true }, purchaseTime = 0, maintenanceChange = 0, maintenanceState = 1,
@@ -1849,9 +2081,55 @@ local function servedByMe(E, lines)
 	return mine
 end
 
-local function bestFreight(E, co, lines)
+-- (0.6) the industries the company's freight lines deliver to (a chain's second leg starts there, see the long-term freight)
+local function fedByMe(E, lines)
+	local fed = {}
+	for _, l in ipairs(lines or {}) do
+		local okf, f = pcall(freightOf, E, l)
+		if okf and f and f.to and f.to.e then fed[f.to.e] = true end
+	end
+	return fed
+end
+
+-- (0.6) whether the towns take a cargo: its category has town districts in this map's economy (food, goods, tools, fuel,
+-- construction materials...: economy.cargoCategories[category].landUses, as the game's town growth script reads it); kept for
+-- the session
+local function townGood(E, cargo)
+	local T = E.G.AIT or {}
+	T.townGood = T.townGood or {}
+	if T.townGood[cargo] ~= nil then return T.townGood[cargo] end
+	local yes = false
+	pcall(function()
+		local api = E.api
+		local eco = api.res.economyRep.get(api.res.economyRep.find(api.res.getBaseConfig().economyId))
+		local cat = eco.cargoCategories[api.res.cargoTypeRep.get(cargo).category]
+		yes = cat ~= nil and cat.landUses ~= nil and #cat.landUses > 0
+	end)
+	T.townGood[cargo] = yes
+	return yes
+end
+
+-- (0.6) A long-term route's score (pure, see tests/test_ai_longfreight.py): what its producer could make grown to its most level
+-- (its most now times the room of its levels; twice its most when its levels cannot be read), times the distance (the fare grows
+-- with it, less for long routes). A producer at its most level scores nothing, unless the company feeds it (a chain's second leg:
+-- 1.5 times, the company's cargo comes back as its product); an industry at the other end whose product the towns take, 1.2 times
+local function ltScore(most, level, maxLevel, d, fed, townGoodThere)
+	local lvl, top = tonumber(level) or 0, tonumber(maxLevel) or 0
+	if top > 0 and lvl >= top and not fed then return 0 end
+	local room = (top > 0 and lvl > 0) and top / lvl or 2
+	local s = ((tonumber(most) or 0) * room + 50) * d / (1 + (d / 3000) ^ 2)
+	if fed then s = s * 1.5 end
+	if townGoodThere then s = s * 1.2 end
+	return s
+end
+
+-- (0.6: mode "lt", the long-term route, see ltProject: a raw producer that can still grow, or an industry the company feeds that
+-- makes its product now, scored by ltScore, routes given up as long-term lines left out. nil: as before)
+local function bestFreight(E, co, lines, mode)
 	local api = E.api
 	local A = E.G.AI
+	local lt = mode == "lt"
+	local fed = (lt and os.getenv("MPFEVER_AILTCHAIN") ~= "0") and fedByMe(E, lines) or {}
 	A.freightTried = A.freightTried or {}
 	-- (a street built to an industry since: the routes that had no road there are looked for again, see roadProject)
 	if A.retryInd and E.G.frames >= (A.retryAt or 0) then
@@ -1870,13 +2148,26 @@ local function bestFreight(E, co, lines)
 			for _, c in ipairs(p.outputs) do
 				-- (only a producer that makes that cargo now, or a primary one, see producedOf)
 				local prod = producedOf(E, p, c)
+				-- (0.6, long-term: a raw producer, or one the company feeds; producedOf gives nothing for the latter until it makes)
+				if lt and not (p.primary or fed[p.e]) then prod = nil end
 				for _, q in ipairs(prod and inds or {}) do
 					-- (an industry found cut off from the streets is left out until a street reaches it, see roadProject)
 					if q.e ~= p.e and not others[q.road.group] and cut[p.e] ~= false and cut[q.e] ~= false and takes(E, q, c) then
 						local d = dist(p.pos, q.pos)
 						local key = p.e .. ">" .. q.e .. ":" .. c
 						if d > FREIGHT_MIN and d < LV.freightMax and A.freightTried[key] ~= false and not (A.freightDone or {})[key] and not mine[p.e .. ":" .. c] then
-							cands[#cands + 1] = { from = p, to = q, cargo = c, d = d, key = key, score = (prod + 50) * d / (1 + (d / 3000) ^ 2) }
+							if lt then
+								if not (A.ltFailed or {})[key] then
+									local most = 0
+									pcall(function() most = api.engine.util.stock.getCargoMaxProductionPerYear(p.stockList, c) or 0 end)
+									local tg = false
+									for _, oc in ipairs(q.outputs) do if townGood(E, oc) then tg = true end end
+									local sc = ltScore(math.max(most, prod), p.level, p.maxLevel, d, fed[p.e] == true, tg)
+									if sc > 0 then cands[#cands + 1] = { from = p, to = q, cargo = c, d = d, key = key, score = sc, chain = fed[p.e] == true } end
+								end
+							else
+								cands[#cands + 1] = { from = p, to = q, cargo = c, d = d, key = key, score = (prod + 50) * d / (1 + (d / 3000) ^ 2) }
+							end
 						end
 					end
 				end
@@ -1894,7 +2185,7 @@ local function bestFreight(E, co, lines)
 			-- (one path search per step)
 			local ok = roadPath(E, f.from, f.to)
 			A.freightTried[f.key] = ok
-			if ok then L(E, "freight route found: " .. cargoName(E, f.cargo) .. ", industry " .. f.from.e .. " -> " .. f.to.e .. " (" .. math.floor(f.d) .. " m)") end
+			if ok then L(E, (lt and "long-term " or "") .. "freight route found: " .. cargoName(E, f.cargo) .. ", industry " .. f.from.e .. " -> " .. f.to.e .. " (" .. math.floor(f.d) .. " m)") end
 			-- (no road between them: one of the two may be cut off from the streets, see roadProject)
 			if not ok then
 				A.pathFails = A.pathFails or {}
@@ -1926,6 +2217,79 @@ local function townWants(E, town)
 	return out
 end
 
+-- (0.6) Whether a stock list takes a cargo: one of its input stocks holds that cargo or a set with it. A town building's demand is
+-- such a stock list (TOWN_BUILDING.stockList): the cargo a truck unloads at a stop goes to the input stocks of the stop's
+-- catchment that take it and have room (Line.StopConfig.forceUnload: "unload cargo at compatible input-stocks"), and the town is
+-- paid for and grows with what reaches its buildings (the game's town growth script: OnCalcTicketPrice at a town building's
+-- stock list)
+local function stockTakes(E, sl, cargo)
+	local api = E.api
+	local ok, yes = pcall(function()
+		local IN = api.type.enum.StockListType.InputStock
+		local c = api.engine.getComponent(sl, api.type.ComponentType.STOCK_LIST)
+		if not c then return false end
+		for k = 1, #c.stocks do
+			local st = c.stocks[k]
+			if st.type == IN and (st.cargoType == cargo or (st.cargoType < 0 and api.res.cargoTypeRep.hasCargoType(st.cargoTypes, cargo))) then return true end
+		end
+		return false
+	end)
+	return ok and yes == true
+end
+
+-- (0.6) How many stock lists in reach of a stop take a cargo: the engine's own catchment of the station (its catchables, the
+-- entities with a stock list or room for persons it reaches); -1 when it cannot be read
+local function stopReaches(E, station, cargo)
+	local n = -1
+	pcall(function()
+		local list = E.api.engine.system.catchmentAreaSystem.getStationCatchables(station, true)
+		n = 0
+		for _, e in ipairs(list) do if stockTakes(E, e, cargo) then n = n + 1 end end
+	end)
+	return n
+end
+
+-- (0.6) Where a town's buildings that take a cargo stand thickest: the place of the one with the most others that take it within
+-- 160 m (a street stop's catchment), and how many; nil when none of the town's buildings takes it. Kept 10 minutes per town and
+-- cargo. densest is the pure part (see tests/test_ai_towns.py)
+local function densest(pts, radius)
+	local best, bn = nil, 0
+	for _, a in ipairs(pts) do
+		local n = 0
+		for _, b in ipairs(pts) do if (a.x - b.x) ^ 2 + (a.y - b.y) ^ 2 <= radius * radius then n = n + 1 end end
+		if n > bn or (n == bn and best and (a.x < best.x or (a.x == best.x and a.y < best.y))) then best, bn = a, n end
+	end
+	return best, bn
+end
+
+local function townDropPoint(E, town, cargo)
+	local api = E.api
+	local A = E.G.AI
+	A.dropCache = A.dropCache or {}
+	local key = town .. ":" .. cargo
+	local c = A.dropCache[key]
+	if c and E.G.frames - c.at < 36000 and E.G.frames >= c.at then return c.p, c.n end
+	local pts = {}
+	pcall(function()
+		-- (the map of every town's buildings, read once a minute for all the towns and cargos)
+		local T = E.G.AIT or {}
+		if not (T.tbMap and T.tbAt and E.G.frames - T.tbAt < 3600 and E.G.frames >= T.tbAt) then
+			T.tbMap, T.tbAt = api.engine.system.townBuildingSystem.getTown2BuildingMap(), E.G.frames
+		end
+		for _, b in ipairs(T.tbMap[town] or {}) do
+			local tb = api.engine.getComponent(b, api.type.ComponentType.TOWN_BUILDING)
+			if tb and (stockTakes(E, tb.stockList, cargo) or stockTakes(E, b, cargo)) then
+				local con = api.engine.getComponent(tb.construction, api.type.ComponentType.CONSTRUCTION)
+				local m = con and E.C.marshal(con.transf)
+				if m then pts[#pts + 1] = { x = m[13], y = m[14], z = m[15] } end
+			end
+		end
+	end)
+	local p, n = densest(pts, 160)
+	A.dropCache[key] = { at = E.G.frames, p = p, n = n }
+	return p, n
+end
+
 -- a truck can drive from an industry's road terminals to the streets around a point
 local function roadPathTo(E, a, p)
 	local api = E.api
@@ -1941,21 +2305,28 @@ end
 -- The best delivery to a town not made yet: a town of 300 people or more, a cargo one of its districts wants, a producer of it
 -- 0.9 to 5 km from that district's centre, nobody else's line at the producer, a road between them (one search per step).
 -- Score as the routes between industries, times how much the district misses (up to 100).
-local function bestTownFreight(E, co, lines)
+-- (0.6, MPFEVER_AITOWNCATCH: the delivery's point is where the town's buildings that take the cargo stand thickest, see
+-- townDropPoint, not the district's centre, and none when no building of the town takes it; MPFEVER_AITOWNCATCH=0: the centre,
+-- as before. Mode "lt": a chain's second leg, from an industry the company feeds only, see ltProject)
+local function bestTownFreight(E, co, lines, mode)
 	local api = E.api
 	local A = E.G.AI
 	A.freightTried = A.freightTried or {}
 	local others = servedByOthers(E, co.ent)
 	local mine = servedByMe(E, lines)
 	local inds = industries(E)
+	local fed = mode == "lt" and fedByMe(E, lines) or nil
+	local catch = os.getenv("MPFEVER_AITOWNCATCH") ~= "0"
 	local cands = {}
 	for _, t in ipairs(townsBySize(E)) do
 		if t.size >= 300 then
 			for _, w in ipairs(townWants(E, t.e)) do
 				local p = centre(E, t.e, api.type.enum.LandUseType[w.use])
+				if p and catch then p = townDropPoint(E, t.e, w.cargo) end
 				if p then
 					for _, ind in ipairs(inds) do
-						if not others[ind.road.group] and (A.roadChecked or {})[ind.e] ~= false then
+						if not others[ind.road.group] and (A.roadChecked or {})[ind.e] ~= false
+							and (not fed or (fed[ind.e] and not (A.ltFailed or {})[ind.e .. ">town" .. t.e .. ":" .. w.cargo])) then
 							for _, c in ipairs(ind.outputs) do
 								if c == w.cargo and producedOf(E, ind, c) and not mine[ind.e .. ":" .. c] then
 									local d = dist(ind.pos, p)
@@ -1985,9 +2356,10 @@ local function bestTownFreight(E, co, lines)
 end
 
 -- one step of the best town delivery: the garage, the stop in town, the line, its first two trucks. True when it acted (or waits)
-local function townFreightProject(E, co, stops, lines, vehicles, money)
+-- (0.6: mode "lt", a chain's second leg as the long-term line, see ltProject)
+local function townFreightProject(E, co, stops, lines, vehicles, money, mode)
 	local A = E.G.AI
-	local f = bestTownFreight(E, co, lines)
+	local f = bestTownFreight(E, co, lines, mode)
 	if f == "searching" then return "searching" end
 	if not f then return false end
 	-- (a garage that is there already, the company's own first: none is built near an industry, whose ground is often uneven: a
@@ -2015,8 +2387,23 @@ local function townFreightProject(E, co, stops, lines, vehicles, money)
 	-- (a line given up there before: that delivery is left)
 	if not line and (A.badPair or {})[math.min(f.from.road.group, s.group) .. "-" .. math.max(f.from.road.group, s.group)] then A.freightTried[f.key] = false; return false end
 	if not line then
+		-- (0.6, MPFEVER_AITOWNCATCH) the stop must reach buildings that take the cargo (the engine's catchment of the stop): in a
+		-- test of 0.5.14 a truck full of vegetables at a town stop near the shops unloaded nothing and earned nothing
+		if os.getenv("MPFEVER_AITOWNCATCH") ~= "0" then
+			local n = stopReaches(E, s.station, f.cargo)
+			L(E, "town delivery " .. f.key .. ": " .. n .. " building(s) in reach of the stop take " .. cargoName(E, f.cargo) .. (n == 0 and ": delivery left" or ""))
+			if n == 0 then A.freightTried[f.key] = false; return false end
+		end
 		if money < RESERVE + 2 * (A.truckCost or BUS_COST) then return true end
 		createFreightLine(E, co, { from = f.from, to = { road = road, pos = s.pos }, cargo = f.cargo })
+		if mode == "lt" then
+			local prod0 = 0
+			pcall(function() prod0 = E.api.engine.util.stock.getCargoProducedPerYear(f.from.stockList, f.cargo) or 0 end)
+			A.ltPending = { key = f.key, groups = { f.from.road.group, s.group }, from = f.from.e, stockList = f.from.stockList, cargo = f.cargo,
+				budget = A.ltBudgetNext, prod0 = prod0, frame = E.G.frames, chain = true }
+			L(E, string.format("long-term line asked: %s from industry %d to %s (the second leg of its chain), budget %d", cargoName(E, f.cargo), f.from.e,
+				townName(E, f.town), math.floor(A.ltBudgetNext or 0)))
+		end
 		return true
 	end
 	local n = 0
@@ -2062,9 +2449,11 @@ local function collectFrom(E, co, f, lines)
 end
 
 -- one step of the best freight route between two industries: its garage, its line, its first two trucks. True when it acted
-local function industryProject(E, co, lines, vehicles, money)
+-- (0.6: mode "lt", the long-term line, see ltProject: its route by bestFreight's long-term rules, no round, and the line asked for
+-- is noted, A.ltPending, to be taken as the long-term line once it is there, see ltSync)
+local function industryProject(E, co, lines, vehicles, money, mode)
 	local A = E.G.AI
-	local f = bestFreight(E, co, lines)
+	local f = bestFreight(E, co, lines, mode)
 	if f == "searching" then return "searching" end
 	if not f then return false end
 	-- (a garage that is there already, the company's own first: none is built near an industry, whose ground is often uneven: a
@@ -2083,9 +2472,17 @@ local function industryProject(E, co, lines, vehicles, money)
 	if not line then
 		if money < RESERVE + 2 * (A.truckCost or BUS_COST) then return true end
 		-- (a second producer of that cargo near the first: one round for both)
-		local extra = collectFrom(E, co, f, lines)
+		local extra = mode ~= "lt" and collectFrom(E, co, f, lines) or nil
 		if extra == "searching" then return "searching" end
 		createFreightLine(E, co, f, extra)
+		if mode == "lt" then
+			local prod0 = 0
+			pcall(function() prod0 = E.api.engine.util.stock.getCargoProducedPerYear(f.from.stockList, f.cargo) or 0 end)
+			A.ltPending = { key = f.key, groups = { f.from.road.group, f.to.road.group }, from = f.from.e, stockList = f.from.stockList, cargo = f.cargo,
+				budget = A.ltBudgetNext, prod0 = prod0, frame = E.G.frames, chain = f.chain }
+			L(E, string.format("long-term line asked: %s from industry %d (makes %d a year, level %s of %s)%s, budget %d", cargoName(E, f.cargo), f.from.e,
+				math.floor(prod0), tostring(f.from.level), tostring(f.from.maxLevel), f.chain and ", the second leg of its chain" or "", math.floor(A.ltBudgetNext or 0)))
+		end
 		return true
 	end
 	local n = 0
@@ -2212,7 +2609,12 @@ local function connectIndustry(E, co, ind)
 		end
 	end
 	table.sort(pairsList, function(a, b) if a.d ~= b.d then return a.d < b.d end return a.node < b.node end)
-	local ctx = context(E, co.ent, CTX_ROAD)
+	-- (0.6: without the buildings gathered, see keepBuildings: the dry run refuses a street through a house, and the build is sent
+	-- with those flags, which every game replays. Before, the dry run took the houses in its way as gathered, no error, and the
+	-- street would have taken them down)
+	local keep = keepBuildings()
+	local bits = keep and withoutBuildings(CTX_ROAD) or CTX_ROAD
+	local ctx = context(E, co.ent, bits)
 	for i = 1, math.min(4, #pairsList) do
 		local pr = pairsList[i]
 		local okp, sp = pcall(roadProposal, E, co, pr.en.node, pr.en.p, pr.node, pr.q, pr.c)
@@ -2220,10 +2622,18 @@ local function connectIndustry(E, co, ind)
 			local okd, pd = pcall(function() return api.engine.util.proposal.makeProposalData(sp, ctx) end)
 			local why = ""
 			if okd and pd then pcall(function() why = E.C.ser(E.C.marshal(pd.errorState.messages)) end) end
-			if okd and pd and #pd.errorState.messages == 0 and not pd.errorState.critical then
+			local free = okd and pd and #pd.errorState.messages == 0 and not pd.errorState.critical
+			local hits = (free and keep) and buildingsHit(E, pd) or 0
+			if free and hits > 0 then
+				why = hits .. " town building(s) in its way"
+			elseif free then
+				-- (0.6: never under the floor, see spendOk: the dry run's price)
+				local cost = 0
+				pcall(function() cost = tonumber(pd.costs) or 0 end)
+				if not spendOk(E, co, cost, "road to industry " .. ind.e) then return false end
 				local mid = { x = (pr.en.p.x + pr.q.x) / 2, y = (pr.en.p.y + pr.q.y) / 2, z = (pr.en.p.z + pr.q.z) / 2 }
 				L(E, string.format("road to industry %d: %.0f m from node %d to the town node %d", ind.e, pr.d, pr.en.node, pr.node))
-				build(E, co.id, api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, true, true), "road to industry " .. ind.e, CTX_ROAD,
+				build(E, co.id, api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, true, true), "road to industry " .. ind.e, bits,
 					{ kind = "road", pos = mid })
 				return true
 			end
@@ -2291,6 +2701,152 @@ local function freightProject(E, co, stops, lines, vehicles, money)
 		return townFreightProject(E, co, stops, lines, vehicles, money) or industryProject(E, co, lines, vehicles, money) or roadProject(E, co, money)
 	end
 	return industryProject(E, co, lines, vehicles, money) or (towns and townFreightProject(E, co, stops, lines, vehicles, money)) or roadProject(E, co, money)
+end
+
+-- ------------------------------------------------------------------ long-term freight (0.6): its lines
+-- The long-term lines, at every look (see LT): the line asked for (A.ltPending) taken once it is there. After a load nothing of
+-- the module is kept: the company's oldest freight line from a raw producer, or from an industry it feeds, is taken again, its age
+-- from its first truck's purchase and its spending from the line's own accounts since then, so that its budget and its time stay
+-- bounded across loads and resynchronisations (its proof time starts again). Every two game months each line in its investment
+-- is sampled (its result over those months, its producer's production, its income against its trucks' running costs) and judged
+-- (ltJudge): "paid", a line like the others; "end", the fleet rules take it (a losing line), the route is not tried again and the
+-- next long-term line waits LT.cooldownY.
+local function ltKey(f)
+	return tostring(f.from and f.from.e) .. ">" .. tostring(f.to and (f.to.e or ("g" .. tostring(f.to.road and f.to.road.group)))) .. ":" .. tostring(f.cargo)
+end
+
+local function ltSync(E, co, lines, vehicles, money)
+	if not ltOn() then return end
+	local api = E.api
+	local A = E.G.AI
+	local now = E.gameTime()
+	local Y = yearOf(E)
+	A.lt = A.lt or {}
+	local live = {}
+	for _, l in ipairs(lines) do live[l.e] = l end
+	for k, lt in pairs(A.lt) do
+		-- (gone, or its id taken by another line since: MPFever gives a new entity the smallest free id)
+		local l = live[k]
+		local f = l and lt.state == "invest" and select(2, pcall(freightOf, E, l)) or nil
+		if not l or (lt.state == "invest" and not (type(f) == "table" and f.from and f.from.e == lt.from)) then A.lt[k] = nil end
+	end
+	local P = A.ltPending
+	if P then
+		local l = lineFor(E, lines, P.groups)
+		if l and not A.lt[l.e] then
+			A.lt[l.e] = { key = P.key, from = P.from, stockList = P.stockList, cargo = P.cargo, chain = P.chain, born = now, budget = P.budget or LT.min,
+				spent = 0, prod0 = P.prod0, proofFrom = now, at = now, samples = {}, state = "invest" }
+			A.ltPending = nil
+			L(E, string.format("long-term line %d under way: budget %d, %d game year(s) at most, its producer makes %d a year", l.e, math.floor(A.lt[l.e].budget),
+				LT.horizonY, math.floor(tonumber(P.prod0) or 0)))
+		elseif E.G.frames < (P.frame or 0) or E.G.frames - (P.frame or 0) > 7200 then
+			-- (not asked again: a line refused every 2 minutes)
+			A.ltPending = nil
+			A.ltFailed = A.ltFailed or {}; A.ltFailed[P.key or ""] = true
+			L(E, "the long-term line asked for was not made: its route is left")
+		end
+	end
+	-- (after a load: its oldest line from a raw producer or an industry it feeds, unless its time is up)
+	if not A.ltInit then
+		A.ltInit = true
+		local any = A.ltPending ~= nil
+		for _, lt in pairs(A.lt) do if lt.state == "invest" then any = true end end
+		if not any then
+			local fed = fedByMe(E, lines)
+			local best, bt
+			for _, l in ipairs(lines) do
+				local okf, f = pcall(freightOf, E, l)
+				if okf and f and f.from and (f.from.primary or fed[f.from.e]) then
+					for _, v in ipairs(vehicles) do
+						if v.line == l.e then
+							pcall(function()
+								local t = api.engine.getComponent(v.e, api.type.ComponentType.TRANSPORT_VEHICLE).transportVehicleConfig.vehicles[1].purchaseTime
+								if type(t) == "number" and t <= now and (not bt or t < bt or (t == bt and l.e < best.l.e)) then best, bt = { l = l, f = f }, t end
+							end)
+						end
+					end
+				end
+			end
+			if best and now - bt < LT.horizonY * Y then
+				local spent, prod0 = 0, 0
+				pcall(function() spent = -(api.engine.util.finance.calculateBalance({ best.l.e }, bt, now, true) or 0) end)
+				pcall(function() prod0 = api.engine.util.stock.getCargoProducedPerYear(best.f.from.stockList, best.f.cargo) or 0 end)
+				local budget = math.max(LT.min, ltBudget(money - (A.loanCash or 0)) or 0)
+				A.lt[best.l.e] = { key = ltKey(best.f), from = best.f.from.e, stockList = best.f.from.stockList, cargo = best.f.cargo, chain = fed[best.f.from.e] == true,
+					born = bt, budget = budget, spent = spent, prod0 = prod0, proofFrom = now, at = now, samples = {}, state = "invest" }
+				L(E, string.format("long-term line %d taken again after a load: %d day(s) old, %d spent of a budget of %d", best.l.e, math.floor((now - bt) / 4000),
+					math.floor(spent), budget))
+			end
+		end
+	end
+	local keys = {}
+	for e in pairs(A.lt) do keys[#keys + 1] = e end
+	table.sort(keys)
+	for _, e in ipairs(keys) do
+		local lt = A.lt[e]
+		if lt.state == "invest" then
+			if lt.at > now then lt.at = now end
+			if now - lt.at >= LT.sample then
+				local bal, run, prod = 0, 0, 0
+				pcall(function() bal = api.engine.util.finance.calculateBalance({ e }, lt.at, now, true) or 0 end)
+				for _, v in ipairs(vehicles) do
+					if v.line == e then
+						local okc, c = pcall(function() return api.engine.util.vehicle.getRunningCost(v.e) end)
+						if okc and type(c) == "number" then run = run + c end
+					end
+				end
+				pcall(function() prod = api.engine.util.stock.getCargoProducedPerYear(lt.stockList, lt.cargo) or 0 end)
+				local runW = run * (now - lt.at) / Y
+				local ratio = runW > 0 and (bal + runW) / runW or nil
+				lt.spent = (lt.spent or 0) - bal
+				lt.samples[#lt.samples + 1] = { t = now, bal = bal, prod = tonumber(prod) or 0, ratio = ratio }
+				while #lt.samples > LT.keep do table.remove(lt.samples, 1) end
+				lt.at = now
+				local v, why = ltJudge(lt, now, { horizon = LT.horizonY * Y, proof = LT.proofY * Y, grow = LT.grow }, os.getenv("MPFEVER_AILTTREND") ~= "0")
+				L(E, string.format("long-term line %d: %d over its last months, %d spent of its budget %d, its producer makes %d a year (%d at its start), %s of its trucks' running costs: %s%s",
+					e, math.floor(bal), math.floor(lt.spent), math.floor(lt.budget or 0), math.floor(tonumber(prod) or 0), math.floor(tonumber(lt.prod0) or 0),
+					ratio and (math.floor(ratio * 100) .. "%") or "?", v, why and (" (" .. why .. ")") or ""))
+				if v == "paid" then
+					lt.state = "paid"
+				elseif v == "end" then
+					ltEnd(A, lt, why, now, Y)
+				end
+			end
+		end
+	end
+end
+
+-- (0.6) A long-term line to start when the company has none in its investment: once its first lines run (the level's bootstrap),
+-- while it may grow (see mayExpand, step) and can afford the budget (ltBudget) and a truck besides its reserve; not within
+-- LT.cooldownY of the last one given up. The best route of bestFreight's long-term rules (a raw producer that can grow, or the
+-- second leg of its chain to an industry); with MPFEVER_AITOWNFREIGHT=1 also a chain's second leg to a town. Returns as
+-- industryProject (true: it acted)
+local function ltProject(E, co, stops, lines, vehicles, money)
+	if not ltOn() then return false end
+	local A = E.G.AI
+	if A.ltPending then return false end
+	for _, lt in pairs(A.lt or {}) do if lt.state == "invest" then return false end end
+	local now = E.gameTime()
+	local Y = yearOf(E)
+	if A.ltNextAt and now < A.ltNextAt and A.ltNextAt - now <= 8 * LT.cooldownY * Y then return false end
+	if #lines < (LV.bootstrap or 0) then return false end
+	local spare = money - (A.loanCash or 0)
+	local budget = ltBudget(spare)
+	local truck = A.truckCost or BUS_COST
+	if not budget or spare < RESERVE + truck + budget then
+		if E.G.frames - (A.ltSaid or -100000) > 3600 then
+			A.ltSaid = E.G.frames
+			L(E, "long-term freight waits: " .. (budget and string.format("its budget %d and a truck besides its reserve %d (money to spare %d)", budget, math.floor(RESERVE), math.floor(spare))
+				or string.format("its money to spare %d gives no budget of %d yet", math.floor(spare), LT.min)))
+		end
+		return false
+	end
+	A.ltBudgetNext = budget
+	local r = industryProject(E, co, lines, vehicles, money, "lt")
+	if r == false and os.getenv("MPFEVER_AITOWNFREIGHT") == "1" and os.getenv("MPFEVER_AILTCHAIN") ~= "0" then
+		r = townFreightProject(E, co, stops, lines, vehicles, money, "lt")
+	end
+	return r
 end
 
 -- ------------------------------------------------------------------ the step
@@ -2387,12 +2943,21 @@ local function step(E)
 		RESERVE = RESERVE + A.loanMonthly * (LV.runMonths or 4)
 		A.loanCash = A.loanOwe
 	end
+	-- (0.6) its floor, see FLOOR and spendOk
+	FLOOR = floorOf(A.runCost, A.loanMonthly, RESERVE)
 	if G.frames - (A.reportAt or -100000) > 1800 then
 		A.reportAt = G.frames
 		-- (0.5.14: what it keeps back, its lines' result together over the last two months and its fleet's running costs a year)
 		local res = companyResult(E, lines)
 		L(E, string.format("company %d (entity %d): money %d, %d stop(s), %d depot(s), %d line(s), %d vehicle(s), kept back %d, lines' 2-month result %s, running costs %d a year",
 			co.id, co.ent, money, #stops, #depots, #lines, #vehicles, math.floor(RESERVE), res and tostring(math.floor(res)) or "?", math.floor(A.runCost or 0)))
+		-- (0.6: its floor and its long-term freight)
+		if ltOn() or os.getenv("MPFEVER_AIFLOOR") ~= "0" then
+			local lts = {}
+			for e, lt in pairs(A.lt or {}) do lts[#lts + 1] = e .. " " .. tostring(lt.state) .. " " .. math.floor(lt.spent or 0) .. "/" .. math.floor(lt.budget or 0) end
+			table.sort(lts)
+			L(E, "floor " .. math.floor(FLOOR) .. "; long-term lines: " .. (#lts > 0 and table.concat(lts, ", ") or "none") .. (A.ltPending and " (one asked for)" or ""))
+		end
 	end
 	-- where each line runs: the middle of its stops (the garage of its new buses is looked for from there)
 	local groupPos = {}
@@ -2438,6 +3003,8 @@ local function step(E)
 	-- the lines first (a bus more where full, a broken line given up), then the best pair of towns, then the big towns' own lines
 	-- (the towns' own lines across their streets first, as the players' best filled lines; then the lines between towns)
 	sampleUse(E, lines)
+	-- (0.6: its long-term freight lines' samples and verdicts first, the fleet rules read them, see ltSync)
+	ltSync(E, co, lines, vehicles, money)
 	if manageLines(E, co, lines, vehicles, money) then return end
 	-- every freight line its first two trucks as soon as it is there (whatever the turn of the projects below: a line left without a
 	-- truck was given up as empty after a few looks)
@@ -2467,6 +3034,9 @@ local function step(E)
 	end
 	-- (0.5.14: whether it may open something new now, see mayExpand)
 	local grow = mayExpand(E, co, lines, money)
+	-- (0.6) its long-term freight line when it has none under way and can afford one (see ltProject): before the freight of plenty of
+	-- money and the buses' new projects. A path search alone builds nothing: the look goes on
+	if grow and ltProject(E, co, stops, lines, vehicles, money) == true then return end
 	-- freight: a route of trucks while the company has fewer freight lines than half its lines (one at first), then the buses.
 	-- (0.5.14: only with plenty of money besides its reserve and its loans, the level's freeCash: a producer of 1972 makes 50 to
 	-- 270 a year until its cargo is carried, and no freight line of the tests of 2026-10-30 paid its truck, 160 000 a year, while
@@ -2533,11 +3103,12 @@ local function step(E)
 					goto continue
 				end
 				L(E, "stop near the " .. w.use .. " centre of " .. townName(E, town) .. " (" .. math.floor(s.d) .. " m from it)")
-				buildStop(E, co, s.e, town .. ":" .. w.use)
+				-- (0.6: not built under the floor, see spendOk: the town waits)
+				if buildStop(E, co, s.e, town .. ":" .. w.use) == false then return end
 				A.townBegun = A.townBegun or {}
 				A.townBegun[town] = true
 				-- (a refused stop counts against that centre: the next try takes the next segment)
-				A.busy.what = "stop " .. town .. ":" .. w.use
+				if A.busy then A.busy.what = "stop " .. town .. ":" .. w.use end
 				return
 			end
 			-- a depot of the company within 400 m of the stops
@@ -2613,7 +3184,17 @@ M.f = { aiCompany = aiCompany, myStops = myStops, myDepots = myDepots, myLines =
 	findDepotPlace = findDepotPlace, townsBySize = townsBySize, currentYear = currentYear, garagePlaces = garagePlaces,
 	buildGarage = buildGarage, garagesNear = garagesNear, garageCapture = garageCapture, industries = industries, roadTerminals = roadTerminals,
 	bestTruck = bestTruck, bestFreight = bestFreight, freightOf = freightOf, roadPath = roadPath, cargoName = cargoName,
-	bestTownFreight = bestTownFreight, townWants = townWants, townName = townName }
+	bestTownFreight = bestTownFreight, townWants = townWants, townName = townName,
+	-- (0.6)
+	manageLines = manageLines, mayExpand = mayExpand, spendOk = spendOk, ltSync = ltSync, ltProject = ltProject, connectIndustry = connectIndustry,
+	townFreightProject = townFreightProject, industryProject = industryProject,
+	buildingsHit = buildingsHit, stockTakes = stockTakes, stopReaches = stopReaches, townDropPoint = townDropPoint, townGood = townGood,
+	step = step }
+
+-- (0.6) the pure rules, and the module's state of the company under way, for the offline tests (tests/test_ai_*.py)
+M.p = { floorOf = floorOf, ltBudget = ltBudget, ltJudge = ltJudge, ltScore = ltScore, densest = densest, LT = LT, FLOOR_MIN = FLOOR_MIN,
+	set = function(level, reserve, floor) LV = LEVELS[level or 2] or LEVELS[2]; RESERVE = reserve or LV.reserve; FLOOR = floor or FLOOR_MIN end,
+	get = function() return { reserve = RESERVE, floor = FLOOR, level = LV.name } end }
 
 function M.tick(E, st)
 	local G, C = E.G, E.C
@@ -2654,6 +3235,7 @@ function M.tick(E, st)
 	G.AI = G.AIS[cur.n]
 	LV = LEVELS[cur.level or 2] or LEVELS[2]
 	RESERVE = LV.reserve
+	FLOOR = FLOOR_MIN
 	G.AI.lookAt = G.frames + LV.tick
 	if G.AI.levelSaid ~= LV.name then G.AI.levelSaid = LV.name; E.log("AI" .. cur.n .. " level " .. LV.name) end
 	AINUM, AIKEY = cur.n, "ai:" .. cur.n
