@@ -1118,6 +1118,19 @@ local function manageLines(E, co, lines, vehicles, money)
 			pcall(function() waiting = E.api.engine.system.simEntityAtTerminalSystem.getLineStopSimEntitiesCount(l.e, 0, l.freight.cargo) end)
 			busy = n < LV.maxTruck and (waiting >= LV.waiting or (use and use > LV.truckUse))
 			if busy then L(E, string.format("line %d: %d %s waiting at the producer", l.e, waiting, cargoName(E, l.freight.cargo))) end
+			-- (0.5.14, diagnostic: what the producer ships and what the industry at the other end receives and uses of that cargo a
+			-- year: trucks full both ways that earn nothing showed in the tests of 2026-10-29, the reason is still to find)
+			if period == 7200 then
+				pcall(function()
+					local stk, c = E.api.engine.util.stock, l.freight.cargo
+					local fr, to = l.freight.from, l.freight.to
+					local function n0(f, sl) local ok, v = pcall(f, sl, c); return ok and tostring(v) or "?" end
+					L(E, string.format("freight line %d (%s): producer makes %s and ships %s a year; %s", l.e, cargoName(E, c),
+						n0(stk.getCargoProducedPerYear, fr.stockList), n0(stk.getCargoTypeShippedPerYear, fr.stockList),
+						to.stockList and string.format("the industry there receives %s, uses %s (at most %s) a year", n0(stk.getCargoTypeDeliveredPerYear, to.stockList),
+							n0(stk.getCargoConsumedPerYear, to.stockList), n0(stk.getCargoMaxConsumptionPerYear, to.stockList)) or "a town stop"))
+				end)
+			end
 		end
 		if busy and money > RESERVE + ((l.freight and A.truckCost or A.busCost) or BUS_COST) then
 			if reinvest then
