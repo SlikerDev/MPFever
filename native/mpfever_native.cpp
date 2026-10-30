@@ -3120,8 +3120,11 @@ static bool InstallRoadOrder(u8*& mem)
         bool lay = memcmp(fa + 0x12d, push20, 5) == 0 && memcmp(fr + 0x179, push20, 5) == 0
             && memcmp(fa + 0xf0, find20, 3) == 0 && memcmp(fa + 0xf4, next20, 4) == 0 && fr[0x108] == 0xE8;
         if (lay) {
+            // (the call's target inside the game's code before it is read: on another build the E8 may be no call, and a target
+            // read outside the image crashed the game at its start)
             const u8* g = fr + 0x108 + 5 + *(const i32*)(fr + 0x109);
-            lay = memcmp(g + 0x6d, s72, 8) == 0 && memcmp(g + 0x83, s32, 4) == 0;
+            lay = (uptr)g >= g_textStart && (uptr)g + 0x87 <= g_textEnd
+                && memcmp(g + 0x6d, s72, 8) == 0 && memcmp(g + 0x83, s32, 4) == 0;
         }
         if (!lay) return false;
     }

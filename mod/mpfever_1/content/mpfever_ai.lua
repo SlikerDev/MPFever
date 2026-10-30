@@ -1374,7 +1374,8 @@ local function bestPair(E, co, lines, stops)
 				if key ~= A.pairUnderWay and os.getenv("MPFEVER_AIPAIRSPREAD") ~= "0" then
 					local n = 0
 					for _, S in pairs(E.G.AIS or {}) do
-						if S ~= A and ((S.pairDone or {})[key] or S.pairUnderWay == key) then n = n + 1 end
+						-- (a pair it failed is no pair under way: it kept the key while its growth waited)
+						if S ~= A and ((S.pairDone or {})[key] or (S.pairUnderWay == key and not (S.pairFailed or {})[key])) then n = n + 1 end
 					end
 					score = score / (1 + n * (LV.compete and 1 or 2))
 				end
