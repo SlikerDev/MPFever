@@ -1362,6 +1362,12 @@ local function simApplyDue(state)
 						end
 					end
 					state:set(st)
+					-- (0.6) what the game options' modules keep of it, before its references are translated (nothing while no option is on)
+					SIM.featDg = nil
+					if SIM.featOn then
+						local okD, dg = pcall(SIM.featDigests, st, a)
+						if okD then SIM.featDg = dg end
+					end
 					SIM.actor = (st.co and a.co) and CO.entityOf(st.co, a.co) or nil
 					local okx, r = pcall(executeAction, a, api.cmd.sendCommand, false, st.bind)
 					SIM.actor = nil
@@ -1377,6 +1383,7 @@ local function simApplyDue(state)
 					if SIM.featOn then
 						local okF, errF = pcall(SIM.featAction, st, a, r.success == true)
 						if not okF then log("options: onAction failed: " .. tostring(errF)) end
+						SIM.featDg = nil
 					end
 					r.at = now
 					if r.created then st.bind = st.bind or {}; st.bind[r.created.key] = r.created.e end
@@ -1882,10 +1889,17 @@ SIM.featEvent = function(st, name, param)
 	end
 	F.simEvent(st, name, param, SIM.featBridge())
 end
--- an action applied by the simulation (simApplyDue saves the state after it)
+-- an action applied by the simulation (simApplyDue saves the state after it), with the modules' copies of it taken before it was
+-- applied (SIM.featDg, see SIM.featDigests)
 SIM.featAction = function(st, a, ok)
 	local F = C.feat()
-	if F then F.simAction(st, a, ok, SIM.featBridge()) end
+	if F then F.simAction(st, a, ok, SIM.featBridge(), SIM.featDg) end
+end
+-- what the modules on keep of an action before it is applied (its references are then translated in place, see F.digests); nil
+-- when none takes a copy
+SIM.featDigests = function(st, a)
+	local F = C.feat()
+	return F and F.digests(st.optsText, a) or nil
 end
 -- the captures of this game so far (before a tool's build is captured, see SIM.featNative); nil when the state cannot be read
 SIM.featSeq = function(state)
@@ -7722,6 +7736,9 @@ local function runNativeReplays()
 				G.aheadLocked = true
 			end
 			nativeArrived(a)
+			-- (0.6: to the game options' modules that keep a copy of the players' builds, before the replay translates its references,
+			-- see G.featNativeAct; nothing while no option is on)
+			if G.featOn then pcall(G.featNativeAct, a) end
 			local okr, errr
 			local skip = G.lateSkip(a, now)
 			if skip then okr = true
@@ -8255,6 +8272,8 @@ local function shipTerrain(o)
 	local a = { fn = "terrainEdit", args = { x0 = d.x0, y0 = d.y0, w = d.w, h = d.h, fnv = b.fnv, blob = txt }, at = o.at, origin = G.me,
 		oseq = G.oseq, uid = G.me .. ":" .. G.oseq, native = true, paused = o.paused, co = G.myCo }
 	send("act", a)
+	-- (0.6: to the game options' modules that keep a copy of the players' builds, see G.featNativeAct)
+	if G.featOn then pcall(G.featNativeAct, a) end
 	toSim("terrain_note", { v = tonumber(b.fnv:sub(-8), 16) or 0, at = o.at })
 	G.waits[#G.waits + 1] = { at = G.frames + 60, fn = function()
 		log("terrain edit " .. a.uid .. ": ground here now sum " .. tostring(G.terrainSum(d.x0, d.y0, d.w, d.h)))
@@ -8316,6 +8335,8 @@ local function shipNativeBuilds(st)
 				G.natShipIds = rest
 			end
 			send("act", a)
+			-- (0.6: to the game options' modules that keep a copy of the players' builds, see G.featNativeAct)
+			if G.featOn then pcall(G.featNativeAct, a) end
 			G.builtAt = math.max(G.builtAt or -1, o.at)
 			log("native build shipped " .. a.uid .. " (built here at t=" .. o.at .. ", the other games build it at the same time) [frame " .. G.frames .. "]")
 		end
@@ -8405,6 +8426,12 @@ local function runPausedActions()
 					G.pausedCreating = { uid = a.uid, frame = G.frames }
 					creating = true
 				end
+				-- (0.6) what the game options' modules keep of it, before its references are translated (see G.featPausedAct)
+				local featDg = nil
+				if G.featOn then
+					local okD, dg = pcall(G.featDigests, a)
+					if okD then featDg = dg end
+				end
 				withActor(PL(a), executeAction, a, O.sendCommand, true, G.bind, function(r)
 					if G.pausedCreating and G.pausedCreating.uid == a.uid then G.pausedCreating = nil end
 					-- (the replay counted above went to the engine by itself, not through replaySend: its count is used here. A
@@ -8420,7 +8447,7 @@ local function runPausedActions()
 					log("paused action " .. tostring(r.uid) .. " " .. tostring(r.fn) .. " at t=" .. tostring(now) .. " -> " .. (r.success and "OK" or "REFUSED"))
 					-- (0.6) the game options' modules hear it in the simulation as the actions it applies (every game applies the paused
 					-- actions in the same turns, at the same game time; nothing while no option is on)
-					if G.featOn then pcall(G.featPausedAct, a, r) end
+					if G.featOn then pcall(G.featPausedAct, a, r, featDg) end
 					if r.created then G.rebind(r.created.key, r.created.e); toSim("bind", r.created) end
 					G.resultsSeen[tostring(r.uid) .. "@" .. tostring(r.at)] = true
 					C.appendFile(C.DIR .. BS .. "results.log", C.line("result", r))
@@ -15815,6 +15842,14 @@ G.featBridge = function()
 				f:close()
 				G.featFiles[file] = text
 				return true
+			end,
+			-- (0.6: the game's language, and the other players this game hears from: their names, sorted)
+			T = C.T,
+			players = function()
+				local out = {}
+				for name in pairs(G.peers or {}) do if type(name) == "string" and name ~= G.me then out[#out + 1] = name end end
+				table.sort(out)
+				return out
 			end }
 		G.featB = B
 	end
@@ -15836,7 +15871,8 @@ G.featGui = function(st)
 	local have = type(st.optsText) == "string" and st.optsText or ""
 	G.featOn = have ~= ""
 	G.featSt = st
-	local want = G.featOpts
+	-- (G.featTestOpts: the options an autotest scenario puts into a test's session, see H.journaltest; never set otherwise)
+	local want = G.featTestOpts or G.featOpts
 	if not G.featOn and (want == nil or want == "") then G.featAllow = false; return end
 	local F = C.feat()
 	if not F then return end
@@ -15891,11 +15927,140 @@ G.featRequest = function(p)
 	local F = C.feat()
 	if F then F.request(p.m, p.kind, p.payload, G.featSt or {}, G.featBridge()) end
 end
--- a paused action applied here (runPausedActions): to the simulation, whose modules hear it as the others (F.simAction)
-G.featPausedAct = function(a, r)
+-- a paused action applied here (runPausedActions): to the simulation, whose modules hear it as the others (F.simAction); dg: the
+-- modules' copies of it taken before it was applied (G.featDigests)
+G.featPausedAct = function(a, r, dg)
 	local args = nil
 	if a.fn ~= "makeWorldBuildProposalCmd" and type(a.args) == "table" then args = a.args end
-	toSim("f_act", { a = { fn = a.fn, args = args, co = a.co, origin = a.origin, uid = a.uid, at = a.at, paused = true }, ok = r.success == true })
+	toSim("f_act", { a = { fn = a.fn, args = args, co = a.co, origin = a.origin, uid = a.uid, at = a.at, tok = a.tok, paused = true }, ok = r.success == true, dg = dg })
+end
+-- what the modules on keep of an action before it is applied here (see F.digests); nil when none takes a copy
+G.featDigests = function(a)
+	local F = C.feat()
+	local st = G.featSt
+	if not (F and type(st) == "table") then return nil end
+	return F.digests(st.optsText, a)
+end
+-- (0.6) A tool's build of a player as the games ship it, its references not translated yet: this game's own when it is shipped
+-- (shipNativeBuilds, shipTerrain), another player's as this game replays it (runNativeReplays). The simulation does not know who
+-- made a tool's build (SIM.featNative), so its copy for the modules that keep one (M.digest: the journal) goes to the simulation
+-- from here (f_act, only to those modules: the others hear the build there). Not stamped: such a module keeps a state that every
+-- game ends with whatever the order the builds come in (the journal sorts its entries by the build's own game time). Nothing
+-- while no option is on, nor when no module on keeps copies.
+G.featNativeAct = function(a)
+	if type(a) ~= "table" or a.fn == "mpfCoJoin" then return end
+	local dg = G.featDigests(a)
+	if not dg then return end
+	toSim("f_act", { a = { fn = a.fn, co = a.co, origin = a.origin, uid = a.uid, at = a.at, tok = a.tok, native = true, paused = a.paused }, ok = true, dg = dg, only = true })
+end
+
+-- Players' journal scenario (MPFEVER_SCENARIO=journaltest, 0.6, each game in its turn): the host's game puts the options journal,
+-- builtby and playerview into the test's session (G.featTestOpts: MPFever.exe does not know them, so the MPFever window shows no
+-- Journal tab in this test; the games apply them from the host's f_opts as in a real session), then this game lays a road as the
+-- street tool does, demolishes it, and asks for the view of the other game's player. Its results: the journal's entries of this
+-- game (its road, its demolition, the other player's entries when that game ran before), the view's answer and whether the camera
+-- took it, the tab's file. Every game's mod.log says "feat journal: ..." for each entry it makes (the other game's too).
+H.journaltest = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local function say(t) log("AUTOTEST journaltest " .. t); AUTO.results[#AUTO.results + 1] = t end
+	local F = C.feat()
+	if F then F.load(log) end
+	local M = F and F.byId.journal
+	if not M then say("the options host or the journal module is not loaded"); return autoFinish() end
+	if C.ROLE == "host" then
+		G.featTestOpts = "builtby=1;journal=1;journal.details=1;playerview=1"
+		G.featOptsAt = nil
+		say("options put into the test's session: " .. G.featTestOpts)
+	end
+	local function J() local st = G.featSt; return type(st) == "table" and type(st.feat) == "table" and type(st.feat.journal) == "table" and st.feat.journal or nil end
+	local function count(kind, own)
+		local n, me = 0, M.key(G.me)
+		for _, e in ipairs(J() and M.entries(J()) or {}) do
+			if (kind == nil or e.kind == kind) and ((M.key(e.who) == me) == own) then n = n + 1 end
+		end
+		return n
+	end
+	local function later(frames, fn) G.waits[#G.waits + 1] = { at = G.frames + frames, fn = fn } end
+	local function finish()
+		local kinds = {}
+		for _, e in ipairs(J() and M.entries(J()) or {}) do kinds[#kinds + 1] = tostring(e.who) .. ":" .. tostring(e.kind) end
+		say("journal here: " .. #kinds .. " entr(y/ies): " .. table.concat(kinds, ", "):sub(1, 400))
+		say("entries of the other player here: " .. count(nil, false))
+		local f = C.IO.open(C.DIR .. BS .. "feat_journal_log.txt", "rb")
+		local txt = f and f:read("*a") or nil
+		if f then f:close() end
+		local n = 0
+		for _ in tostring(txt or ""):gmatch("[^\n]+") do n = n + 1 end
+		say("the tab's file feat_journal_log.txt: " .. (txt and (n .. " line(s)") or "MISSING"))
+		autoFinish()
+	end
+	-- 4. the view of the other game's player (as the tab's button: the module's request "view")
+	local function view()
+		local list = G.featBridge().players()
+		local other = list[1]
+		if not other then say("view: no other player"); return finish() end
+		local g = M.guiState()
+		g.status = nil
+		F.request("journal", "view", M.key(other), G.featSt or {}, G.featBridge())
+		local tries = 0
+		local function poll()
+			tries = tries + 1
+			local s = g.status
+			if s and s[1] ~= "ask" then
+				local cam = nil
+				pcall(function() cam = M.camGet() end)
+				say("view of " .. tostring(other) .. ": " .. tostring(s[1]) .. " (view = the camera took it), camera now " .. (cam and string.format("%.0f,%.0f d=%.0f", cam[1], cam[2], cam[3]) or "?"))
+				return finish()
+			end
+			if tries > 40 then say("view of " .. tostring(other) .. ": NO ANSWER in 20 s (status " .. tostring(s and s[1]) .. ")"); return finish() end
+			later(30, poll)
+		end
+		later(30, poll)
+	end
+	-- 2. and 3. a road, then its demolition, each sent as the street tool's build
+	local tries = 0
+	local function road()
+		tries = tries + 1
+		if tries > 8 then say("no road could be built at 8 places"); return view() end
+		local okp, err = pcall(function()
+			local n, info, pn, a = matrixPlace((p.offset or 0) + (C.ROLE == "host" and 300 or 200) + tries * 5)
+			local o = { tlanes = true, template = true, roadType = true, street = true, owner = true, positions = true, sharedIds = true,
+				tmpl = { roadTemplate = info.c.roadTemplate, roadStyle = info.c.roadStyle, roadType = info.c.roadType } }
+			local sp = buildMatrixProposal(o, n, pn, a)
+			local before = {}
+			for _, e in ipairs(R.allEdges()) do before[e] = true end
+			deferredSend(api.cmd.makeWorldBuildProposalCmd(sp, playerContext(), false, true), function(res, success)
+				local new = {}
+				for _, e in ipairs(R.allEdges()) do if not before[e] then new[#new + 1] = e end end
+				if not success or #new == 0 then later(40, road); return end
+				later(300, function()
+					say("road built: journal entries 'road' of this player here: " .. count("road", true) .. " (1 expected)")
+					local okr, P = pcall(function() return api.engine.util.proposal.makeSegmentsRemoveProposal(new) end)
+					if not okr or not P then say("no removal proposal: " .. tostring(P)); return view() end
+					deferredSend(api.cmd.makeWorldBuildProposalCmd(P, playerContext(), false, true), function(res2, success2)
+						later(300, function()
+							say("road demolished (" .. tostring(success2) .. "): journal entries 'road_del' of this player here: " .. count("road_del", true) .. " (1 expected)")
+							view()
+						end)
+					end)
+				end)
+			end)
+		end)
+		if not okp then say("road " .. tries .. " failed: " .. shortErr(err)); later(40, road) end
+	end
+	-- 1. the options on in the game (applied by every game from the host's f_opts, at most 10 s after they were asked)
+	local waited = 0
+	local function waitOn()
+		local s = type(G.featSt) == "table" and G.featSt.optsText or ""
+		if s:find("journal=1", 1, true) and s:find("playerview=1", 1, true) then say("options on in the game: " .. s); return road() end
+		waited = waited + 1
+		if waited > 80 then say("the options are not on in the game after 40 s (" .. tostring(s) .. ")"); return finish() end
+		later(30, waitOn)
+	end
+	waitOn()
 end
 
 local function guiUpdate(userParams, state, guiState)

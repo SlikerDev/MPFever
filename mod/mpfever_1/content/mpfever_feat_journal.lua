@@ -8,13 +8,15 @@
 --               option's parameter. In the separate mode the rivals show too, as the computer companies do in their tab. The
 --               chat only tells « X demolished what Y built ».
 --   builtby     the stations and constructions keep the player who built them (and who last changed them) in the savegame;
---               their window shows it (a hook of the window: M.builtByText, M.creatorText).
+--               their window shows it (the window's U.featBuiltBy: M.builtByText, M.creatorText for vehicles and lines).
 --   playerview  a player takes the camera to where another player looks (in the separate mode only between the members of one
 --               company); every player may refuse it (a switch of the tab, kept in the savegame).
 --
 -- Where it runs (docs/FEATURES-0.6.md):
 --   simulation half, every game: M.onAction makes the journal's entries and keeps the registry of who built what from the
---     actions every game replays (nothing new on the network); M.event applies the events of the view.
+--     actions every game replays (nothing new on the network), from the copies M.digest takes before the bridge translates
+--     them (the options host's F.digests; the tools' builds with their builder through the bridge's G.featNativeAct); M.event
+--     applies the events of the view.
 --   GUI half, every game: M.gui writes the window's files, tells a demolition in the chat, answers a request for this player's
 --     view and takes the view this player asked for. The host's game alone ends a request nobody answers (M.CAM_TIMEOUT
 --     seconds of real time: one decider, the games' clocks differ and the game time stands still in a pause).
@@ -52,8 +54,9 @@ M.ANS_MAX = 6            -- answers kept (each game takes the ones for its playe
 M.TOL = 1                -- metres: a construction's place read back from the engine rounds to a neighbour metre at worst
 M.SHOW_MAX = 40          -- entries the tab shows
 
-M.FILE = "feat_journal.txt"                  -- the tab: a header ("@" lines), then the journal's lines
-M.FILE_BUILTBY = "feat_journal_builtby.txt"  -- the registry's lines, for the windows of the stations and constructions
+-- the files of the session folder the GUI half writes (env.write) and the window reads (u.read): feat_journal_<name>.txt
+M.FILE = "log"              -- feat_journal_log.txt, the tab: a header ("@" lines), then the journal's lines
+M.FILE_BUILTBY = "builtby"  -- feat_journal_builtby.txt, the registry's lines, for the windows of the stations and constructions
 
 -- the fields of a journal's line, in their order
 M.FIELDS = { "mk", "at", "uid", "who", "co", "kind", "det", "x", "y", "z", "a", "b", "n", "c", "ym" }
@@ -502,7 +505,7 @@ end
 function M.digest(a)
 	if type(a) ~= "table" then return nil end
 	local ok, items = pcall(M.classify, a)
-	return { fn = a.fn, origin = a.origin, uid = a.uid, at = a.at, co = a.co, tok = a.tok, items = (ok and items) or false }
+	return { fn = a.fn, origin = a.origin, uid = a.uid, at = a.at, co = a.co, tok = a.tok, native = a.native or nil, items = (ok and items) or false }
 end
 
 -- the companies, as a list of { id, ai, gone, members = { key... } }: the options host's env.companies() (simulation half),
@@ -801,13 +804,17 @@ function M.onAction(st, a, ok, env)
 		if okm and num(v) then ym = v end
 	end
 	local bucket = int(math.floor(at / M.MERGE_MS))
+	-- (what this game made of it, for the in-game checks: "feat journal:" in mod.log, on every game)
+	local said = {}
 	for i, x in ipairs(res) do repeat
 		if type(x) ~= "table" or type(x.kind) ~= "string" then break end
 		local e = { at = at, uid = (i == 1) and uid or (uid .. "." .. i), who = who, co = tonumber(a.co), kind = x.kind, det = x.det or 0,
 			x = x.x, y = x.y, z = x.z, a = x.a, b = x.b, n = x.n, c = x.c, ym = ym }
+		said[#said + 1] = x.kind .. (x.n and ("x" .. int(x.n)) or "") .. (x.key and (" " .. x.key) or "")
 		if x.rmKey then
 			local f = regDel(J, x.rmKey)
 			if f and f[2] and f[2] ~= "" then e.b = f[2] end
+			said[#said] = said[#said] .. " " .. x.rmKey .. (f and (" (in the registry, built by '" .. tostring(f[2]) .. "')") or " (not in the registry)")
 		end
 		if x.kind == "edit" then
 			-- (the builder stays; the editor is kept when it is another player. A construction the registry did not know, built
@@ -832,6 +839,8 @@ function M.onAction(st, a, ok, env)
 			end
 		end
 	until true end
+	env.log("feat journal: " .. uid .. " " .. tostring(a.fn) .. (a.native and " (a tool's build)" or "") .. " of " .. who .. " at t=" .. int(at)
+		.. ": " .. table.concat(said, "; "):sub(1, 300))
 end
 
 -- a camera's data: x, y (its centre), distance, angle, pitch, as numbers of the map's size; nil when it is not one
@@ -942,8 +951,10 @@ function M.camSet(d)
 	-- (a camera following a vehicle: taken off it first; not tried in game yet, see the note's section 3)
 	local following = false
 	pcall(function()
+		-- ({ entity, revision }: a table or the engine's own list)
 		local f = cam.getFollowEntity()
-		following = type(f) == "table" and type(f[1]) == "number" and f[1] >= 0
+		local e = f ~= nil and f[1] or nil
+		following = type(e) == "number" and e >= 0
 	end)
 	if following then pcall(cam.focusPosition, api.type.Vec3f.new(d[1], d[2], 0), d[3]) end
 	local ok = pcall(cam.setCameraData, api.type.Vec5f.new(d[1], d[2], d[3], d[4], d[5]))
@@ -1095,6 +1106,7 @@ function M.gui(st, env)
 				g.answered[r.id] = true
 				if J.noview[me] then
 					env.send("f_journal_cam", { id = r.id, no = "noshare", from = env.me })
+					env.log("feat journal: " .. tostring(r.fn) .. " asked for this player's view: refused (not shared)")
 				else
 					local okc, d = pcall(M.camGet)
 					if okc and d then
@@ -1102,6 +1114,9 @@ function M.gui(st, env)
 					else
 						env.send("f_journal_cam", { id = r.id, no = "nocam", from = env.me })
 					end
+					-- (in game: does getCameraData give the five numbers? see M.camGet)
+					env.log("feat journal: " .. tostring(r.fn) .. " asked for this player's view: camera "
+						.. ((okc and d) and string.format("%.1f,%.1f distance %.1f angle %.3f pitch %.3f sent", d[1], d[2], d[3], d[4], d[5]) or ("NOT READ (" .. tostring(d) .. ")")))
 				end
 			end
 			-- (the host alone ends a request nobody answers: one decider)
@@ -1123,8 +1138,11 @@ function M.gui(st, env)
 					if x.d then
 						local okc, done = pcall(M.camSet, x.d)
 						g.status = { (okc and done) and "view" or "nocam", x.fn or "", t = rt(env) }
+						-- (in game: does setCameraData take it, while following a vehicle too? see M.camSet)
+						env.log("feat journal: the view of " .. tostring(x.fn) .. " taken: camera set " .. ((okc and done) and "ok" or ("FAILED (" .. tostring(done) .. ")")))
 					else
 						g.status = { x.no or "timeout", x.fn or "", t = rt(env) }
+						env.log("feat journal: the view of " .. tostring(x.fn) .. " not taken: " .. tostring(x.no))
 					end
 				end
 			end
@@ -1153,10 +1171,12 @@ function M.gui(st, env)
 		if onJ and J then for line in J.log:gmatch("[^\n]+") do lines[#lines + 1] = line end end
 		env.write(M.FILE, lines)
 	end
-	if onB and J and J.reg ~= g.reg then
-		g.reg = J.reg
+	-- (written empty too while the state has none yet: the file of an earlier session of the folder is not read as this game's)
+	local reg = J and J.reg or "\n"
+	if onB and reg ~= g.reg then
+		g.reg = reg
 		local lines = {}
-		for line in J.reg:gmatch("[^\n]+") do lines[#lines + 1] = line end
+		for line in reg:gmatch("[^\n]+") do lines[#lines + 1] = line end
 		env.write(M.FILE_BUILTBY, lines)
 	end
 end

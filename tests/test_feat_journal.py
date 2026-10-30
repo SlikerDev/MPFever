@@ -12,6 +12,12 @@ state, and in another order the same journal); the registry (tolerance of a metr
 demolitions, the cap); the view (an answer, a refusal kept in the state, the host's time-out and only the host's, the separate
 mode's rule of one company, a bankrupt company, a computer company, a load that does not take an old answer again); the
 journal's cap; the state as plain data through a save and a load; the window's tab (details, player filter, Show, view buttons).
+Integrated (the real options host mpfever_feat.lua and the real functions of the bridge and the window, extracted from the files):
+the call sites of the copies (simApplyDue, runPausedActions, shipNativeBuilds, shipTerrain, runNativeReplays); all off: nothing
+sent, no state, no file; two games: the tools' builds handed over with their builder (G.featNativeAct, only to the module with a
+copy), the simulation's and the paused actions with their copies (another module still hears the action itself), the same journal
+on both, the files and the chat (in the game's language) through G.featBridge, the view's round trip; the window: the Journal tab
+drawn from feat_journal_log.txt, its view button, the « Built by » / « Bought by » line (U.featBuiltBy), nothing while off.
 Run: python tests/test_feat_journal.py
 """
 import os
@@ -437,6 +443,11 @@ E.run('COMPANIES = { { id = 1, members = { { key = "alice" } } }, { id = 4, ai =
 E.action(f'build("Alice", 5, 5000, nil, {{ conRef("{STATION}", 900, 900) }}, nil, {{ co = 4 }})')
 check(E.ev(f'M.regGet(J(), M.conKey("{STATION}", 900, 900))') is None and E.ev("J().nlog") == 0,
       "a computer company's demolition: out of the registry, nothing in the journal")
+# a game with nothing built yet writes an empty registry (the file an earlier session left in the folder is not read as its own)
+E0 = Game("Alice", opts=OPT_B)
+E0.gui()
+check(E0.ev(f'FILES["{M.FILE_BUILTBY}"] ~= nil and #FILES["{M.FILE_BUILTBY}"] == 0') and E0.ev("ST.feat") is None,
+      "nothing built yet: the registry's file written empty, no state")
 # the registry's cap
 F = Game("Alice", opts=OPT_B)
 F.run("M.MAX_REG = 50")
@@ -619,6 +630,305 @@ H.gui()
 H.run(UI)
 check("Alice changed the terrain (×1)" in H.ev("texts(M.ui(U))") and "Details: shown" in H.ev("texts(M.ui(U))"),
       "the option's parameter: details shown by default")
+
+# ---------------------------------------------------------------------------------------------------------- integrated
+# The module behind the real options host (mpfever_feat.lua) and the real functions of the bridge and the window that carry it
+# (extracted from the files as tests/test_feat_host.py does): the copies taken before an action is applied (F.digests), the tools'
+# builds with their builder (G.featNativeAct, on the builder's game when it ships and on the other's when it replays), the
+# simulation's actions (SIM.featDigests / SIM.featAction), the paused ones (G.featPausedAct), the env of the interface half
+# (G.featBridge: the files, the chat in the game's language, the players), the window's tab and the « Built by » line.
+import re  # noqa: E402
+
+CONTENT = os.path.join(HERE, "..", "mod", "mpfever_1", "content")
+
+
+def read_content(name):
+    with open(os.path.join(CONTENT, name), encoding="utf-8") as f:
+        return f.read()
+
+
+def extract(src, pattern, what):
+    m = re.search(pattern, src, re.S | re.M)
+    if not m:
+        check(False, f"{what} found in the file")
+        return ""
+    return m.group(0)
+
+
+FEAT_SRC = read_content("mpfever_feat.lua")
+BRIDGE = read_content("mpfever_bridge.script.lua")
+WINDOW = read_content("mpfever_ui.script.lua")
+BRIDGE_FNS = "\n".join(extract(BRIDGE, pat, what) for pat, what in (
+    (r"^SIM\.featAction = function\(st, a, ok\)\n.*?^end\n", "SIM.featAction"),
+    (r"^SIM\.featDigests = function\(st, a\)\n.*?^end\n", "SIM.featDigests"),
+    (r"^G\.featBridge = function\(\)\n.*?^end\n", "G.featBridge"),
+    (r"^G\.featChat = function\(text\)\n.*?^end\n", "G.featChat"),
+    (r"^G\.featPausedAct = function\(a, r, dg\)\n.*?^end\n", "G.featPausedAct"),
+    (r"^G\.featDigests = function\(a\)\n.*?^end\n", "G.featDigests"),
+    (r"^G\.featNativeAct = function\(a\)\n.*?^end\n", "G.featNativeAct"),
+))
+WINDOW_FNS = (extract(WINDOW, r"^U\.featOff = .*?^U\.featTabRows = function\(K, st, key\)\n.*?^end\n", "the window's game options")
+              + extract(WINDOW, r"^U\.featBuiltBy = function\(e\)\n.*?^end\n", "U.featBuiltBy")
+              + extract(WINDOW, r"^U\.featWantsOwnerLine = function\(\)\n.*?^end\n", "U.featWantsOwnerLine"))
+
+print("integrated: the call sites")
+ship = extract(BRIDGE, r"^local function shipNativeBuilds\(st\)\n.*?^end\n", "shipNativeBuilds")
+terr = extract(BRIDGE, r"^local function shipTerrain\(o\)\n.*?^end\n", "shipTerrain")
+reps = extract(BRIDGE, r"^local function runNativeReplays\(\)\n.*?^end\n", "runNativeReplays")
+paused = extract(BRIDGE, r"^local function runPausedActions\(\)\n.*?^end\n", "runPausedActions")
+guarded = "if G.featOn then pcall(G.featNativeAct, a) end"
+check(guarded in ship and ship.index('send("act", a)') < ship.index(guarded), "the builder's game hands its build over as it ships it")
+check(guarded in terr and terr.index('send("act", a)') < terr.index(guarded), "... and its terrain edit")
+check(guarded in reps and reps.index("nativeArrived(a)") < reps.index(guarded) < reps.index("replayNative, a, 1"),
+      "the other games hand it over before the replay translates its references")
+check(paused.index("G.featDigests, a") < paused.index("executeAction, a, O.sendCommand, true, G.bind")
+      and "pcall(G.featPausedAct, a, r, featDg)" in paused, "a paused action: its copy taken before it is applied")
+due = extract(BRIDGE, r"^local function simApplyDue\(state\)\n.*?^end\n", "simApplyDue")
+check(due.index("pcall(SIM.featDigests, st, a)") < due.index("local okx, r = pcall(executeAction, a, api.cmd.sendCommand, false, st.bind)")
+      < due.index("pcall(SIM.featAction, st, a, r.success == true)"), "the simulation's action: its copy taken before it is applied")
+check(re.search(r"if SIM\.featOn then\s+local okD, dg = pcall\(SIM\.featDigests", due) is not None, "... only while an option is on")
+
+PRELUDE = r'''
+LOG = {}
+function log(s) LOG[#LOG + 1] = tostring(s) end
+function T_fr(fr, en) return fr end
+function T_en(fr, en) return en end
+OTHER = {}
+OTHERMOD = [==[
+local M = { ID = "stats", OPTIONS = { { id = "goal", title = { "But", "Goal" } } } }
+function M.onAction(st, a, ok, env) OTHER[#OTHER + 1] = tostring(a.fn) .. (a.items ~= nil and " (a copy!)" or "") end
+return M
+]==]
+'''
+
+
+class Live:
+    """One game: the real options host with the real journal module and a module without a digest ("stats"), the bridge's real
+    functions on mocks, its sim state ST (the interface reads the same table here)."""
+
+    def __init__(self, me, host, T="T_en"):
+        self.me = me
+        self.L = lua52.LuaRuntime(unpack_returned_tuples=True)
+        self.L.execute(PRELUDE)
+        self.L.globals().JSRC = SRC
+        self.F = self.L.execute(FEAT_SRC)
+        self.L.globals().F = self.F
+        self.run('''
+F.loader = function(id)
+  if id == "journal" then return load(JSRC, "=journal")() end
+  if id == "stats" then return load(OTHERMOD, "=stats")() end
+  return nil
+end
+F.load(log)
+M = F.byId.journal
+''')
+        self.run(HARNESS)
+        self.run(f'''
+ST = {{}}
+TOSIM, EVENTS, FILEDATA = {{}}, {{}}, {{}}
+NOW = 100000
+function gameTime() return NOW end
+BS, NL, TAB = "/", "\\n", "\\t"
+CO, R = {{}}, {{}}
+C = {{ ROLE = "{"host" if host else "client"}", DIR = "D", T = {T} }}
+C.feat = function() return F end
+C.IO = {{ open = function(path, mode)
+  return {{ write = function(_, s) FILEDATA[path] = s end, close = function() end }}
+end }}
+C.appendFile = function(path, text) FILEDATA[path] = (FILEDATA[path] or "") .. text return true end
+G = {{ me = "{me}", myCo = nil, cmode = "shared", peers = {{}}, featOn = true }}
+G.coEvent = function(name, param) EVENTS[#EVENTS + 1] = {{ name = name, param = param }} return true end
+function toSim(name, param) TOSIM[#TOSIM + 1] = {{ name = name, param = ser(param) }} end
+SIM = {{ featOn = true }}
+-- the simulation's side of the env (SIM.featBridge in the game)
+BSIM = {{ log = log, STEP = 200, gameTime = gameTime, R = R, CO = CO, month = function() return 1925 * 12 end,
+  date = function() return nil end, money = function() return 0 end, book = function() return false end,
+  companies = function(st) return {{ {{ id = 1, ent = 9, name = "", ai = false, members = {{}} }} }} end }}
+SIM.featBridge = function() return BSIM end
+''')
+        self.run(BRIDGE_FNS)
+
+    def run(self, code):
+        return self.L.execute(code)
+
+    def ev(self, expr):
+        return self.L.eval(expr)
+
+    def opts(self, s, frm="Host"):
+        self.run(f'F.simEvent(ST, "f_opts", {{ s = "{s}", mode = "shared", mpfFrom = "{frm}" }}, BSIM); G.featSt = ST; G.featOn = (ST.optsText or "") ~= ""')
+
+    def deliver(self):
+        """The notes the interface sent to the simulation (toSim), applied by it (plain data: they travel as script events)."""
+        n = int(self.ev("#TOSIM"))
+        for i in range(1, n + 1):
+            self.run(f'F.simEvent(ST, TOSIM[{i}].name, deser(TOSIM[{i}].param), BSIM)')
+        self.run("TOSIM = {}")
+        return n
+
+    def gui(self, now):
+        self.run(f"G.featSt = ST; F.gui(ST, G.featBridge(), {now})")
+
+
+print("integrated: options off")
+off = Live("Host", True)
+off.opts("")
+off.run(f'A1 = build("Host", 1, 1000, {{ {{ "{STATION}", 100, 200 }} }}); G.featNativeAct(A1)')
+off.run('A2 = act("Client", 2, 1200, "makeVehicleBuyCmd", { n = 3, [1] = 0, [2] = depotRef(5, 5), [3] = busCfg(9) })')
+off.run('SIM.featDg = SIM.featDigests(ST, A2); SIM.featAction(ST, A2, true)')
+off.run('G.featPausedAct(A2, { success = true }, G.featDigests(A2))')
+check(off.ev("#TOSIM") == 1 and off.ev("SIM.featDg") is None, "all off: no copy taken, no build handed over (the paused note as in 0.6.0)")
+off.deliver()
+off.gui(10)
+check(off.ev("ST.feat") is None and off.ev("next(FILEDATA)") is None and off.ev("#EVENTS") == 0 and off.ev("#OTHER") == 0,
+      "all off: no state, no file, no event, no module called")
+
+print("integrated: two games")
+OPTS_ALL = "builtby=1;goal=1;journal=1;playerview=1"   # (goal: the module without a copy, on too)
+H_ = Live("Host", True, T="T_fr")
+C_ = Live("Client#1", False)
+GAMES = [H_, C_]
+for g_ in GAMES:
+    g_.opts(OPTS_ALL)
+    g_.run("OTHER = {}")
+H_.run('G.peers = { ["Client#1"] = { t = 1 } }')
+C_.run('G.peers = { Host = { t = 1 } }')
+for g_ in GAMES:
+    g_.gui(1)   # (the first look after the load)
+# the host builds a station and a depot with its tools: its game hands them over as it ships them, the client's as it replays them
+for k, (adds, at) in enumerate(((f'{{ {{ "{STATION}", 100, 200 }} }}', 2000), (f'{{ {{ "{DEPOT}", 300, 300 }} }}', 3000)), start=1):
+    for g_ in GAMES:
+        g_.run(f'NB = build("Host", {k}, {at}, {adds}); NB.cost = 5000; G.featNativeAct(NB)')
+        g_.deliver()
+# the client demolishes the station: the host's replay translates the reference after its copy was taken
+for g_ in GAMES:
+    g_.run(f'NB = build("Client#1", 7, 4000, nil, {{ conRef("{STATION}", 100.4, 199.7) }}); G.featNativeAct(NB); NB.args[1].toRemove[1] = 4711')
+    g_.deliver()
+check(H_.ev("kinds()") == C_.ev("kinds()") == "station,depot,demolish", "both games: the tools' builds in the journal: " + str(H_.ev("kinds()")))
+check(H_.ev('entry("demolish").b') == "Host" and H_.ev('entry("demolish").who') == "Client",
+      "the demolition: the builder found in the registry from the copy taken before the translation")
+check(H_.ev("#OTHER") == 0 and C_.ev("#OTHER") == 0, "a module without a copy never hears the handed-over builds (it hears them as nativeBuild)")
+check(any("feat journal: Client#1:7 makeWorldBuildProposalCmd (a tool's build) of Client" in l for l in H_.ev("LOG").values()),
+      "mod.log: « feat journal: ... » for each entry, on every game")
+# a purchase and a sale the simulation applies (the queue): the copy taken before executeAction translates them
+for g_ in GAMES:
+    g_.run('QA = act("Client#1", 8, 5000, "makeVehicleBuyCmd", { n = 3, [1] = 0, [2] = depotRef(300, 300), [3] = busCfg(1234) })')
+    g_.run('SIM.featDg = SIM.featDigests(ST, QA); QA.args[2] = 55; SIM.featAction(ST, QA, true); SIM.featDg = nil')
+    g_.run('QS = act("Host", 9, 6000, "makeVehicleSellCmd", { n = 1, [1] = { { __ref = true, k = "veh", id = 4, key = "VClient#1:8@5000" } } })')
+    g_.run('SIM.featDg = SIM.featDigests(ST, QS); QS.args[1] = { 77 }; SIM.featAction(ST, QS, true); SIM.featDg = nil')
+check(H_.ev('entry("buy").x') == 300 and H_.ev('entry("sell").b') == "Client", "the simulation's actions: the depot's place and the buyer kept")
+check(H_.ev("OTHER[1]") == "makeVehicleBuyCmd" and H_.ev("OTHER[2]") == "makeVehicleSellCmd",
+      "the other module still hears the action itself (no copy of its own)")
+# a line created in a pause (runPausedActions): the note f_act with the copies
+for g_ in GAMES:
+    g_.run('PA = act("Host", 10, 6000, "makeLineCreateCmd", { n = 4, [1] = "Ligne 1", [2] = {}, [3] = 0, [4] = { stops = { { stationGroup = sgRef(10, 20) } } } })')
+    g_.run('local dg = G.featDigests(PA); PA.args[4].stops[1].stationGroup = 99; G.featPausedAct(PA, { success = true }, dg)')
+    g_.deliver()
+check(H_.ev('entry("line").a') == "Ligne 1" and H_.ev('entry("line").y') == 20, "a paused action: its line and first stop from the copy")
+check(H_.ev("OTHER[3]") == "makeLineCreateCmd", "the other module hears the paused action as before")
+check(H_.ev("J().log") == C_.ev("J().log") and H_.ev("J().reg") == C_.ev("J().reg"), "both games: the same journal and registry")
+# the interface half through the real G.featBridge: the files, the chat in the game's language, the players
+for g_ in GAMES:
+    g_.gui(3)
+check(H_.ev('FILEDATA["D/feat_journal_log.txt"]') is not None and H_.ev('FILEDATA["D/feat_journal_builtby.txt"]') is not None,
+      "the files feat_journal_log.txt and feat_journal_builtby.txt in the session folder")
+chat = str(H_.ev('FILEDATA["D/chat.txt"]'))
+check("Client a démoli ce que Host avait construit" in chat and "MPFever" in chat, "the host's chat (French game): " + chat.strip()[-80:])
+check("Client demolished what Host built" in str(C_.ev('FILEDATA["D/chat.txt"]')), "the client's chat (English game)")
+check("@peer\tclient\tClient\tok" in H_.ev('FILEDATA["D/feat_journal_log.txt"]'), "the host's view list: the client, from the players it hears from")
+# the view, through the stamped events of the module (G.coEvent) and the camera
+CAM_CODE = 'M.camGet = function() return M.camData({ 10, 20, 300, 0.5, 0.25 }) end; CAMSET = {}; M.camSet = function(d) CAMSET[#CAMSET + 1] = d return true end'
+for g_ in GAMES:
+    g_.run(CAM_CODE)
+
+
+def stamp(sender):
+    n = int(sender.ev("#EVENTS"))
+    evs = [(sender.ev(f"EVENTS[{i}].name"), sender.ev(f"ser(EVENTS[{i}].param)")) for i in range(1, n + 1)]
+    sender.run("EVENTS = {}")
+    for g_ in GAMES:
+        for name, param in evs:
+            g_.run(f'local p = deser([==[{param}]==]); p.mpfFrom = "{sender.me}"; F.simEvent(ST, "{name}", p, BSIM)')
+    return [e[0] for e in evs]
+
+
+H_.run('F.request("journal", "view", "client", ST, G.featBridge())')
+check(stamp(H_) == ["f_journal_camreq"], "the host asks for the client's view")
+C_.gui(5)
+check(stamp(C_) == ["f_journal_cam"], "the client's game answers with its camera")
+H_.gui(7)
+check(H_.ev("#CAMSET") == 1 and H_.ev("CAMSET[1][3]") == 300 and C_.ev("#CAMSET") == 0, "the host's camera takes the client's view")
+check(any("feat journal: the view of Client taken: camera set ok" in l for l in H_.ev("LOG").values()), "mod.log: the view taken")
+
+print("integrated: the window")
+W = lua52.LuaRuntime(unpack_returned_tuples=True)
+W.execute(PRELUDE)
+W.globals().JSRC = SRC
+WF = W.execute(FEAT_SRC)
+W.globals().F = WF
+W.globals().LOGDATA = H_.ev('FILEDATA["D/feat_journal_log.txt"]')
+W.globals().REGDATA = H_.ev('FILEDATA["D/feat_journal_builtby.txt"]')
+W.execute(r'''
+F.loader = function(id) if id == "journal" then return load(JSRC, "=journal")() end return nil end
+F.load(log)
+FILEDATA = { ["D/feat_journal_log.txt"] = LOGDATA, ["D/feat_journal_builtby.txt"] = REGDATA }
+U = { isHost = function(st) return st and st.host == true end, winChanged = function() end, rev = {} }
+REQS, LINES = {}, {}
+U.menuRequest = function(cmd, arg) REQS[#REQS + 1] = cmd .. " " .. tostring(arg) return true end
+function sendLine(kind, p) LINES[#LINES + 1] = kind .. " " .. tostring(p.m) .. " " .. tostring(p.kind) .. " " .. tostring(p.payload) end
+function money(n) return tostring(n) end
+T = T_en
+C = { feat = function() return F end, DIR = "D", BS = "/", NL = "\n", CR = "\r", Tf = function(fr, en) return en end,
+  IO = { open = function(path) local s = FILEDATA[path] if not s then return nil end
+    return { read = function() return s end, close = function() end } end } }
+os.getenv = function() return nil end
+-- the game's engine, for the « Built by » line: entity 501 is the depot's construction, 502 a vehicle, 503 a computer company's
+CONS = { [501] = { fileName = "depots/road/road_depot/road_depot.con", transf = { [13] = 300.3, [14] = 299.8 } } }
+api = { type = { ComponentType = { CONSTRUCTION = "CONSTRUCTION" } },
+  engine = { getComponent = function(e, t) if t == "CONSTRUCTION" then return CONS[e] end end, system = {} },
+  cmd = { sendCommand = function() end, makeScriptingSendEventCmd = function() return {} end } }
+R = { stationGroupOf = function() return nil end, sgKey = function() return nil end }
+OWNERS = { [503] = 7 }
+function ownerOf(e) return OWNERS[e] end
+K = { TEXT_W = 556, ICON_SETTINGS = "i" }
+function K.text(t) return { kind = "text", t = tostring(t) } end
+function K.muted(t) return { kind = "muted", t = tostring(t) } end
+function K.section(icon, t) return { kind = "section", t = t } end
+function K.gap() return { kind = "gap" } end
+function K.row(c) return { kind = "row", c = c } end
+function K.col(c) return { kind = "col", c = c } end
+function K.btn(label, tip, fn) return { kind = "btn", t = label, fn = fn } end
+function alltext(rows)
+  local out = {}
+  local function walk(n) if n.kind == "row" or n.kind == "col" then for _, x in ipairs(n.c) do walk(x) end elseif n.t then out[#out + 1] = n.t end end
+  for _, n in ipairs(rows) do walk(n) end
+  return table.concat(out, "|")
+end
+''')
+W.execute(WINDOW_FNS)
+W.execute('STW = { mode = "shared", opts = "builtby=1;journal=1;playerview=1" }')
+tabs = W.eval("U.featTabs(STW)")
+check(len(tabs) == 1 and tabs[1].key == "f_journal", "the window: the Journal tab while an option of the module is on")
+check(len(W.eval('U.featTabs({ mode = "shared", opts = "" })')) == 0, "the window: no tab while off")
+tab = W.eval("alltext(U.featTabRows(K, STW, 'f_journal'))")
+check("Client demolished « modular station », built by Host" in tab and "Host built the depot « road depot »" in tab
+      and "See a player's view" in tab and "Client" in tab, "the tab drawn from feat_journal_log.txt: " + tab[:120])
+W.execute('''for _, n in ipairs(U.featTabRows(K, STW, "f_journal")) do
+  if n.kind == "row" then for _, x in ipairs(n.c) do if x.kind == "btn" and x.t == "See their view" then x.fn() end end end
+end''')
+check(W.eval("LINES[1]") == "feat_req journal view client", "its button asks the module of this game for the view (feat_req)")
+W.execute("U.status = STW")
+check(W.eval("U.featWantsOwnerLine()") is True, "the entity windows' line installed for « built by », one company for everybody too")
+check(W.eval("U.featBuiltBy(501)") == "Built by Host", "the depot's window: « Built by Host » (its construction's file and place)")
+W.execute('U.rev[502] = "VClient#1:8@5000"; U.rev[503] = "VHost:11@7000"; U.coMap = { [7] = 3 }; U.eco = { ai = { [3] = true } }')
+check(W.eval("U.featBuiltBy(502)") == "Bought by Client", "a vehicle's window: « Bought by Client »")
+check(W.eval("U.featBuiltBy(503)") is None, "a computer company's vehicle: no line (bought through the host's game)")
+check(W.eval("U.featBuiltBy(504)") is None, "what the registry does not know: no line")
+check(any("feat journal: built-by line of c:depots/road/road_depot/road_depot.con@300,300: Built by Host" in l for l in W.eval("LOG").values()),
+      "ui_mod.log: the key the window looked up, once")
+W.execute('U.status = { mode = "shared", opts = "journal=1" }')
+check(W.eval("U.featBuiltBy(501)") is None and W.eval("U.featWantsOwnerLine()") is False, "« built by » off: no line, nothing installed for it")
+W.execute('U.status = { mode = "shared", opts = "" }')
+check(W.eval("U.featWantsOwnerLine()") is False, "all off: nothing installed")
 
 if failures:
     print(f"FAIL {len(failures)} case(s): " + "; ".join(failures))

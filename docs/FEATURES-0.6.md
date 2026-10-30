@@ -87,7 +87,8 @@ player who joined), `env.myCo` (this player's company id, separate mode), `env.m
 this module, one of its M.EVENTS, stamped and applied by every game at the same step, as G.coEvent; not sent during a
 resynchronisation), `env.chat(text)` (a notice in this game's chat only), `env.write(name, lines)` (the file
 `feat_<module>_<name>.txt` of the session folder, name [a-z0-9_]+, lines a list or a text, written only when it changed),
-`env.realTime()` (os.clock, the GUI may), `env.gameTime()`, `env.R`, `env.CO`.
+`env.realTime()` (os.clock, the GUI may), `env.gameTime()`, `env.R`, `env.CO`, `env.T` (the game's T(fr, en): texts in the
+player's language, e.g. a chat notice), `env.players()` (the names of the other players this game hears from, sorted).
 
 UI (`u` of M.ui, made by `U.featU` in mpfever_ui.script.lua): `u.T(fr, en)`, `u.Tf(fr, en, ...)`, `u.money(n)`, `u.W` (the
 text width), `u.isHost`, `u.me`, `u.mode`, `u.on(id)`, `u.param(id, pid)` (the session's options, as MPFever.exe sends them),
@@ -146,6 +147,15 @@ Every game hears the same actions at the same step (`F.simAction`):
   proposal (`proposal.toAdd[i].playerEntity`...); in the co-op, the builder's name is not known there.
 Entity ids differ between games: keep positions or the references of mpfever_refs.lua in the state, never raw ids.
 
+`M.digest(a)` (optional, plain data out): the bridge translates an action's references to this game's entity ids IN PLACE when
+it applies it, so what a reference said (a demolished construction's file and place, a sold vehicle's creation key) is gone in
+onAction. A module with `M.digest` gets, instead of the action, the copy it made of it BEFORE (`F.digests`): for the actions the
+simulation applies (simApplyDue), the paused ones (f_act `dg`), and the tools' builds WITH their builder (`G.featNativeAct`: the
+builder's game when it ships its build, every other game when it replays it, before the replay; f_act with `only`, to the modules
+with a digest alone, so the others still hear a tool's build once, as `nativeBuild`). That last path is not stamped (each game
+hands it over when it ships or replays the build): such a module keeps a state that ends the same whatever the order (the
+journal sorts by the build's own game time).
+
 ## allow: what a module may refuse
 
 `G.featRefuse` (interface half, this player's game only), only while a module on has `M.allow`:
@@ -164,7 +174,7 @@ A module whose allow fails lets the action through (logged).
 | mpfever_common.lua | `C.feat()` | loads mpfever_feat.lua once per Lua state (nil when it cannot) |
 | bridge, top | `K.FEAT` | `MPFEVER_FEAT ~= "0"`, read once |
 | bridge, `executeActionOnce` | (inline) | the `f_` events carry `param.mpfFrom` / `param.mpfCo` in both modes |
-| bridge, `simApplyDue` | `SIM.featAction` | onAction of each action the simulation applies |
+| bridge, `simApplyDue` | `SIM.featAction`, `SIM.featDigests` (`SIM.featDg`) | onAction of each action the simulation applies (with the modules' copies taken before it) |
 | bridge, `update` (top) | `SIM.featOn`, `SIM.featHears`, `SIM.featHearing` | an option on (st.optsText), a module hears game events |
 | bridge, `update` (end) | `SIM.featTick` | month and tick |
 | bridge, `handleEvent` onPreBuildProposal | `SIM.featSeq`, `SIM.featNative` | onAction of a tool's build |
@@ -175,7 +185,8 @@ A module whose allow fails lets the action through (logged).
 | bridge, `stampHeld` | `G.featRefuse`, `G.featRequest` | allow of a window's command; the window's "feat_req" |
 | bridge, `pollNativeEvents` | `G.featRefuse`, `G.featTakeTool` | allow of a tool's build |
 | bridge, `guiHandleEvent` | `G.featTool` | the build the tool applies (for allow) |
-| bridge, `runPausedActions` | `G.featPausedAct` | the note f_act of a paused action |
+| bridge, `runPausedActions` | `G.featPausedAct`, `G.featDigests` | the note f_act of a paused action (with the modules' copies taken before it) |
+| bridge, `shipNativeBuilds`, `shipTerrain`, `runNativeReplays` | `G.featNativeAct` | a tool's build with its builder, to the modules with `M.digest` (f_act `only`) |
 | bridge, helpers | `SIM.featBridge`, `G.featBridge`, `G.featChat` | what the env is made of |
 | window | `U.featView`, `U.featTabs`, `U.featGameTab`, `U.featGameRows`, `U.featAsk`, `U.featU`, `U.featTabRows` | Game tab, modules' tabs |
 | lobby (`setup`) | `featView`, `featSection`, `featSummary` | the host's panel, the players' line |
@@ -184,7 +195,7 @@ A module whose allow fails lets the action through (logged).
 The options host (mpfever_feat.lua): `F.MODULES`, `F.loader` (tests), `F.load`, `F.parse`, `F.encode`, `F.canon`, `F.on`,
 `F.param`, `F.modOn`, `F.active`, `F.offered`, `F.summary`, `F.text`, `F.showValue`, `F.call` (every call protected; a failing
 hook is logged the first 5 times, then every 100th), `F.applyOpts`, `F.simEvent`, `F.simTick`, `F.simAction`,
-`F.simGameEvent`, `F.hearsGameEvents`, `F.gui`, `F.request`, `F.allow`, `F.wantsAllow`, `F.tabs`, `F.simEnv`, `F.guiEnv`.
+`F.simGameEvent`, `F.hearsGameEvents`, `F.digests`, `F.gui`, `F.request`, `F.allow`, `F.wantsAllow`, `F.tabs`, `F.simEnv`, `F.guiEnv`.
 
 ## How to integrate a module
 

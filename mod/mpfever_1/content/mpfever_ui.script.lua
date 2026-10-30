@@ -746,6 +746,82 @@ local function installHudColors(builtin)
 	log("companies: the map's icons show their company's colour")
 end
 
+-- (0.6, the game option "builtby" of mpfever_feat_journal.lua) the line « Built by X » (« ..., changed by Y ») of an entity's
+-- window: a station or another construction from the registry the journal's interface half writes (feat_journal_builtby.txt, read
+-- again at most every 2 s), a vehicle or a line made in a session from its creation key (bindings.log, U.rev). nil while the
+-- option is off (the session's options, mp_status.txt), for what the registry does not know, and for a computer company's vehicle
+-- or line (its purchases go through the host's game and carry the host's name). MPFEVER_FEAT=0: never.
+U.featBuiltBy = function(e)
+	if type(e) ~= "number" or e < 0 then return nil end
+	local F, map = U.featView(U.status)
+	if not (F and F.on(map, "builtby")) then return nil end
+	local M = F.byId.journal
+	if not (M and M.builtByText and M.builtByIndex) then return nil end
+	local function say(what, txt)
+		-- (once per thing asked: does the window's key match the registry's in game?)
+		U.featBbSaid = U.featBbSaid or {}
+		if U.featBbSaid[what] then return end
+		U.featBbSaid[what] = true
+		log("feat journal: built-by line of " .. what .. ": " .. tostring(txt or "not in the registry"))
+	end
+	-- a vehicle or a line made in a session
+	local bk = U.rev and U.rev[e]
+	if type(bk) == "string" and bk:match("^[VL]") then
+		local owner = ownerOf(e)
+		local co = owner and U.coMap and U.coMap[owner]
+		pcall(U.pollEco)
+		if co and U.eco and U.eco.ai and U.eco.ai[co] then return nil end
+		local txt = M.creatorText(bk, T)
+		say(bk, txt)
+		return txt
+	end
+	-- a station (its group's key, as R.sgKey) or another construction (its file and place)
+	local key = nil
+	pcall(function()
+		local sg = R.stationGroupOf(e)
+		if sg then key = M.keyOfSg(R.sgKey(sg)) end
+	end)
+	if not key then
+		pcall(function()
+			local con = nil
+			if api.engine.getComponent(e, api.type.ComponentType.CONSTRUCTION) then con = e end
+			local function try(sys, fn)
+				if con then return end
+				local okc, c = pcall(function() return api.engine.system[sys][fn](e) end)
+				if okc and type(c) == "number" and c >= 0 then con = c end
+			end
+			try("streetConnectorSystem", "getConstructionEntityForDepot")
+			try("streetConstructionSystem", "getConstructionEntityForStation")
+			try("streetConnectorSystem", "getConstructionEntityForSubconstruction")
+			local c = con and api.engine.getComponent(con, api.type.ComponentType.CONSTRUCTION)
+			if c then key = M.conKey(tostring(c.fileName), c.transf[13], c.transf[14]) end
+		end)
+	end
+	if not key then return nil end
+	if not U.featBbIdx or os.clock() - (U.featBbAt or -10) > 2 then
+		U.featBbAt = os.clock()
+		local lines = {}
+		local f = C.IO.open(C.DIR .. C.BS .. "feat_journal_builtby.txt", "rb")
+		if f then
+			for line in (f:read("*a") or ""):gmatch("[^" .. C.NL .. "]+") do lines[#lines + 1] = (line:gsub(C.CR, "")) end
+			f:close()
+		end
+		U.featBbIdx = M.builtByIndex(lines)
+	end
+	local txt = M.builtByText(U.featBbIdx, key, T)
+	say(key, txt)
+	return txt
+end
+-- the session has the option builtby on: the entity windows' line is installed for it (nothing read while no option is on)
+U.featWantsOwnerLine = function()
+	if U.featOff or not (U.status and type(U.status.opts) == "string" and U.status.opts ~= "") then return false end
+	local ok, on = pcall(function()
+		local F, map = U.featView(U.status)
+		return F ~= nil and F.on(map, "builtby")
+	end)
+	return ok and on == true
+end
+
 local function installOwnerLine(react, builtin)
 	if U.ownerInstalled then return end
 	U.ownerInstalled = true
@@ -782,6 +858,8 @@ local function installOwnerLine(react, builtin)
 		if p.innerRecipe then inner = p.innerRecipe(p.innerParam)
 		elseif p.innerBuiltin then inner = p.innerBuiltin({ entity = p.innerParam and p.innerParam.keyEntity }) end
 		local children = { builtin.TextView { meta = { class = "font-scale-body" }, text = p.ownerText } }
+		-- (0.6: « Built by » under the owner, see U.featBuiltBy)
+		if p.builtByText then children[#children + 1] = builtin.TextView { meta = { class = "font-scale-body" }, text = p.builtByText } end
 		-- (the sharing rules switched off by the host, 0.5.14: no setting here, everything is open and free)
 		pcall(U.pollRules)
 		if (p.shareKey or p.depotKey) and U.rules and U.rules.off then
@@ -886,16 +964,29 @@ local function installOwnerLine(react, builtin)
 		if skipConstruction or type(r) ~= "table" or not (r.recipe or r.builtin) then return r end
 		local target = r.replacedEntity or (type(r.param) == "table" and r.param.keyEntity) or entity
 		local okt, txt, owner = pcall(ownerText, target)
-		if not (okt and txt) then return r end
-		local oks, share = pcall(shareInfo, target, owner)
-		if not oks then share = nil end
-		local okd, depot = pcall(U.depotInfo, target, owner)
-		if not okd then depot = nil end
+		-- (0.6: the « Built by » line of the game option builtby, also with one company for everybody: then it is the window's only
+		-- line; nil while the option is off, see U.featBuiltBy)
+		local bb = nil
+		if not U.featOff and U.status and type(U.status.opts) == "string" and U.status.opts ~= "" then
+			local okb, b = pcall(U.featBuiltBy, target)
+			if okb then bb = b end
+		end
+		local share, depot = nil, nil
+		if not (okt and txt) then
+			if not bb then return r end
+			-- (no owner line: the « Built by » line alone, no rule of a station or a depot)
+			txt, bb = bb, nil
+		else
+			local oks, sh = pcall(shareInfo, target, owner)
+			if oks then share = sh end
+			local okd, dp = pcall(U.depotInfo, target, owner)
+			if okd then depot = dp end
+		end
 		local w = {}
 		for k, v in pairs(r) do w[k] = v end
 		w.recipe = Wrap
 		w.builtin = nil
-		w.param = { innerRecipe = r.recipe, innerBuiltin = r.builtin, innerParam = r.param, ownerText = txt,
+		w.param = { innerRecipe = r.recipe, innerBuiltin = r.builtin, innerParam = r.param, ownerText = txt, builtByText = bb,
 			shareText = share and share.text or nil, shareKey = share and share.key or nil, shareFee = share and share.fee or nil,
 			shareEdit = share and share.canEdit or nil, shareCo = share and share.co or nil, shareMine = share and share.mine or nil,
 			depotKey = depot and depot.key or nil, depotEdit = depot and depot.canEdit or nil, depotCo = depot and depot.co or nil,
@@ -4186,7 +4277,8 @@ local function tick(pendingState)
 		local okh, errh = pcall(installHudColors, U.builtin)
 		if not okh then log("companies: icon colours not installed: " .. tostring(errh)) end
 	end
-	if U.coMap and not U.ownerInstalled and U.react and U.builtin then
+	-- (0.6: also for the « Built by » line of the game option builtby, with one company for everybody too, see U.featBuiltBy)
+	if (U.coMap or U.featWantsOwnerLine()) and not U.ownerInstalled and U.react and U.builtin then
 		local oko, erro = pcall(installOwnerLine, U.react, U.builtin)
 		if not oko then log("companies: owner line not installed: " .. tostring(erro)) end
 	end
@@ -4220,7 +4312,7 @@ local function tick(pendingState)
 					end
 				end)
 				log("selftest window of " .. tostring(e) .. ": recipe " .. tostring(r.recipe) .. ", owner '" .. tostring(p.ownerText) .. "', share '" .. tostring(p.shareText) .. "' edit " .. tostring(p.shareEdit) .. " key " .. tostring(p.shareKey) .. " pickable " .. tostring(pick)
-					.. " name '" .. tostring(oke and type(eu) == "table" and eu.getEntityName(e)) .. "'")
+					.. " name '" .. tostring(oke and type(eu) == "table" and eu.getEntityName(e)) .. "'" .. (p.builtByText and (" built by '" .. tostring(p.builtByText) .. "'") or ""))
 			else
 				log("selftest window of " .. tostring(e) .. ": " .. tostring(r):sub(1, 200))
 			end

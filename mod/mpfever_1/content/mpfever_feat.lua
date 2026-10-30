@@ -334,7 +334,8 @@ function F.simEvent(st, name, param, B)
 	param = type(param) == "table" and param or {}
 	if name == "f_opts" then return F.applyOpts(st, param, B) end
 	if name == "f_act" then
-		if type(param.a) == "table" then F.simAction(st, param.a, param.ok, B) end
+		-- (dg / only: the modules' copies of the action, see F.digests and F.simAction)
+		if type(param.a) == "table" then F.simAction(st, param.a, param.ok, B, param.dg, param.only == true) end
 		return true
 	end
 	local M = F.eventOwner[name]
@@ -379,15 +380,38 @@ end
 
 -- A player's action the games replay, after it (see the contract): every module with onAction while its options are on. Whether
 -- a module heard it (it may have changed the state).
-function F.simAction(st, a, ok, B)
+-- (0.6) dg: the copies the modules took of the action before it was applied (F.digests: module id -> copy), given to each such
+-- module instead of the action; only: the action goes to those modules alone (a tool's build the interface hands over, see the
+-- bridge's G.featNativeAct: the other modules hear it in the simulation, SIM.featNative)
+function F.simAction(st, a, ok, B, dg, only)
 	local heard = false
 	for _, M in ipairs(F.active(st.optsText)) do
-		if type(M.onAction) == "function" then
+		local x = type(dg) == "table" and dg[M.ID] or nil
+		if type(M.onAction) == "function" and (x ~= nil or not only) then
 			heard = true
-			F.call("onAction", M, M.onAction, st, a, ok, simEnv(M, st, B))
+			F.call("onAction", M, M.onAction, st, x ~= nil and x or a, ok, simEnv(M, st, B))
 		end
 	end
 	return heard
+end
+
+-- (0.6) The small copies of an action the modules on keep of it (M.digest(a), plain data), taken BEFORE it is applied: the bridge
+-- then translates its references to this game's entity ids in place (a demolished construction's file and place, a sold vehicle's
+-- creation key are gone after). { [module id] = copy }, nil when no module on takes one (then nothing changes for anybody).
+-- A pure function of the action: the same on every game.
+function F.digests(text, a)
+	local out = nil
+	if type(a) ~= "table" then return nil end
+	for _, M in ipairs(F.active(text)) do
+		if type(M.digest) == "function" then
+			local ok, d = F.call("digest", M, M.digest, a)
+			if ok and d ~= nil then
+				out = out or {}
+				out[M.ID] = d
+			end
+		end
+	end
+	return out
 end
 
 -- the modules that hear the game's own script events (onGameEvent), while their options are on
@@ -431,10 +455,14 @@ local function guiEnv(M, st, B)
 		end
 		e.realTime = function() return os.clock() end
 		e.gameTime = function() return e._B.gameTime() end
+		-- (0.6: the names of the other players of the session this game knows, nil when the bridge gives none)
+		e.players = function() return type(e._B.players) == "function" and e._B.players() or nil end
 		F.envs.gui[M.ID] = e
 	end
 	e._st, e._B = st, B
 	e.isHost, e.me, e.myCo, e.mode = B.isHost, B.me, B.myCo, B.mode
+	-- (the game's T(fr, en), for a module's texts in the player's language: a notice of the chat...)
+	e.T = B.T
 	e.R, e.CO = B.R, B.CO
 	return e
 end
