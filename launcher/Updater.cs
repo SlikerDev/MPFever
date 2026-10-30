@@ -149,7 +149,7 @@ namespace MPFever
         /// <paramref name="progress"/>: bytes received and expected; <paramref name="installing"/>: download finished.</summary>
         public static void Run(UpdateInfo u, Action<long, long> progress, Action installing)
         {
-            var work = Path.Combine(TempDir, Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture));
+            var work = WorkDir;
             if (Directory.Exists(work)) Directory.Delete(work, true);
             Directory.CreateDirectory(work);
             var zip = Path.Combine(work, "update.zip");
@@ -283,16 +283,37 @@ namespace MPFever
             if (justUpdated) Log.Ok(F("Mise à jour installée : MPFever {0}", "Update installed: MPFever {0}", MainForm.Version));
             var old = Path.Combine(AppDir, OldDirName);
             var tmp = TempDir;
+            var mine = WorkDir;
             if (!Directory.Exists(old) && !Directory.Exists(tmp)) return;
             new Thread(() =>
             {
-                for (int i = 0; i < 20 && (Directory.Exists(old) || Directory.Exists(tmp)); i++)
+                for (int i = 0; i < 20 && (Directory.Exists(old) || OldDownloads(tmp, mine).Count > 0); i++)
                 {
                     try { if (Directory.Exists(old)) Directory.Delete(old, true); } catch { }
-                    try { if (Directory.Exists(tmp)) Directory.Delete(tmp, true); } catch { }
+                    foreach (var d in OldDownloads(tmp, mine)) try { Directory.Delete(d, true); } catch { }
                     Thread.Sleep(500);
                 }
             }) { IsBackground = true, Name = "Update cleanup" }.Start();
+        }
+
+        // this MPFever's own download folder (one per process)
+        static string WorkDir => Path.Combine(TempDir, Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture));
+
+        /// <summary>The downloads left by earlier MPFevers, not this one's: the cleanup deleted the whole folder for up to 10 s
+        /// after an update, and an MPFever that had just updated itself, finding a newer version at once, lost its download
+        /// in the middle ("a part of the path ... update.zip could not be found", 0.6.0 then 0.6.1 on 2026-10-30, #103). MPFEVER_UPDATECLEANALL=1: all of them, as before.</summary>
+        internal static List<string> OldDownloads(string tmp, string mine)
+        {
+            var list = new List<string>();
+            try
+            {
+                if (!Directory.Exists(tmp)) return list;
+                foreach (var d in Directory.GetDirectories(tmp))
+                    if (Environment.GetEnvironmentVariable("MPFEVER_UPDATECLEANALL") == "1" || !string.Equals(Path.GetFullPath(d).TrimEnd(Path.DirectorySeparatorChar), Path.GetFullPath(mine).TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase))
+                        list.Add(d);
+            }
+            catch { }
+            return list;
         }
 
         /// <summary>The reason of a failed check or update, for the player.</summary>

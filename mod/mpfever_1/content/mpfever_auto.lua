@@ -245,37 +245,55 @@ local function startWhenReady()
 	return false
 end
 
+local handlers = {
+	handleEvent = function(id, name, param)
+		if name == "mainMenuReady" then S.menuReady = true end
+		if name == "mainMenuReady" and SAVE then
+			local again = takeReload()
+			if not S.requested or again then
+				S.requested = true
+				S.readyStarted = false
+				if again then log("back on the main menu: the test savegame loaded again") end
+				local ok, err = pcall(loadSave)
+				if not ok then log("load failed: " .. tostring(err)) end
+			end
+		end
+	end,
+	update = function()
+		S.frames = S.frames + 1
+		if S.frames % 30 ~= 0 then return end
+		if S.pending then
+			local ok, err = pcall(loadPending)
+			if not ok then log("load failed: " .. tostring(err)) S.pending = nil end
+		end
+		if S.requested and not S.readyStarted and startWhenReady() then
+			S.readyStarted = true
+			log("game loaded, starting it")
+		end
+		pcall(menuLoad)
+		if resyncPending() and startWhenReady() then
+			clearResync()
+			log("host's game loaded (resynchronisation), starting it")
+		end
+	end,
+}
+
+-- (0.6.1, #103) the same loader run by the main menu's page (mpfever_menu.lua, require), when this application script is gone: a
+-- change of the game's language in its settings starts the game's interface again, and the script started with
+-- --script runs no more. One call each half second of the menu: the host's game received is loaded (menu_loaded.txt keeps a
+-- request from being loaded twice); the "press a key" screen that follows is the player's
+handlers.menuTick = function()
+	S.menuReady = true
+	S.frames = S.frames + 30
+	if S.pending then
+		local ok, err = pcall(loadPending)
+		if not ok then log("(menu) load failed: " .. tostring(err)) S.pending = nil end
+	end
+	menuLoad()
+end
+
+-- (required by the menu: the handlers only, the game's application script is this file run with --script)
+if MPFEVER_AUTO_EMBED then return handlers end
 function data()
-	return {
-		handleEvent = function(id, name, param)
-			if name == "mainMenuReady" then S.menuReady = true end
-			if name == "mainMenuReady" and SAVE then
-				local again = takeReload()
-				if not S.requested or again then
-					S.requested = true
-					S.readyStarted = false
-					if again then log("back on the main menu: the test savegame loaded again") end
-					local ok, err = pcall(loadSave)
-					if not ok then log("load failed: " .. tostring(err)) end
-				end
-			end
-		end,
-		update = function()
-			S.frames = S.frames + 1
-			if S.frames % 30 ~= 0 then return end
-			if S.pending then
-				local ok, err = pcall(loadPending)
-				if not ok then log("load failed: " .. tostring(err)) S.pending = nil end
-			end
-			if S.requested and not S.readyStarted and startWhenReady() then
-				S.readyStarted = true
-				log("game loaded, starting it")
-			end
-			pcall(menuLoad)
-			if resyncPending() and startWhenReady() then
-				clearResync()
-				log("host's game loaded (resynchronisation), starting it")
-			end
-		end,
-	}
+	return handlers
 end

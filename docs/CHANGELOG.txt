@@ -1,6 +1,18 @@
 MPFever - Changelog
 ===================
 
+0.6.2 - the host's game loads even after a change of the game's language, a sturdier self-update
+  - FIX (#103): the host's game received is loaded by MPFever's application script, started with the game. A change of the
+    game's language in its settings starts the game's interface again, and that script runs no more: the player stayed on
+    the main menu, "loading" for good, and closed the game. The main menu's page now loads it itself (the same code) when the
+    script has not taken it within 6 s; the "press a key" screen that follows is the player's. MPFEVER_MENULOAD=0: never.
+  - FIX (#103): an MPFever that had just updated itself and found a newer version at once lost its download ("a part of the
+    path ... update.zip could not be found"): the cleanup of the last update deleted the whole download folder for 10 s. It
+    now leaves the running MPFever's download alone. MPFEVER_UPDATECLEANALL=1: as before.
+  - Not ours: the crash in the same report came when the game closed, in the graphics driver (D3D12, NVIDIA), right after
+    the change of language.
+  - Test: tests/test_menuload.py; MPFever.exe --selftest (the update's cleanup).
+
 0.6.1 - fewer reloads with players in different game languages, builds in a pause no longer lost
   - FIX (#102): in a pause every build has the same game time, and a construction (station, depot...) made after another
     player's one could be taken for the engine's second application of it: it was not shipped and stood on its builder's

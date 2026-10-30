@@ -1928,6 +1928,36 @@ local function setup()
 			end
 		end, 0.2)
 
+		-- (0.6.1, #103) the host's game received is loaded by the application script mpfever_auto.lua. A change of the game's
+		-- language in its settings starts the game's interface again and that script runs no more: the player stayed on the
+		-- main menu, "loading" for good. When the script has not taken the request within 6 s (menu_loaded.txt), the main page
+		-- runs the same loader (mpfever_auto.lua's menuTick). MPFEVER_MENULOAD=0: never.
+		local autoWait = react.useRef(nil)
+		react.onStepTimer(function()
+			if os.getenv("MPFEVER_MENULOAD") == "0" or not (DIR and IO) then return end
+			local s = readState()
+			if s.phase ~= "loading" or not s.loadSeq or s.loadSeq == "" or not s.load or s.load == "" then autoWait:set(nil) return end
+			local w = autoWait:get()
+			if not w or w.seq ~= s.loadSeq then autoWait:set({ seq = s.loadSeq, n = 0 }) return end
+			if w.off then return end
+			w.n = w.n + 1
+			if w.n < 12 then return end
+			if w.n == 12 then
+				if readFile("menu_loaded.txt") == w.seq then w.off = true return end
+				log("the host's game not taken by the loader within 6 s (the game's language changed?): loaded from the main page")
+			end
+			MPFEVER_AUTO_EMBED = true
+			local okA, A = pcall(require, "mpfever_1::/mpfever_auto.lua")
+			MPFEVER_AUTO_EMBED = nil
+			if not okA or type(A) ~= "table" or type(A.menuTick) ~= "function" then
+				w.off = true
+				log("the loader could not be read here: " .. tostring(A))
+				return
+			end
+			local ok, err = pcall(A.menuTick)
+			if not ok then log("loading from the main page failed: " .. tostring(err)) end
+		end, 0.5)
+
 		-- a session starts without the page (a Steam invitation accepted, the command line): the page opens to show it
 		local lastPhase = react.useRef(readState().phase)
 		react.onStepTimer(function()

@@ -198,6 +198,12 @@ namespace MPFever
                 Check(File.ReadAllText(Path.Combine(app, "mpfever_settings.txt")) == "name=me", "update: the player's settings kept");
                 Check(File.Exists(Path.Combine(app, "mod", "mpfever_1", "mod.json")) && !Directory.Exists(Path.Combine(app, "mod", "mpfever_1", "old")),
                     "update: the mod folder replaced as a whole");
+                // (#103) the cleanup after an update spares the download of this MPFever (it updated itself, then found a newer one)
+                var dl = Path.Combine(root, "dl");
+                Directory.CreateDirectory(Path.Combine(dl, "111"));
+                Directory.CreateDirectory(Path.Combine(dl, "222"));
+                var others = Updater.OldDownloads(dl, Path.Combine(dl, "222") + Path.DirectorySeparatorChar);
+                Check(others.Count == 1 && Path.GetFileName(others[0]) == "111", "update: the cleanup leaves this MPFever's download alone");
             }
             catch (Exception e) { Check(false, "update: " + e.Message); }
             finally { try { Directory.Delete(root, true); } catch { } }
