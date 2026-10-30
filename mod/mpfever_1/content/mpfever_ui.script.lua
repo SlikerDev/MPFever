@@ -3867,7 +3867,9 @@ U.hubContent = function(K, st, chat, ctx)
 	if U.tabReqHub then U.ackTabReq(page, result, nRows, table.concat(U.hubPages(st), ",")) end
 	local body
 	if page == "chat" then
-		body = builtin.Component { meta = { localKey = "mpfever-hub-chat", styleSheet = K.style { size = { m.pageW, m.bodyH } } }, layout = K.col(rows) }
+		-- (no fixed height: the game gave the height left to the last row, the field and its « Send » button, which went to the
+		-- middle of the right edge; the menu beside it keeps the Hub's height)
+		body = builtin.Component { meta = { localKey = "mpfever-hub-chat", styleSheet = K.style { size = { m.pageW, -1 } } }, layout = K.col(rows) }
 	else
 		local okC, carded = pcall(U.hubCards, K, rows, marks, m.inner)
 		if okC then rows = carded else log("hub: the " .. page .. " page's cards: " .. tostring(carded)) end
