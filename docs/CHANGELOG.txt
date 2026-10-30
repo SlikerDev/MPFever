@@ -2,6 +2,15 @@ MPFever - Changelog
 ===================
 
 0.5.14 - the game's rules chosen in the lobby and kept in the savegame, computer companies that pay their way, signals on the map, fixes
+  - FIX (desyncs, new industries; found and fixed first by TPF3-MP, MIT, ported): the engine runs each batch of steps on one
+    of its two game states by turns, and the industries' demand scheduler keeps, once per game state and outside the world,
+    the demand it saw last and the spawn attempts still due. A demand change was counted in both, and the attempts came out
+    of the state the interval fell in, which follows how each game's batches were cut (stands at a stop point, pauses,
+    saves, the speed): new industries came at other steps, or on one game only. Every game now gives the scheduler one
+    history for the world (native, build 40425; another build: as before). A demand change gives five spawn attempts, as on
+    a game whose intervals all fall on one state (the game alone gives five to ten, by how its batches fell).
+    MPFEVER_INDUSTRYDEMAND=0 on every game: as before. Diagnostic MPFEVER_INDUSTRYLOG=1: each scheduler call in native.log
+    ("industry demand: t=... due ... -> ..."), the same lines on every game.
   - NEW (one company per player): the game's rules, chosen by the host and kept in the savegame. In the lobby, "Game
     settings..." under the savegame's picture opens them (the players of the lobby see them on one line): the start money of a
     new company (0 to 20 million, 2 million by default), the sharing rules between companies on or off, the months in debt
