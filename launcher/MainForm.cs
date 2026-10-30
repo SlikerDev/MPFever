@@ -107,6 +107,8 @@ namespace MPFever
         sealed class LobbyAi { public int Color; public string Name = ""; public int Level = 2; public long Money = -1; }
         readonly SortedDictionary<int, LobbyAi> lobbyAi = new SortedDictionary<int, LobbyAi>();
         string lobbyAiText = "", lobbyRulesText = "";
+        // (0.6) a player in a host's lobby: the host's game options (see GameOpts)
+        string lobbyOptsText = "";
         // the mods of the lobby's savegame ("id|name|origin" entries separated by ";;", see mpfever_menu.lua): written by the
         // host's menu (host_mods.txt), sent to the players of the lobby, shown by their menu with those missing on their PC
         string lobbyMods = "";
@@ -1252,6 +1254,8 @@ namespace MPFever
                     ["bankrupt"] = lobbyOpen ? BankruptMonths() : "",
                     ["ai"] = lobbyOpen ? (companyMode == "separate" ? LobbyAiView() : "") : lobbyAiText,
                     ["rules"] = lobbyOpen ? (companyMode == "separate" ? LobbyRulesView() : "") : lobbyRulesText,
+                    // (0.6) the game options of the lobby, in both company modes (mpfever_menu.lua's "Game settings")
+                    ["opts"] = lobbyOpen ? GameOptions() : lobbyOptsText,
                     ["myMods"] = SafeMineView(),
                     ["autoMods"] = st.TryGetValue("automods", out var am) && am == "0" ? "0" : "1",
                     ["modAsk"] = lobbyOpen ? ModAskView() : "",
@@ -1459,6 +1463,8 @@ namespace MPFever
                         if (lobbySave != fpSave) return;
                         lobbySaveSize = new FileInfo(f).Length; lobbySaveSha = sha;
                         BroadcastLobby();
+                        // (0.6: the game options the savegame was played with, in both company modes)
+                        try { LoadSaveOpts(fpSave, f); } catch (Exception e) { Log.W("savegame options: " + e.Message); }
                     }
                     catch (Exception e) { Log.W("savegame fingerprint: " + e.Message); }
                 }) { IsBackground = true, Name = "Savegame fingerprint" }.Start();
@@ -1552,6 +1558,24 @@ namespace MPFever
                     Log.W(arg == "1" ? T("Règles de partage entre entreprises : activées", "Sharing rules between companies: on")
                         : T("Règles de partage entre entreprises : désactivées (tout est ouvert et gratuit)", "Sharing rules between companies: off (everything open and free)"));
                 }
+                if (relay != null) BroadcastSession();
+                BroadcastLobby();
+                MenuStatus();
+            }
+            else if (cmd == "opt")
+            {
+                // (0.6, the host, in its lobby's "Game settings" or in its game's MPFever window) a game option on or off ("id=1",
+                // "id=0") or one of its parameters ("id.param=value"): every game takes them with the session, the host's game puts
+                // them into the game (f_opts, kept in its savegame); kept for the host's next lobby. A player's MPFever.exe hosts
+                // nothing: its request is not taken. (A dedicated server's come from mpfever_server.properties.)
+                if (!lobbyOpen && hostGame == null) return;
+                if (server != null) { Log.W(T("Options de partie : celles de mpfever_server.properties (game-options)", "Game options: those of mpfever_server.properties (game-options)")); return; }
+                var now = GameOptions();
+                var next = GameOpts.Apply(now, arg, out string why);
+                if (next == null) { Log.W(F("Option de partie refusée ({0}) : {1}", "Game option refused ({0}): {1}", why, arg)); return; }
+                if (next == now) return;
+                SaveSetting("gameopts", next);
+                Log.W(F("Options de partie choisies par l'hôte : {0}", "Game options chosen by the host: {0}", next == "" ? T("aucune", "none") : next));
                 if (relay != null) BroadcastSession();
                 BroadcastLobby();
                 MenuStatus();
@@ -1788,7 +1812,7 @@ namespace MPFever
             lock (lobbyColorOf) lobbyColorOf.Clear();
             lobbyColors = ""; lobbyMode = "";
             lock (lobbyAi) lobbyAi.Clear();
-            lobbyAiText = ""; lobbyRulesText = "";
+            lobbyAiText = ""; lobbyRulesText = ""; lobbyOptsText = "";
             lobbyOpen = lobbyStarting = false; lobbySave = ""; lobbyPlayers = ""; lobbyPublic = ""; lobbyLocal = ""; lobbyMods = ""; modCheck = null;
             lock (modIssues) modIssues.Clear();
             joinedAddr = null;
@@ -1984,7 +2008,9 @@ namespace MPFever
                 + ",[\"colors\"]=" + LuaLit.Quote(LobbyColors()) + ",[\"cmode\"]=" + LuaLit.Quote(companyMode)
                 + ",[\"ai\"]=" + LuaLit.Quote(companyMode == "separate" ? LobbyAiView() : "")
                 // (0.5.14: the game's rules, shown to the players of the lobby)
-                + ",[\"rules\"]=" + LuaLit.Quote(companyMode == "separate" ? LobbyRulesView() : "") + "}"));
+                + ",[\"rules\"]=" + LuaLit.Quote(companyMode == "separate" ? LobbyRulesView() : "")
+                // (0.6: the game options, in both modes)
+                + ",[\"opts\"]=" + LuaLit.Quote(GameOptions()) + "}"));
         }
 
         /// <summary>The game's rules for the menus (0.5.14, one company per player): "start money|share 1/0|bankruptcy months".</summary>
@@ -2583,6 +2609,10 @@ namespace MPFever
                             lobbyMode = S("cmode");
                             lobbyAiText = S("ai");
                             lobbyRulesText = S("rules");
+                            // (0.6) the host's game options, logged when they change
+                            var lo = GameOpts.Canon(S("opts"));
+                            if (lo != lobbyOptsText && lo != "") Log.W(F("Options de partie choisies par l'hôte : {0}", "Game options chosen by the host: {0}", lo));
+                            lobbyOptsText = lo;
                             SetHostMods(S("mods"), client, name);
                             // the host's savegame: maybe on this PC already (copied by hand): then nothing to download
                             if (S("sha") != "" && long.TryParse(S("size"), NumberStyles.Integer, CultureInfo.InvariantCulture, out long hsz)) CheckHostSave(S("sha"), hsz, S("save"), client, name);
@@ -2805,6 +2835,8 @@ namespace MPFever
             // a dedicated server: the in-game window names it and leaves it out of the players
             if (server != null) { Kv("server", 1); Kv("title", server.Name); }
             Kv("mode", companyMode);
+            // (0.6) the session's game options: the in-game window's Game tab lists them, the host switches them there
+            Kv("opts", GameOptions());
             Kv("started", st ? 1 : 0);
             Kv("speed", paused ? 0 : sp);
             Kv("sync", resyncing ? "resync" : syncState == 1 ? "ok" : syncState == 2 ? "drift" : syncState == 3 ? "desync" : "none");
@@ -3015,6 +3047,29 @@ namespace MPFever
             return v == "0" ? "0" : "1";
         }
 
+        /// <summary>The session's game options (0.6, see GameOpts and docs/FEATURES-0.6.md): (dedicated server) game-options in
+        /// mpfever_server.properties, else gameopts= in mpfever_settings.txt (the host's last choice, or its savegame's), else none.</summary>
+        string GameOptions()
+        {
+            string v = server != null ? server.GameOptions : null;
+            if (v == null) LoadSettings().TryGetValue("gameopts", out v);
+            return GameOpts.Canon(v ?? "");
+        }
+
+        /// <summary>(the host) the game options a savegame was played with (the text "mpfopts:...;" its game keeps, see mpfever_feat.lua's
+        /// applyOpts), read when a lobby opens on it: the lobby starts with them. A savegame without them leaves the host's last choice.</summary>
+        void LoadSaveOpts(string save, string file)
+        {
+            var o = SaveInfo.Opts(file);
+            if (o == null || lobbySave != save || !lobbyOpen) return;
+            o = GameOpts.Canon(o);
+            if (o == GameOptions()) return;
+            SaveSetting("gameopts", o);
+            Log.W(F("Options de partie de la sauvegarde reprises : {0}", "The savegame's game options taken again: {0}", o == "" ? T("aucune", "none") : o));
+            BroadcastLobby();
+            MenuStatus();
+        }
+
         /// <summary>(the host) the game's rules of a savegame, read from it when a lobby opens on it (0.5.14: the text "mpfrules:..."
         /// the game keeps, see mpfever_eco.lua's co_rules): the lobby starts with them. A savegame without them leaves the host's
         /// last choices.</summary>
@@ -3058,6 +3113,9 @@ namespace MPFever
                        (AiPayload() != "" ? ",[\"ai\"]=" + LuaLit.Quote(AiPayload()) : "") +
                        // a dedicated server plays no company: the savegame's company goes to its owner (owner=, else nobody)
                        (companyMode == "separate" && server != null ? ",[\"owner\"]=" + LuaLit.Quote(OwnerKey()) : "") +
+                       // (0.6) the game options, in both company modes: the host's game puts them into the game (f_opts), every game
+                       // applies them at the same step; empty: all off, as 0.5.14
+                       ",[\"opts\"]=" + LuaLit.Quote(GameOptions()) +
                        // a resynchronisation is under way: every game refuses its player's builds until it ends (issue #81: a player
                        // whose game had already loaded the host's built a station there, which the others never received)
                        (resyncDropping ? ",[\"resync\"]=true" : "") + "}";

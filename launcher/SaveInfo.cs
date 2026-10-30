@@ -90,6 +90,23 @@ namespace MPFever
             return r.Count > 0 ? r : null;
         }
 
+        static readonly byte[] OptsMark = Encoding.ASCII.GetBytes("mpfopts:");
+
+        /// <summary>The game options of a savegame (0.6): the text "mpfopts:&lt;options&gt;;" its game keeps (mpfever_feat.lua's applyOpts),
+        /// the options string itself ("" when they were all switched off); null when it has none (no option was ever on).</summary>
+        public static string Opts(string savePath)
+        {
+            byte[] d;
+            try { d = Zstd.DecompressFile(savePath); }
+            catch (Exception e) { Log.W("savegame options: " + e.Message); return null; }
+            int i = IndexOf(d, OptsMark, 0);
+            if (i < 0) return null;
+            // (a Lua string of the game's state: its length right before it, the text ends with ';')
+            int len = i >= 4 ? BitConverter.ToInt32(d, i - 4) : -1;
+            if (len < OptsMark.Length + 1 || len > GameOpts.MaxText + OptsMark.Length + 1 || i + len > d.Length || d[i + len - 1] != (byte)';') return null;
+            return Encoding.ASCII.GetString(d, i + OptsMark.Length, len - OptsMark.Length - 1);
+        }
+
         static bool Same(byte[] d, int at, byte[] p)
         {
             if (at < 0 || at + p.Length > d.Length) return false;

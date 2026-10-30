@@ -40,6 +40,9 @@ local STAMP_AHEAD = 3     -- steps between an action and its application on ever
 -- constants and counters of the main chunk, in one table: the chunk is close to the game's limit of local variables (0.3.16
 -- went over it and the mod did not load at all)
 local K = {}
+-- (0.6) the game options (mpfever_feat.lua, docs/FEATURES-0.6.md): MPFEVER_FEAT=0 turns every one of their hooks off, as in 0.5.14.
+-- Read once, as the game loads: every game of a session is started with the host's settings
+K.FEAT = os.getenv("MPFEVER_FEAT") ~= "0"
 
 local function gameTime()
 	local gt = api.engine.getComponent(api.engine.util.getWorld(), api.type.ComponentType.GAME_TIME)
@@ -704,6 +707,13 @@ local function executeActionOnce(a, sendCommand, useCallback, bind, done)
 		-- (and the player who sent it: a company's chief answers the requests to join it, see mpfever_eco.lua)
 		if a.args[2] == "mpfever" then a.args[4].mpfFrom = a.origin end
 	end
+	-- (0.6) the events of the game options (f_opts, the modules' f_<module>_...) carry their sender in both company modes: only the
+	-- host's f_opts is taken (see mpfever_feat.lua). No such event is ever sent while no option is on
+	if K.FEAT and a.fn == "makeScriptingSendEventCmd" and type(a.args) == "table" and a.args[2] == "mpfever" and type(a.args[3]) == "string"
+		and a.args[3]:sub(1, 2) == "f_" and type(a.args[4]) == "table" then
+		a.args[4].mpfFrom = a.origin
+		if a.co then a.args[4].mpfCo = a.co end
+	end
 	if a.fn == "makeScriptingSendEventCmd" and a.co and R.CO and R.CO.canon and a.co ~= CO.idOfEntity(R.CO, R.CO.canon)
 		and type(a.args) == "table" and (a.args[2] == "Loan" or a.args[2] == "Company"
 			or (a.args[2] == "Companies" and os.getenv("MPFEVER_NOCOACTIONS") == "1")) then
@@ -1362,6 +1372,12 @@ local function simApplyDue(state)
 					if C.makesProposal(a.fn) and not r.success and st.replay and st.replay.at == now and st.replay.n > 0 then
 						st.replay.n = st.replay.n - 1
 					end
+					-- (0.6) the game options' modules hear the action and the engine's verdict, on every game at this step (nothing
+					-- while no option is on, see SIM.featOn)
+					if SIM.featOn then
+						local okF, errF = pcall(SIM.featAction, st, a, r.success == true)
+						if not okF then log("options: onAction failed: " .. tostring(errF)) end
+					end
 					r.at = now
 					if r.created then st.bind = st.bind or {}; st.bind[r.created.key] = r.created.e end
 					if r.watch then
@@ -1791,11 +1807,129 @@ SIM.ecoEnv = function()
 	return SIM.eco
 end
 
+-- (0.6) The game options (mpfever_feat.lua, docs/FEATURES-0.6.md), the simulation's side: what the modules get from here (the
+-- module's env is made of it, see F.simEnv) and the hooks below. None of them runs while no option is on: SIM.featOn is read from
+-- the state at the top of every update (st.optsText, the options every game applied from the host's f_opts). MPFEVER_FEAT=0:
+-- never (K.FEAT).
+SIM.featBridge = function()
+	if not SIM.featB then
+		SIM.featB = { log = log, gameTime = gameTime, STEP = STEP, R = R, CO = CO,
+			money = function(ent)
+				local ok, b = pcall(api.engine.util.finance.getPlayersBalance, ent)
+				return (ok and type(b) == "number") and b or nil
+			end,
+			-- (money added to or taken from a company, from an event: the same entry on every game, as a gift between companies)
+			book = function(ent, amount, who)
+				amount = math.floor((tonumber(amount) or 0) + 0.5)
+				if not ent or amount == 0 then return false end
+				local e = api.type.JournalEntry.new()
+				e.amount = amount
+				e.time = -1
+				e.category.type = api.type.JournalEntry.Type.OTHER
+				coBook(ent, e)
+				log("options (" .. tostring(who) .. "): " .. amount .. " booked to player entity " .. tostring(ent))
+				return true
+			end,
+			-- (the companies, sorted by number: those of the registry in the separate mode, the one company of the co-op else)
+			companies = function(st)
+				local out = {}
+				local reg = st and st.co
+				if type(reg) == "table" and reg.mode == "separate" then
+					for _, c in ipairs(reg.list or {}) do
+						if c.ent and not c.gone then
+							local mem = {}
+							for _, m in ipairs(CO.members(c)) do mem[#mem + 1] = m.key end
+							out[#out + 1] = { id = c.id, ent = c.ent, name = c.name or "", ai = tostring(c.key or ""):sub(1, 3) == "ai:", members = mem }
+						end
+					end
+					table.sort(out, function(x, y) return x.id < y.id end)
+				else
+					local ok, p = pcall(api.engine.util.getPlayer)
+					if ok and p then out[1] = { id = 1, ent = p, name = "", ai = false, members = {} } end
+				end
+				return out
+			end,
+			-- (the game month, as mpfever_eco.lua counts it: the game time over a month's duration)
+			month = function()
+				local ok, d = pcall(api.util.getDefaultMonthDuration)
+				if ok and type(d) == "number" and d > 0 then return math.floor(gameTime() / d) end
+				return nil
+			end,
+			date = function()
+				local ok, d = pcall(function()
+					local x = api.engine.util.getCalendarDate(gameTime())
+					return { year = x.year, month = x.month, day = x.day }
+				end)
+				return ok and d or nil
+			end,
+		}
+	end
+	return SIM.featB
+end
+-- every step (update): each module's month and tick; the state is saved only when one of them changed it
+SIM.featTick = function(state)
+	local F = C.feat()
+	local st = state:get()
+	if not (F and type(st) == "table") then return end
+	if F.simTick(st, SIM.featBridge()) then state:set(st) end
+end
+-- an MPFever event "f_..." (handleEvent saves the state after it)
+SIM.featEvent = function(st, name, param)
+	local F = C.feat()
+	if not F then
+		if not SIM.featMissing then SIM.featMissing = true; log("options: mpfever_feat.lua is not loaded: event " .. tostring(name) .. " ignored") end
+		return
+	end
+	F.simEvent(st, name, param, SIM.featBridge())
+end
+-- an action applied by the simulation (simApplyDue saves the state after it)
+SIM.featAction = function(st, a, ok)
+	local F = C.feat()
+	if F then F.simAction(st, a, ok, SIM.featBridge()) end
+end
+-- the captures of this game so far (before a tool's build is captured, see SIM.featNative); nil when the state cannot be read
+SIM.featSeq = function(state)
+	local ok, st = pcall(function() return state:get() end)
+	if not ok then return nil end
+	return type(st) == "table" and tonumber(st.outSeq) or 0
+end
+-- A tool's build, at the step the engine applies it: the builder's own (captured, so shipped to the others: seq0 tells) and the
+-- replay of another player's (see captureNativeBuild), so every game hears the same builds at the same steps. What the simulation
+-- does not know here, it does not say: who built it (a company's build carries its player entity in the proposal).
+SIM.featNative = function(state, param, seq0)
+	local st = state:get()
+	if type(st) ~= "table" or st.solo then return end
+	local now = gameTime()
+	if not (SIM.replayBuildAt == now or (seq0 and (tonumber(st.outSeq) or 0) > seq0)) then return end
+	local F = C.feat()
+	if not F then return end
+	local a = { fn = "nativeBuild", native = true, at = now, proposal = param[1], data = param[2] }
+	if F.simAction(st, a, true, SIM.featBridge()) then state:set(st) end
+end
+-- whether a module on hears the game's own script events (and the modules loaded, with this log, at the first look)
+SIM.featHearing = function(text)
+	local F = C.feat()
+	if not F then return false end
+	F.load(log)
+	return F.hearsGameEvents(text)
+end
+-- the game's own script events, for the modules that hear them (SIM.featHears)
+SIM.featGameEvent = function(state, src, id, name, param)
+	local F = C.feat()
+	local st = state:get()
+	if not (F and type(st) == "table") then return end
+	if F.simGameEvent(st, id, name, param, SIM.featBridge(), src) then state:set(st) end
+end
+
 local function update(userParams, state, dt)
 	if not C.ACTIVE then return end
 	pcall(function()
 		local st0 = state:get()
 		SIM.coRegistry = st0 and st0.co or nil
+		-- (0.6) whether a game option is on (st.optsText, the options every game applied from the host's f_opts): the only thing of
+		-- them read while none is on (see SIM.featBridge)
+		SIM.featOn = K.FEAT and type(st0) == "table" and type(st0.optsText) == "string" and st0.optsText ~= ""
+		SIM.featHears = SIM.featOn and SIM.featHearing(st0.optsText)
 		-- (again from time to time: the game loads the script of a type of contract when it first needs it)
 		SIM.ctTick = (SIM.ctTick or 0) + 1
 		if SIM.ctTick % 50 == 1 and os.getenv("MPFEVER_EVSTEPLOG") == "1" then pcall(SIM.evStepInstall) end
@@ -1877,6 +2011,11 @@ local function update(userParams, state, dt)
 		end
 	end)
 	if not oke then log("companies: economy failed: " .. tostring(erre)) end
+	-- (0.6) the game options' modules, their month and their tick (mpfever_feat.lua): nothing while no option is on
+	if SIM.featOn then
+		local okF, errF = pcall(SIM.featTick, state)
+		if not okF then log("options: tick failed: " .. tostring(errF)) end
+	end
 end
 
 -- A native build by this machine's player, announced by the engine just BEFORE it is applied (onPreBuildProposal).
@@ -2703,12 +2842,26 @@ local function handleEvent(userParams, state, src, id, name, param)
 		return
 	end
 	if id == "apply_command" and name == "onPreBuildProposal" then
+		-- (0.6: this game's captures so far, to tell its own build shipped to the others, see SIM.featNative)
+		local seq0 = SIM.featOn and SIM.featSeq(state) or nil
 		local ok, err = pcall(captureNativeBuild, state, param)
 		if not ok then log("onPreBuildProposal capture failed: " .. tostring(err)) end
+		-- (0.6) the game options' modules hear the tools' builds, on every game at the build's step (nothing while no option is on)
+		if SIM.featOn then
+			local okF, errF = pcall(SIM.featNative, state, param, seq0)
+			if not okF then log("options: onAction of a build failed: " .. tostring(errF)) end
+		end
 		return
 	end
 
-	if id ~= "mpfever" then return end
+	if id ~= "mpfever" then
+		-- (0.6) the game's own script events, for the game options' modules that hear them (nothing while no option is on)
+		if SIM.featHears then
+			local okF, errF = pcall(SIM.featGameEvent, state, src, id, name, param)
+			if not okF then log("options: onGameEvent failed: " .. tostring(errF)) end
+		end
+		return
+	end
 	local ok, err = pcall(function()
 		local st = state:get() or {}
 		if name == "queue" then
@@ -2885,6 +3038,11 @@ local function handleEvent(userParams, state, src, id, name, param)
 				while #reg.gifts > 20 do table.remove(reg.gifts, 1) end
 				log("companies: company " .. from .. " gave " .. amount .. " to company " .. to)
 			end
+		elseif K.FEAT and type(name) == "string" and name:sub(1, 2) == "f_" then
+			-- (0.6) the game options (mpfever_feat.lua): the host's options (f_opts), an action the interface applied (f_act), the
+			-- modules' own events
+			local okF, errF = pcall(SIM.featEvent, st, name, param)
+			if not okF then log("options: event " .. name .. " failed: " .. tostring(errF)) end
 		elseif C.eco() and C.eco().EVENTS[name] then
 			-- mixed modes, bankruptcy, auctions, tracks' and depots' rules (mpfever_eco.lua)
 			local okE, errE = pcall(C.eco().event, st, name, param, SIM.ecoEnv())
@@ -3459,6 +3617,8 @@ H.session = function(from, p)
 	if p.cmode ~= nil then G.coShare = p.share ~= false and p.share ~= 0 end
 	-- (the computer companies the host chose in its lobby, "n:colour,...": run by the host's game, see mpfever_ai.lua)
 	if p.cmode ~= nil then G.coAi = p.ai end
+	-- (0.6) the session's game options, the host's choice ("id=1;id.param=v;..."; none: nothing to change), see G.featGui
+	if K.FEAT then G.featOpts = type(p.opts) == "string" and p.opts or nil end
 	G.session.started = p.started == true
 	-- a resynchronisation is under way (see G.resyncRefuse); MPFEVER_RESYNCBUILDS=1: builds are not refused then (as before 0.5.0)
 	local rs = p.resync == true and os.getenv("MPFEVER_RESYNCBUILDS") ~= "1"
@@ -6466,6 +6626,12 @@ local function pollNativeEvents()
 			nativeCtl("dropid " .. id)
 			id = nil
 		end
+		-- (0.6) refused by a game option (a module's allow, with the build the tool applied when it is known: see G.featTool):
+		-- dropped by the DLL as a build made during a resynchronisation, never announced to the others
+		if id and G.featOn and G.featAllow and G.featRefuse({ fn = "nativeBuild", native = true, natId = id, proposal = G.featTakeTool() }) then
+			nativeCtl("dropid " .. id)
+			id = nil
+		end
 		if id then
 			-- the tool's Context flags (1 gatherBuildings, 2 terrain alignment, 4 street graph cleanup; 32 = known), shipped with the build
 			local cbits = tonumber(line:match("^deferred %d+ (%d+)"))
@@ -7925,6 +8091,8 @@ local function stampHeld()
 		local p = payload and C.deser(payload)
 		if p and kind == "act_req" and G.resyncRefuse(p.fn) then
 			-- (refused: never applied here, never sent)
+		elseif p and kind == "act_req" and G.featOn and G.featAllow and G.featRefuse(p) then
+			-- (0.6, refused by a game option: never applied here, never sent; the window's command gets its refusal, see G.featRefuse)
 		elseif p and kind == "act_req" then
 			local now = gameTime()
 			G.oseq = G.oseq + 1
@@ -7952,6 +8120,10 @@ local function stampHeld()
 			terrainLead("tool " .. tostring(p.tool))
 		elseif p and kind == "ping_arm" then
 			pcall(G.pingArm, p)
+		elseif p and kind == "feat_req" and G.featOn then
+			-- (0.6) a request of the MPFever window to a game option's module of this game (u.request, see G.featRequest)
+			local okF, errF = pcall(G.featRequest, p)
+			if not okF then log("options: request failed: " .. tostring(errF)) end
 		end
 	end
 	-- the host's automatic mod commands, written by its simulation (see DET.installModCmds): shipped like a player's. Their
@@ -8236,6 +8408,9 @@ local function runPausedActions()
 					r.at = now
 					r.answered, r.returned = nil, nil
 					log("paused action " .. tostring(r.uid) .. " " .. tostring(r.fn) .. " at t=" .. tostring(now) .. " -> " .. (r.success and "OK" or "REFUSED"))
+					-- (0.6) the game options' modules hear it in the simulation as the actions it applies (every game applies the paused
+					-- actions in the same turns, at the same game time; nothing while no option is on)
+					if G.featOn then pcall(G.featPausedAct, a, r) end
 					if r.created then G.rebind(r.created.key, r.created.e); toSim("bind", r.created) end
 					G.resultsSeen[tostring(r.uid) .. "@" .. tostring(r.at)] = true
 					C.appendFile(C.DIR .. BS .. "results.log", C.line("result", r))
@@ -15609,6 +15784,110 @@ G.aiStep = function(st)
 	end
 end
 
+-- (0.6) The game options (mpfever_feat.lua, docs/FEATURES-0.6.md), the interface's side. The session's options come with the
+-- session (G.featOpts, see H.session); the game's are those every game applied from the host's f_opts (st.optsText, read here every
+-- frame). Nothing below runs while the game has none on and the session asks for none (G.featOn false, G.featOpts empty).
+-- what the modules' gui, request and allow get from here (the module's env is made of it, see F.guiEnv)
+G.featBridge = function()
+	local B = G.featB
+	if not B then
+		B = { log = log, gameTime = gameTime, R = R, CO = CO,
+			-- (an event of a module: stamped and applied by every game at the same step, as the host's events)
+			send = function(name, param) return G.coEvent(name, param) ~= false end,
+			chat = function(text) return G.featChat(text) end,
+			-- (a file of the session folder for the window, written only when its text changed)
+			write = function(file, text)
+				G.featFiles = G.featFiles or {}
+				if G.featFiles[file] == text then return true end
+				local f = C.IO.open(C.DIR .. BS .. file, "wb")
+				if not f then return false end
+				f:write(text)
+				f:close()
+				G.featFiles[file] = text
+				return true
+			end }
+		G.featB = B
+	end
+	B.isHost, B.me, B.myCo = C.ROLE == "host", G.me, G.myCo
+	B.mode = G.cmode == "separate" and "separate" or "shared"
+	return B
+end
+-- a notice in this game's chat only (the window's chat file, as MPFever.exe writes it: id 0, from « MPFever »)
+G.featChat = function(text)
+	-- (control bytes listed, not %c: under a code page locale %c may take a byte of a UTF-8 character, issue #30)
+	text = tostring(text or ""):gsub("[" .. string.char(0) .. "-" .. string.char(31) .. string.char(127) .. "]", " ")
+	log("options (chat here): " .. text)
+	local okT, t = pcall(os.time)
+	return C.appendFile(C.DIR .. BS .. "chat.txt", "0" .. TAB .. tostring(okT and t or 0) .. TAB .. "msg" .. TAB .. "MPFever" .. TAB .. text .. NL)
+end
+-- every frame (guiUpdate): the host's game sends the session's options when the game's differ (f_opts, at most every 10 s, not
+-- during a resynchronisation: every game applies them at the same step), then the modules' gui about once a second
+G.featGui = function(st)
+	local have = type(st.optsText) == "string" and st.optsText or ""
+	G.featOn = have ~= ""
+	G.featSt = st
+	local want = G.featOpts
+	if not G.featOn and (want == nil or want == "") then G.featAllow = false; return end
+	local F = C.feat()
+	if not F then return end
+	F.load(log)
+	G.featAllow = G.featOn and F.wantsAllow(have)
+	if C.ROLE == "host" and want ~= nil and G.connected and G.session.started and not G.session.resync then
+		local mode = G.cmode == "separate" and "separate" or "shared"
+		-- (the canon of the session's text, kept while it is the same)
+		if G.featCanonOf ~= mode .. "|" .. want then G.featCanonOf, G.featCanon = mode .. "|" .. want, F.canon(want, mode) end
+		local s = G.featCanon
+		if s ~= have and G.frames - (G.featOptsAt or -100000) > 600 then
+			G.featOptsAt = G.frames
+			log("options: the session's options (" .. (s ~= "" and s or "all off") .. ") into the game (it has " .. (have ~= "" and have or "none") .. ")")
+			G.coEvent("f_opts", { s = s, mode = mode })
+		end
+	end
+	if G.featOn then F.gui(st, G.featBridge(), os.clock()) end
+end
+-- A window's command (an "act_req" of ui.log, before it is stamped) or a tool's build held by the DLL (fn "nativeBuild"), checked by
+-- the modules on (M.allow) before anything is sent: refused, it is never applied anywhere (no desync), the chat says why and a
+-- window's command gets its refusal as a refused action does. A module that fails lets it through (see F.allow).
+G.featRefuse = function(p)
+	local ok, refused = pcall(function()
+		local F = C.feat()
+		if not F then return false end
+		local a = { fn = p.fn, args = p.args, co = tonumber(p.co) or G.myCo, origin = G.me, native = p.native, natId = p.natId, proposal = p.proposal }
+		local allowed, why, M = F.allow(a, G.featSt or {}, G.featBridge())
+		if allowed then return false end
+		local reason = (type(why) == "string" and why ~= "") and why or C.T("Refusé par une option de la partie.", "Refused by a game option.")
+		log("options: " .. tostring(a.fn) .. (a.natId and (" " .. a.natId) or "") .. " refused here by " .. tostring(M and M.ID) .. ": " .. reason)
+		G.featChat(reason)
+		if p.tok then C.appendFile(C.DIR .. BS .. "results.log", C.line("result", { tok = p.tok, id = p.id, fn = p.fn, success = false, err = "game option: " .. reason })) end
+		return true
+	end)
+	if not ok then log("options: allow failed: " .. tostring(refused)) end
+	return ok and refused == true
+end
+-- the build a tool applies (its event, a frame or two before the DLL reports it held), for the modules' allow
+G.featTool = function(param)
+	local pr = type(param) == "table" and (param[1] or param.proposal) or nil
+	local ok, compact = pcall(C.compactProposal, pr)
+	G.featToolCopy = (pr ~= nil and ok) and { frame = G.frames, compact = compact } or nil
+end
+G.featTakeTool = function()
+	local t = G.featToolCopy
+	G.featToolCopy = nil
+	if t and G.frames - t.frame <= 5 then return t.compact end
+	return nil
+end
+-- a request of the MPFever window (ui.log "feat_req": the module, its kind and payload) to that module of this game
+G.featRequest = function(p)
+	local F = C.feat()
+	if F then F.request(p.m, p.kind, p.payload, G.featSt or {}, G.featBridge()) end
+end
+-- a paused action applied here (runPausedActions): to the simulation, whose modules hear it as the others (F.simAction)
+G.featPausedAct = function(a, r)
+	local args = nil
+	if a.fn ~= "makeWorldBuildProposalCmd" and type(a.args) == "table" then args = a.args end
+	toSim("f_act", { a = { fn = a.fn, args = args, co = a.co, origin = a.origin, uid = a.uid, at = a.at, paused = true }, ok = r.success == true })
+end
+
 local function guiUpdate(userParams, state, guiState)
 	if not C.ACTIVE then return end
 	G.frames = G.frames + 1
@@ -15673,6 +15952,12 @@ local function guiUpdate(userParams, state, guiState)
 	G.co = st.co
 	local okco, errco = pcall(coGui, st)
 	if not okco then log("companies (gui): " .. tostring(errco)) end
+	-- (0.6) the game options: the host's options into the game (f_opts), the modules' gui (mpfever_feat.lua); nothing while no option
+	-- is on or asked. MPFEVER_FEAT=0: never
+	if K.FEAT then
+		local okf, errf = pcall(G.featGui, st)
+		if not okf and G.frames - (G.featErrAt or -10000) > 600 then G.featErrAt = G.frames; log("options (gui): " .. tostring(errf)) end
+	end
 	-- the computer companies (the host's game only: the host chose them in its lobby; MPFEVER_AI=1 / MPFEVER_AIDEV for the tests)
 	if C.ROLE == "host" and ((G.coAi and G.coAi ~= "") or os.getenv("MPFEVER_AI") or os.getenv("MPFEVER_AIDEV")) then pcall(G.aiStep, st) end
 	if st.late and st.late > (G.lateSeen or 0) then
@@ -15849,7 +16134,11 @@ local function guiHandleEvent(userParams, state, guiState, src, id, name, param)
 	if G.pingArmed and id == "mainView" and (name == "select-world" or name == "select") then pcall(G.pingClick, name, param) end
 	-- (what this player's tool shows, for the others' games: see G.previewOut)
 	if name == "builder.proposalCreate" then pcall(G.previewOut, tostring(id), param)
-	elseif name == "builder.proposalApply" then pcall(G.previewGone); pcall(G.toolApplied, param) end
+	elseif name == "builder.proposalApply" then
+		pcall(G.previewGone); pcall(G.toolApplied, param)
+		-- (0.6: the build the tool applies, for a game option that checks this player's builds, see G.featRefuse)
+		if G.featOn and G.featAllow then pcall(G.featTool, param) end
+	end
 	if type(name) == "string" and name:find("^builder%.") then
 		G.evSeen = G.evSeen or {}
 		local key = tostring(id) .. "/" .. name

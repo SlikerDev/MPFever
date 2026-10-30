@@ -16,6 +16,7 @@
         "mpfever_eco.lua",
         "mpfever_progression.lua",
         "mpfever_ai.lua",
+        "mpfever_feat.lua",
         "mpfever_asset.con.lua",
         "mpfever_asset.script.lua",
         "mpfever_chat@2x.tga"

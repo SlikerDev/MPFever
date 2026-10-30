@@ -1733,6 +1733,17 @@ function C.progression()
 	return C.PG or nil
 end
 
+-- (0.6) the game options host (mpfever_feat.lua: the feature modules, their options and hooks), loaded once per Lua state; nil
+-- when it cannot be loaded (no option then works anywhere: the game plays as 0.5.14)
+function C.feat()
+	if C.FEAT == nil then
+		local ok, m = pcall(ug_require, "mpfever_feat.lua")
+		if not (ok and type(m) == "table") then ok, m = pcall(ug_require, "mpfever_1::/mpfever_feat.lua") end
+		C.FEAT = (ok and type(m) == "table") and m or false
+	end
+	return C.FEAT or nil
+end
+
 -- Companies mode: the arguments of a command that name something its company must own (see the bridge's executeAction):
 -- the vehicle, the line, the depot a vehicle is bought in, the entity renamed or recoloured
 C.OWNER_ARGS = {

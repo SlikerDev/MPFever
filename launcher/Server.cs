@@ -28,6 +28,8 @@ namespace MPFever
         public string Owner = "";
         public long StartMoney = 2000000;
         public bool ShareRules = true;
+        // (0.6) the game options, "id=1;id.param=v;..." (null: the line is absent, the host's last choice in the settings is used)
+        public string GameOptions;
         public int StartSpeed = 1;
         public bool PauseWhenEmpty = true;
         public bool PlayerSpeedControl = true;
@@ -76,6 +78,10 @@ namespace MPFever
             "# separate only: true, each company decides whether its tracks, stations, stops and depots are private, open or paying;",
             "# false: everything is open and free for every company.",
             "sharing-rules=true",
+            "",
+            "# The game options (0.6), all off by default: \"id=1;id.param=value;...\" as the host's lobby makes them (its log names",
+            "# them: \"Game options chosen by the host\"). Empty: none.",
+            "game-options=",
             "",
             "# Game speed when the world starts: 1, 2 or 4.",
             "start-speed=1",
@@ -155,6 +161,10 @@ namespace MPFever
                     StartMoney = money;
                     return true;
                 case "sharing-rules": return Bool(v, ref ShareRules);
+                case "game-options":
+                    if (v.Length > GameOpts.MaxText) return false;
+                    GameOptions = GameOpts.Canon(v);
+                    return true;
                 case "start-speed":
                     if (v != "1" && v != "2" && v != "4") return false;
                     StartSpeed = int.Parse(v, CultureInfo.InvariantCulture);

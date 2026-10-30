@@ -49,6 +49,7 @@ namespace MPFever
             Log.W("transport: " + (ok ? "ok" : "FAILED"));
             ok &= RunResume();
             ok &= RunServer();
+            ok &= RunGameOpts();
             ok &= RunUpdater();
             ok &= RunPortMap();
             ok &= RunRedact();
@@ -314,6 +315,59 @@ namespace MPFever
             Check(all.Contains("SOAPAction: \"urn:schemas-upnp-org:service:WANIPConnection:1#AddPortMapping\"") && all.Contains("<NewExternalPort>28190</NewExternalPort>")
                 && all.Contains("<NewInternalClient>192.168.1.20</NewInternalClient>") && all.Contains("<NewProtocol>TCP</NewProtocol>"), "upnp: AddPortMapping sent as a router expects it");
             Check(all.Contains("#DeletePortMapping\""), "upnp: the mapping removed");
+            return ok;
+        }
+
+        /// <summary>(0.6) The game options' string (GameOpts): its canon, the host's requests, the server's setting and the text a
+        /// savegame keeps (SaveInfo.Opts).</summary>
+        static bool RunGameOpts()
+        {
+            bool ok = true;
+            void Check(bool cond, string what) { Log.W((cond ? "  ok    " : "  FAIL  ") + what); ok &= cond; }
+            Check(GameOpts.Canon("b=1;a.x=2;a=1;c=0;c.y=3;BAD=1;d=1;d.z=A B") == "a=1;a.x=2;b=1;d=1", "game options: canon (sorted, the options on and their parameters, syntax)");
+            Check(GameOpts.Canon("") == "" && GameOpts.Canon(new string('a', GameOpts.MaxText + 1) + "=1") == "", "game options: empty, too long");
+            Check(GameOpts.Apply("", "goal=1", out _) == "goal=1", "game options: an option on");
+            Check(GameOpts.Apply("goal=1", "goal.years=30", out _) == "goal=1;goal.years=30", "game options: a parameter");
+            Check(GameOpts.Apply("goal=1;goal.years=30;stock=1", "goal=0", out _) == "stock=1", "game options: off forgets its parameters");
+            Check(GameOpts.Apply("", "goal.years=30", out var e1) == null && e1 == "option off", "game options: no parameter for an option off");
+            Check(GameOpts.Apply("", "Goal=1", out var e2) == null && e2 == "syntax" && GameOpts.Apply("", "goal=2", out var e3) == null && e3 == "value"
+                  && GameOpts.Apply("", "goal=1;x=1", out _) == null && GameOpts.Apply("", "goal.y.z=1", out _) == null, "game options: requests of another syntax refused");
+            var dir = Path.Combine(Path.GetTempPath(), "mpfever-selftest-" + Guid.NewGuid().ToString("N").Substring(0, 6));
+            Directory.CreateDirectory(dir);
+            try
+            {
+                // the server's line
+                var path = Path.Combine(dir, ServerConfig.FileName);
+                var problems = new List<string>();
+                var c = ServerConfig.Load(path, problems, out _);
+                Check(c.GameOptions == "" && problems.Count == 0, "game options: the server's template has none");
+                File.WriteAllText(path, "game-options=stock=1;goal.years=30;goal=1\n", new UTF8Encoding(false));
+                c = ServerConfig.Load(path, problems, out _);
+                Check(c.GameOptions == "goal=1;goal.years=30;stock=1", "game options: the server's line (" + c.GameOptions + ")");
+                // a savegame's text: a Lua string of the game's state (type 3, its length, its bytes)
+                byte[] Save(string text)
+                {
+                    var b = new List<byte>(Encoding.ASCII.GetBytes("....some state...."));
+                    if (text != null)
+                    {
+                        b.AddRange(BitConverter.GetBytes(3));
+                        b.AddRange(BitConverter.GetBytes(text.Length));
+                        b.AddRange(Encoding.ASCII.GetBytes(text));
+                    }
+                    b.AddRange(Encoding.ASCII.GetBytes("....more state...."));
+                    return b.ToArray();
+                }
+                string Read(string text)
+                {
+                    var f = Path.Combine(dir, "save.sav");
+                    Zstd.WriteRawFrame(f, Save(text));
+                    return SaveInfo.Opts(f);
+                }
+                Check(Read("mpfopts:goal=1;goal.years=30;") == "goal=1;goal.years=30", "game options: read back from a savegame");
+                Check(Read("mpfopts:;") == "" && Read(null) == null, "game options: a savegame with them all off, one without");
+            }
+            catch (Exception e) { Check(false, "game options: " + e.Message); }
+            finally { try { Directory.Delete(dir, true); } catch { } }
             return ok;
         }
 

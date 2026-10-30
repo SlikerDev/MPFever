@@ -569,6 +569,69 @@ local function setup()
 		}
 	end
 
+	-- (0.6) The game options (mpfever_feat.lua, docs/FEATURES-0.6.md): the options of the feature modules for the session's company
+	-- mode, in the host's "Game settings" panel (each with its On / Off buttons and its text, and only while it is on, its
+	-- parameters), and for the players a line of those on. MPFever.exe keeps the session's ("opts" of menu_state.txt, the options on
+	-- "id=1;id.param=v;...") and takes the host's "opt" requests. Nothing shows while no module offers an option in the mode.
+	-- MPFEVER_FEAT=0: nothing of it, the lobby of 0.5.14.
+	local FEAT = nil
+	if os.getenv("MPFEVER_FEAT") ~= "0" then
+		pcall(function()
+			local F = require("mpfever_1::/mpfever_feat.lua")
+			if type(F) == "table" then F.load(log); FEAT = F end
+		end)
+	end
+	-- the options this mode offers and the map of those on; nil when there is none to offer
+	local function featView(st)
+		if not FEAT then return nil end
+		local okV, fv = pcall(function()
+			local mode = st.cmode == "separate" and "separate" or "shared"
+			local offered = FEAT.offered(mode)
+			if #offered == 0 then return nil end
+			return { mode = mode, offered = offered, map = FEAT.parse(FEAT.canon(st.opts or "", mode)) }
+		end)
+		if not okV then log("game options: " .. tostring(fv)) return nil end
+		return fv
+	end
+	-- the section of the host's panel, as the rows of choices() (the label in a column of its own, then the buttons)
+	local function featSection(panel, w, fv, playerName)
+		panel[#panel + 1] = gap(1, 12)
+		panel[#panel + 1] = text(T("Options de partie (0.6)", "Game options (0.6)"), "font-scale-title-3", w)
+		panel[#panel + 1] = text(T("Désactivées par défaut. Pour tous les joueurs ; gardées dans la sauvegarde.", "Off by default. For every player; kept in the savegame."), "font-scale-body", w)
+		panel[#panel + 1] = gap(1, 8)
+		for _, e in ipairs(fv.offered) do
+			local id = e.opt.id
+			local on = FEAT.on(fv.map, id)
+			panel[#panel + 1] = box(H, {
+				box(H, { text(FEAT.text(e.opt.title or id, T), "font-scale-title-4", 290) }, nil, { size = { 300, -1 } }),
+				button(T("Activée", "On"), function() request("opt", id .. "=1", playerName()) end, { font = "font-scale-body", primary = on }),
+				gap(4, 1),
+				button(T("Désactivée", "Off"), function() request("opt", id .. "=0", playerName()) end, { font = "font-scale-body", primary = not on }),
+			}, nil, { size = { w, -1 } })
+			if e.opt.desc then panel[#panel + 1] = text(FEAT.text(e.opt.desc, T), "font-scale-body", w) end
+			if on then
+				for _, p in ipairs(e.params) do
+					local cur = tostring(FEAT.param(fv.map, id, p.id))
+					local row = { box(H, { text("      " .. FEAT.text(p.label or p.id, T), "font-scale-body", 290) }, nil, { size = { 300, -1 } }) }
+					for _, v in ipairs(p.values) do
+						local pick = tostring(v)
+						row[#row + 1] = button(FEAT.showValue(p, v, T), function() request("opt", id .. "." .. p.id .. "=" .. pick, playerName()) end, { font = "font-scale-body", primary = cur == pick })
+						row[#row + 1] = gap(4, 1)
+					end
+					panel[#panel + 1] = box(H, row, nil, { size = { w, -1 } })
+				end
+			end
+			panel[#panel + 1] = gap(1, 8)
+		end
+	end
+	-- the players' line: the options on (and their parameters); nil when none is
+	local function featSummary(fv)
+		local names = {}
+		for _, s in ipairs(FEAT.summary(fv.map, fv.mode, T)) do names[#names + 1] = s.title .. (#s.params > 0 and (" (" .. table.concat(s.params, ", ") .. ")") or "") end
+		if #names == 0 then return nil end
+		return T("Options de partie : ", "Game options: ") .. table.concat(names, "  ·  ")
+	end
+
 	-- the colour of the player's company (one company per player): a palette index, kept between sessions in the folder of every
 	-- session (company_color.txt there) and given to this session (company_color.txt in the session folder, read by the
 	-- bridge when the player announces itself; a colour another company already has gives the first free one)
@@ -918,6 +981,10 @@ local function setup()
 				side[#side + 1] = gap(1, 12)
 				side[#side + 1] = text(T("Règles de la partie", "Game rules"), "font-scale-title-4", sw)
 				side[#side + 1] = text(summary, "font-scale-body", sw)
+				-- (0.6) the game options on, for every player of the lobby
+				local fv = featView(st)
+				local fs = fv and featSummary(fv)
+				if fs then side[#side + 1] = text(fs, "font-scale-body", sw) end
 				if isHost then
 					side[#side + 1] = gap(1, 6)
 					side[#side + 1] = button(rulesOpen:old() and T("Fermer les réglages", "Close the settings") or T("Réglages de la partie…", "Game settings…"),
@@ -963,9 +1030,33 @@ local function setup()
 								function(v) request("aimoney", tostring(n) .. ":" .. tostring(v), playerName()) end)
 						end
 					end
+					-- (0.6) the game options of the separate mode
+					if fv then featSection(panel, w, fv, playerName) end
 					local list = { box(V, panel, nil, { padding = { 10, 12, 10, 12 }, background = { 1, 1, 1, 0.07 }, size = { w, -1 } }), gap(1, 12) }
 					for _, c in ipairs(below) do list[#list + 1] = c end
 					below = list
+				end
+			end
+			-- (0.6) everybody plays one company: the game options only, when a module offers some in the co-op. The players' line under
+			-- the players; the host's "Game settings…" button there, its panel over the mods under a smaller picture (see leftCol)
+			local sharedPanel = nil
+			if not separate and (st.lobby == "host" or st.lobby == "client") then
+				local fv = featView(st)
+				local fs = fv and featSummary(fv)
+				if fs then
+					right[#right + 1] = gap(1, 10)
+					right[#right + 1] = text(fs, "font-scale-body", RIGHT_W - 40)
+				end
+				if fv and isHost then
+					right[#right + 1] = gap(1, 8)
+					right[#right + 1] = button(rulesOpen:old() and T("Fermer les réglages", "Close the settings") or T("Réglages de la partie…", "Game settings…"),
+						function() rulesOpen:set(not rulesOpen:old()) end, { font = "font-scale-body", primary = rulesOpen:old() })
+					if rulesOpen:old() then
+						local w = SIDE_W - 24
+						local panel = { text(T("Réglages de la partie", "Game settings"), "font-scale-title-3", w) }
+						featSection(panel, w, fv, playerName)
+						sharedPanel = box(V, panel, nil, { padding = { 10, 12, 10, 12 }, background = { 1, 1, 1, 0.07 }, size = { w, -1 } })
+					end
 				end
 			end
 			-- (the host) players who lack mods no Mod Hub has: send them from this PC? (with their size)
@@ -1216,6 +1307,21 @@ local function setup()
 						verticalPolicy = builtin.type.ScrollBarPolicy.AsNeeded,
 					}
 				end
+			elseif sharedPanel then
+				-- (0.6) the co-op host's game options open: the panel, then the mods, under a smaller picture
+				local picH = 220
+				local list = { sharedPanel }
+				if modsBox then list[#list + 1] = gap(1, 12); list[#list + 1] = modsBox end
+				leftCol = {
+					SavePicture{ save = lobbySave, size = { SIDE_W, picH }, fallback = "::/gui/menu/images/main.tga" },
+					gap(1, 8),
+					builtin.ScrollArea{
+						meta = { styleSheet = style{ size = { SIDE_W, LOBBY_H - picH - 8 } } },
+						content = box(V, list, nil, { size = { SIDE_W - 20, -1 } }),
+						horizontalPolicy = builtin.type.ScrollBarPolicy.AlwaysOff,
+						verticalPolicy = builtin.type.ScrollBarPolicy.AsNeeded,
+					},
+				}
 			elseif modsBox then
 				local picH = 220
 				leftCol = {

@@ -1839,10 +1839,14 @@ U.tabsFor = function(st)
 	local separate = st and st.mode == "separate"
 	if separate then pcall(U.pollEco) end
 	local ai = separate and U.eco ~= nil and next(U.eco.ai or {}) ~= nil
+	-- (0.6) the Game tab in the co-op too when it has game options to show (see U.featGameTab)
+	local game06 = not separate and U.featGameTab(st)
 	local t = {}
 	for _, id in ipairs(U.TAB_IDS) do
-		if (separate or (id ~= "company" and id ~= "rules" and id ~= "game")) and (id ~= "ai" or ai) then t[#t + 1] = id end
+		if (separate or (id ~= "company" and id ~= "rules" and id ~= "game") or (id == "game" and game06)) and (id ~= "ai" or ai) then t[#t + 1] = id end
 	end
+	-- (0.6) a game option's module with a tab of its own while one of its options is on (before Settings, the last one)
+	for _, tb in ipairs(U.featTabs(st)) do table.insert(t, #t, tb.key) end
 	return t
 end
 -- the tab to show: the one asked, when this session has it, else Session
@@ -1861,6 +1865,10 @@ U.tabLabel = function(id)
 	if id == "ai" then return T("IA", "AI") end
 	if id == "rules" then return T("Règles", "Rules") end
 	if id == "game" then return T("Partie", "Game") end
+	-- (0.6) a module's own tab: its title
+	if tostring(id):sub(1, 2) == "f_" then
+		for _, tb in ipairs(U.featTabs(U.status)) do if tb.key == id then return U.featLib().text(tb.title, T) end end
+	end
 	return T("Réglages", "Settings")
 end
 
@@ -2739,6 +2747,11 @@ U.TABS.game = function(K, st, ctx)
 	local builtin = K.builtin
 	local W = K.TEXT_W
 	local rows = {}
+	-- (0.6) everybody plays one company: the tab is there for the game options only (see U.tabsFor)
+	if not (st and st.mode == "separate") then
+		U.featGameRows(K, st, rows)
+		return rows
+	end
 	pcall(U.pollEco)
 	local eco = U.eco or {}
 	local host = U.isHost(st)
@@ -2813,7 +2826,193 @@ U.TABS.game = function(K, st, ctx)
 		rows[#rows + 1] = K.gap(1, 12)
 		rows[#rows + 1] = K.muted(T("L'argent de départ de chaque entreprise de l'ordinateur se choisit dans le salon.", "Each computer company's start money is chosen in the lobby."), W)
 	end
+	-- (0.6) the game options, under the rules of 0.5.14
+	local okF, errF = pcall(U.featGameRows, K, st, rows)
+	if not okF then log("window: game options not drawn: " .. tostring(errF)) end
 	return rows
+end
+
+-- ---------------------------------------------------------------- the game options (0.6)
+-- The modules of the game options (mpfever_feat.lua, docs/FEATURES-0.6.md) as the window shows them: the options the session has
+-- on (the host's choice, sent by MPFever.exe in mp_status.txt: "opts"), listed in the Game tab for every player, switched there by
+-- the host (MPFever.exe's "opt" request, as in the lobby: the host's game then puts them into the game), and the tab of a module
+-- (M.TAB, M.ui) while one of its options is on. MPFEVER_FEAT=0: nothing of it, the window of 0.5.14.
+U.featOff = os.getenv("MPFEVER_FEAT") == "0"
+U.featLib = function()
+	if U.featOff then return nil end
+	local F = C.feat()
+	if F and not U.featLoaded then U.featLoaded = true; F.load(log) end
+	return F
+end
+-- the options host, the map of the options on in this mode (a choice of the host just asked counts until MPFever.exe has it, or 15
+-- s, see U.featAsk) and the mode; nil when there is no options host
+U.featView = function(st)
+	local F = U.featLib()
+	if not F then return nil end
+	local mode = (st and st.mode == "separate") and "separate" or "shared"
+	local raw = st and st.opts or ""
+	local key = mode .. "|" .. raw
+	if U.featKey ~= key then U.featKey, U.featMapCached = key, F.parse(F.canon(raw, mode)) end
+	local map = U.featMapCached
+	if U.featAsked and next(U.featAsked) ~= nil then
+		local m = {}
+		for k, v in pairs(map) do m[k] = v end
+		for k, a in pairs(U.featAsked) do
+			if map[k] == a.v or (a.v == "0" and map[k] == nil) or os.clock() - a.at > 15 then U.featAsked[k] = nil
+			else m[k] = a.v ~= "0" and a.v or nil end
+		end
+		map = m
+	end
+	return F, map, mode
+end
+-- the host asks MPFever.exe for an option on or off ("id", "1"/"0") or a parameter ("id.param", value)
+U.featAsk = function(key, value)
+	value = tostring(value)
+	if U.menuRequest("opt", key .. "=" .. value) then
+		U.featAsked = U.featAsked or {}
+		U.featAsked[key] = { v = value, at = os.clock() }
+		U.winChanged()
+	end
+end
+-- the modules' tabs while one of their options is on (see F.tabs)
+U.featTabs = function(st)
+	local ok, list = pcall(function()
+		local F, map = U.featView(st)
+		return F and F.tabs(map) or {}
+	end)
+	return ok and list or {}
+end
+-- the co-op shows the Game tab when an option is on, or to the host when the co-op has options to offer
+U.featGameTab = function(st)
+	local ok, show = pcall(function()
+		local F, map, mode = U.featView(st)
+		if not F then return false end
+		return next(map) ~= nil or (U.isHost(st) and #F.offered(mode) > 0)
+	end)
+	return ok and show == true
+end
+-- The Game tab's section: for the host, every option of this mode with its On / Off buttons, its text and, while it is on, its
+-- parameters; for the players, the options on and their parameters
+U.featGameRows = function(K, st, rows)
+	local F, map, mode = U.featView(st)
+	if not F then return end
+	local offered = F.offered(mode)
+	if #offered == 0 then return end
+	local W = K.TEXT_W
+	local host = U.isHost(st)
+	rows[#rows + 1] = K.gap(1, 12)
+	rows[#rows + 1] = K.section(K.ICON_SETTINGS, T("Options de partie (0.6)", "Game options (0.6)"))
+	if not host then
+		local sum = F.summary(map, mode, T)
+		if #sum == 0 then rows[#rows + 1] = K.muted(T("Aucune option de partie activée.", "No game option on."), W) end
+		for _, s in ipairs(sum) do
+			rows[#rows + 1] = K.text(s.title, nil, nil, W)
+			for _, ps in ipairs(s.params) do rows[#rows + 1] = K.muted("   " .. ps, W) end
+		end
+		return
+	end
+	rows[#rows + 1] = K.muted(T("Désactivées par défaut. Vous les choisissez pour tous les joueurs ; elles sont gardées dans la sauvegarde.",
+		"Off by default. You choose them for every player; they are kept in the savegame."), W)
+	for _, e in ipairs(offered) do
+		local id = e.opt.id
+		local on = F.on(map, id)
+		rows[#rows + 1] = K.gap(1, 8)
+		rows[#rows + 1] = K.text(F.text(e.opt.title or id, T), nil, nil, W)
+		rows[#rows + 1] = K.row { K.btn(T("Activée", "On"), nil, function() if not on then U.featAsk(id, 1) end end, on),
+			K.gap(4, 1), K.btn(T("Désactivée", "Off"), nil, function() if on then U.featAsk(id, 0) end end, not on) }
+		if e.opt.desc then rows[#rows + 1] = K.muted(F.text(e.opt.desc, T), W) end
+		if on then
+			for _, p in ipairs(e.params) do
+				local cur = tostring(F.param(map, id, p.id))
+				rows[#rows + 1] = K.text("   " .. F.text(p.label or p.id, T), nil, nil, W)
+				-- (rows of six buttons at most: nothing may go out of the window)
+				local line = {}
+				for _, v in ipairs(p.values) do
+					local pick = tostring(v)
+					if #line >= 12 then rows[#rows + 1] = K.row(line); line = {} end
+					line[#line + 1] = K.btn(F.showValue(p, v, T), nil, function() if pick ~= cur then U.featAsk(id .. "." .. p.id, pick) end end, pick == cur)
+					line[#line + 1] = K.gap(4, 1)
+				end
+				if #line > 0 then rows[#rows + 1] = K.row(line) end
+			end
+		end
+	end
+end
+-- What a module's tab gets to draw itself (M.ui(u)): its options, the files its gui writes (env.write), a request to its module on
+-- this game, an event of its own, and the window's widgets. A widget returns its node: u.add(node) puts it in the tab, and M.ui
+-- may also return a list of nodes (they come after those added).
+U.featU = function(K, st, M)
+	local F, map, mode = U.featView(st)
+	local W = K.TEXT_W
+	local rows = {}
+	local u = { W = W, mode = mode, isHost = U.isHost(st), me = st and st.me, rows = rows, T = T, Tf = C.Tf, money = money }
+	u.on = function(id) return F.on(map, id) end
+	u.param = function(id, pid) return F.param(map, id, pid) end
+	-- (the lines of feat_<module>_<name>.txt, written by the module's gui with env.write; {} when there is none)
+	u.read = function(name)
+		local lines = {}
+		if type(name) ~= "string" or not name:match("^[a-z0-9_]+$") then return lines end
+		local f = C.IO.open(C.DIR .. C.BS .. "feat_" .. M.ID .. "_" .. name .. ".txt", "rb")
+		if not f then return lines end
+		local s = f:read("*a") or ""
+		f:close()
+		for line in s:gmatch("[^" .. C.NL .. "]+") do lines[#lines + 1] = (line:gsub(C.CR, "")) end
+		return lines
+	end
+	-- (to M.request of the module on this game, through the bridge: ui.log "feat_req")
+	u.request = function(kind, payload) sendLine("feat_req", { m = M.ID, kind = tostring(kind), payload = payload }) end
+	-- (an event of the module, sent as a command of this player: stamped, applied by every game at the same step)
+	u.send = function(name, param)
+		if F.eventOwner[name] ~= M then log("window: event " .. tostring(name) .. " is not one of " .. M.ID .. "'s") return false end
+		local ok, err = pcall(function() api.cmd.sendCommand(api.cmd.makeScriptingSendEventCmd("mpfever", "mpfever", name, type(param) == "table" and param or {})) end)
+		if not ok then log("window: event " .. name .. " not sent: " .. tostring(err)) end
+		return ok
+	end
+	u.add = function(node) if node ~= nil then rows[#rows + 1] = node end return node end
+	u.title = function(t) return K.section(K.ICON_SETTINGS, tostring(t)) end
+	u.text = function(t, cls) return K.text(t, nil, cls, W) end
+	u.muted = function(t) return K.muted(t, W) end
+	u.gap = function(h) return K.gap(1, h or 8) end
+	u.button = function(label, fn, primary, enabled, tip)
+		return K.btn(label, tip, function()
+			local ok, err = pcall(fn)
+			if not ok then log("window: " .. M.ID .. ": " .. tostring(err)) end
+			U.winChanged()
+		end, primary, enabled)
+	end
+	u.row = function(children) return K.row(children) end
+	-- (lines of cells, in columns: widths in pixels, else the width shared; header: the first line as titles)
+	u.table = function(lines, widths, header)
+		local out = {}
+		for i, line in ipairs(lines or {}) do
+			local cells = {}
+			local n = math.max(1, #line)
+			for j, cell in ipairs(line) do
+				local w = (widths and widths[j]) or math.floor(W / n)
+				cells[#cells + 1] = K.text(cell, (header and i == 1) and "font-scale-title-4" or nil, nil, w)
+			end
+			out[#out + 1] = K.row(cells)
+		end
+		return K.col(out)
+	end
+	return u
+end
+-- a module's tab (key "f_<its TAB id>"): its rows, or a line saying it could not be drawn
+U.featTabRows = function(K, st, key)
+	local W = K.TEXT_W
+	for _, tb in ipairs(U.featTabs(st)) do
+		if tb.key == key then
+			local u = U.featU(K, st, tb.M)
+			local ok, more = pcall(tb.M.ui, u)
+			if not ok then
+				if U.featTabFailed ~= key .. tostring(more) then U.featTabFailed = key .. tostring(more); log("window: the " .. key .. " tab failed: " .. tostring(more)) end
+				return { K.text(T("Cet onglet n'a pas pu être affiché (voir ui_mod.log).", "This tab could not be drawn (see ui_mod.log)."), nil, "error", W) }
+			end
+			for _, n in ipairs(type(more) == "table" and more or {}) do u.rows[#u.rows + 1] = n end
+			return u.rows
+		end
+	end
+	return { K.muted(T("Cette option n'est plus activée.", "This option is no longer on."), W) }
 end
 
 -- Settings: whether the window opens by itself, the bankruptcy rule (the host, one company per player), the settings (read
@@ -2910,6 +3109,8 @@ U.windowContent = function(K, st, chat, ctx)
 	local rows, result = nil, "ok"
 	local okB, res = pcall(function()
 		if tab == "chat" then return U.chatBody(K, st, chat, ctx) end
+		-- (0.6: a game option's module's own tab, see U.featTabRows)
+		if not U.TABS[tab] and tab:sub(1, 2) == "f_" then return U.featTabRows(K, st, tab) end
 		return U.TABS[tab](K, st, ctx)
 	end)
 	if okB and type(res) == "table" then rows = res else

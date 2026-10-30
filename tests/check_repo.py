@@ -76,6 +76,18 @@ def json_files(files):
     check(js and not bad, f"{len(js)} JSON files parse" + "".join("\n          " + b for b in bad))
 
 
+def mod_content(files):
+    # (0.6) the mod's content files and its list of them (mod/mpfever_1/_content.json) agree: a new file of content/ (a feature
+    # module mpfever_feat_<id>.lua) must be listed there, as mpfever_ai.lua was in 0.5.12, and nothing listed may be missing
+    cj = ROOT / "mod" / "mpfever_1" / "_content.json"
+    listed = set(json.loads(cj.read_text(encoding="utf-8-sig")).get("files") or [])
+    content = ROOT / "mod" / "mpfever_1" / "content"
+    present = {f.name for f in files if f.parent == content}
+    missing, extra = sorted(present - listed), sorted(listed - present)
+    check(not missing and not extra, "the mod's _content.json lists its content files"
+          + (f": not listed {missing}" if missing else "") + (f": listed, not there {extra}" if extra else ""))
+
+
 def python_files(files):
     bad = []
     py = [f for f in files if f.suffix == ".py"]
@@ -107,6 +119,7 @@ def main():
     versions()
     lua_files(files)
     json_files(files)
+    mod_content(files)
     python_files(files)
     text_files(files)
     print("all passed" if not failed else "FAILED")
