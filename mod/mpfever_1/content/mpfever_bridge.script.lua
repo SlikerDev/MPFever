@@ -1890,6 +1890,7 @@ SIM.featBridge = function()
 				local to = type(reg) == "table" and CO.find(reg, tonumber(toId)) or nil
 				if not (from and from.ent and to and to.ent) then return nil, "a company has no player entity on this game" end
 				return E.transferLot(SIM.ecoEnv(), from, to, lot, { withStations = lot.withStations == true, frozen = lot.frozen == true, reg = reg })
+			end,
 			-- (company fromId goes into company intoId, the merge of companies with the option's opts, see E.coMerge; from an event:
 			-- the same step on every game. The state is saved by handleEvent after the event)
 			coMerge = function(st, fromId, intoId, opts)
@@ -16437,20 +16438,15 @@ G.featBridge = function()
 				G.featFiles[file] = text
 				return true
 			end,
-			-- (0.6: the game's language, and the other players this game hears from: their names, sorted)
-			T = C.T,
-			players = function()
-				local out = {}
-				for name in pairs(G.peers or {}) do if type(name) == "string" and name ~= G.me then out[#out + 1] = name end end
-			-- (the player's language, the points of a tool's route, the other players of the session, see F.guiEnv)
+			-- (0.6: the player's language, the points of a tool's route, the other players this game hears from (their names,
+			-- sorted), a company's lots (mpfever_eco.lua's E.lotsOf, as the simulation's env.lots), see F.guiEnv)
 			T = C.T, pvPoints = function(param) return G.pvPoints(param) end,
 			players = function()
 				local out = {}
-				for name in pairs(G.peers or {}) do out[#out + 1] = name end
+				for name in pairs(G.peers or {}) do if type(name) == "string" and name ~= G.me then out[#out + 1] = name end end
 				table.sort(out)
 				return out
-			-- (the player's language) and a company's lots (mpfever_eco.lua's E.lotsOf, as the simulation's env.lots)
-			T = C.T,
+			end,
 			lots = function(st, id)
 				local E, reg = C.eco(), st and st.co
 				local c = E and E.lotsOf and type(reg) == "table" and CO.find(reg, tonumber(id)) or nil
@@ -17063,12 +17059,7 @@ local function guiHandleEvent(userParams, state, guiState, src, id, name, param)
 	-- build, see G.featGuiVeto). Only while a module on answers (G.featVeto); MPFEVER_FEATVETO=0 or MPFEVER_FEAT=0: never
 	if K.FEATVETO and G.featVeto and G.featOn then
 		local okv, r = pcall(G.featGuiVeto, id, name, param)
-		if okv and type(r) == "table" then return r end
-	-- (0.6) a game option's answer to this event (M.guiVeto: a tool turned down before the click, the vehicle store's buy button
-	-- off, a line kept), returned as the game's own scripts return theirs. Nothing while no option is on: no answer, as before
-	if G.featOn and G.featVeto then
-		local okV, v = pcall(G.featGuiVeto, id, name, param)
-		if okV and v ~= nil then return v end
+		if okv and r ~= nil then return r end
 	end
 end
 

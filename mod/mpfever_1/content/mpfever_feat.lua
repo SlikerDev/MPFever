@@ -488,9 +488,6 @@ function F.digests(text, a)
 	return out
 end
 
--- the modules that hear the game's own script events (onGameEvent), while their options are on
-function F.hearsGameEvents(text)
-	for _, M in ipairs(F.active(text)) do if type(M.onGameEvent) == "function" then return true end end
 -- the modules that hear the game's own script events (onGameEvent), while their options are on; with the game's state st (the
 -- bridge, once a step), a module whose M.hearsNow(st) says false does not count (nothing to hear now: the tenders while none is
 -- open), so the bridge reads no state for the game's events at all
