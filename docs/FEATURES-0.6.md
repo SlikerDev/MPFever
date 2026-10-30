@@ -38,12 +38,21 @@ M.EVENTS = { f_stats_cancel = true }  -- the module's game events (names start w
 -- no GUI. st = the game script state (saved with the game); env = see below.
 function M.event(st, name, param, env) end   -- one of M.EVENTS, sent by a game's GUI half with env.send
 function M.tick(st, env) end                 -- optional, every simulation step: keep it cheap (env.every(n) helps)
+function M.month(st, env) end                -- optional, once at the start of every game month (env.month(): year*12+month)
+function M.onAction(st, a, ok, env) end      -- optional: after every player action the games replay (a.fn = the api.cmd
+                                             -- factory, a.args, a.co = the sender's company, a.origin = the sender's name,
+                                             -- ok = the engine took it). For the journal, "built by", budgets.
+function M.onGameEvent(st, src, name, param, env) end  -- optional: the game's own script events the bridge sees (for
+                                             -- example the ticket price event that tells a cargo delivered), every game
 
 -- GUI half of the bridge, every game, about once a second (optional). st is the game script state as the GUI sees it
 -- (read only). Decisions that need one decider are taken by the host only (env.isHost) and sent as events, stamped and
 -- applied by every game at the same step (as co_month in 0.5).
 function M.gui(st, env) end
 function M.request(kind, payload, st, env) end   -- optional: a request of the MPFever window (env.uiRequest on that side)
+function M.allow(a, st, env) return true end     -- optional: THIS player's own action, before it is shipped; return
+                                                 -- false, reason to refuse it here (a chat notice tells the reason). For
+                                                 -- territories and permissions: no desync, nothing was sent.
 
 -- The MPFever window (mpfever_ui.script.lua), every game (optional): a tab of its own while one of the module's options is on.
 M.TAB = { id = "stats", title = { "Classement", "Ranking" } }
