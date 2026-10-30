@@ -1137,8 +1137,12 @@ local function garageFor(E, co, p, money, key)
 	local list = garagesNear(E, co.ent, p, 5000)
 	if list[1] and list[1].own then return list[1] end
 	A.garageTried = A.garageTried or {}
-	if not A.garageTried[key] and money >= RESERVE + 650000 then
-		A.garageTried[key] = true
+	-- (0.5.14: tried again after a year of game time, the town may have grown streets by then; before, one try per session.
+	-- MPFEVER_AIRETRY=0: one try)
+	local tried, nowT = A.garageTried[key], E.gameTime()
+	local again = os.getenv("MPFEVER_AIRETRY") ~= "0" and type(tried) == "number" and (tried > nowT or nowT - tried > 1440000)
+	if (not tried or again) and money >= RESERVE + 650000 then
+		A.garageTried[key] = nowT
 		local pl = garagePlaces(E, co, p, 900)[1]
 		if pl then
 			L(E, "garage near " .. key .. " on segment " .. pl.seg)
@@ -2246,7 +2250,12 @@ local function step(E)
 			end
 		end
 	end
-	if not pairsFirst then pairProject(E, co, stops, lines, vehicles, money, grow) end
+	if not pairsFirst and pairProject(E, co, stops, lines, vehicles, money, grow) then return end
+	-- (0.5.14: nothing done with money to spare, said once a minute: the reason shows in the log)
+	if money > 2 * RESERVE and G.frames - (A.idleSaid or -100000) > 3600 then
+		A.idleSaid = G.frames
+		L(E, "idle with " .. math.floor(money) .. (grow and ": no town, pair of towns or freight route left to open" or ": its growth waits (see above)"))
+	end
 end
 
 -- (for the dev probes)
