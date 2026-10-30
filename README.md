@@ -82,9 +82,10 @@ Players can also join a game already running, and a lost connection reconnects b
 
 - **An icon in the game's bottom bar**, left of Earnings: green when the games are in sync, yellow during a reload or while a player joins, red when something is wrong, with the number of unread chat messages. A click opens or closes the MPFever window.
 - **The MPFever window** opens by itself when the session starts and after each reload (closed, it stays closed). Its tabs:
-  - **Session:** the players, their connection, the sync state, the game speed, Steam invites, the **Report a problem** button, and for the host a **Resynchronise** button;
+  - **Session:** the players, their connection, the sync state, the game speed, Steam invites, the **Report a problem** button, for the host a **Resynchronise** button, and **signals on the map**: pick "Here", "Watch out" or "Build here", then click the map, and a circle in your company's colour shows there for 12 s on every player's game;
   - **Chat:** new messages also show for a few seconds on the left of the screen;
   - **Company** and **Rules** (one company per player only): members, joins and mergers, money gifts, the ranking, and the rules for your tracks, stations and depots;
+  - **Game** (one company per player only): the game's rules, which the host can change there;
   - **Settings.**
 - The MPFever and Chat cards of the pause menu open it too.
 

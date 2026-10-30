@@ -89,8 +89,10 @@ WHAT WORKS
 - MPFever window in the game: it opens by itself when the session starts and after each
   reload (closed by you, it stays closed for the session), or from the bar icon or the
   MPFever card of the pause menu. Its tabs: Session (the players and their link, the sync
-  state, the game speed, Steam invites, Report a problem, and for the host a Resynchronise
-  button), Chat, Company and Rules (one company per player only), Settings.
+  state, the game speed, Steam invites, Report a problem, for the host a Resynchronise
+  button, and signals on the map: "Here", "Watch out" or "Build here", then a click on the
+  map shows a circle in your company's colour there for 12 s on every player's game), Chat,
+  Company, Rules and Game (one company per player only), Settings.
 - Chat in the game: the Chat tab (or the "Chat" card of the pause menu); new messages show
   for a few seconds at the left of the screen.
 - The mod is built into the game: the only additions to the game interface are the
