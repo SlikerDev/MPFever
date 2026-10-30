@@ -6887,6 +6887,25 @@ local function nativeArrived(a)
 	G.natWait = keep
 end
 
+-- (0.5.14, issue #96) Whether another game's build that came too late here is left unbuilt: this game already built something
+-- at a later step (its own build, G.builtAt, or another replay), so the two would land in the other order than on their
+-- builders' games, their entities numbered otherwise. A late street replacement made the engine assert and the game crash
+-- (AddComponent, the Real Track Cant mod's builds from the host's script, 15 steps late, after two builds of this game). The
+-- host's game is reloaded instead (replay_failed). A late build with nothing built here since is built as before; the friends'
+-- 4-hour session of 2026-10-29 had none late at all. MPFEVER_LATERESYNC=0: built as before
+function G.lateSkip(a, now)
+	if a.at >= now or a.fn == "mpfCoJoin" or os.getenv("MPFEVER_LATERESYNC") == "0" then return false end
+	local since = (G.builtAt or -1) > a.at and G.builtAt or nil
+	-- (a build of this game released and not shipped yet stands here already, or will at the next step)
+	for _, e in ipairs(G.natShipIds or {}) do
+		if type(e.at) == "number" and e.at > a.at and e.at <= now then since = math.max(since or -1, e.at) end
+	end
+	if not since then return false end
+	log("LATE native build " .. tostring(a.uid) .. ": this game built at t=" .. since .. " since its t=" .. a.at .. ": not built here, the host's game is reloaded")
+	replayFailed(a, "late build after another build")
+	return true
+end
+
 -- Another game's terrain edit, in two phases so that a failure never reaches the engine: (1) the cells go to the DLL (a file and
 -- a control line, read when the next command enters the command list: a nop event is sent for that) and the DLL says "ready";
 -- (2) only then a command with an empty grid of the same size goes to the engine, and the DLL copies the cells into it as it
@@ -7500,7 +7519,9 @@ local function runNativeReplays()
 			end
 			nativeArrived(a)
 			local okr, errr
-			if a.fn == "terrainEdit" then okr, errr = pcall(withActor, PL(a), replayTerrain, a)
+			local skip = G.lateSkip(a, now)
+			if skip then okr = true
+			elseif a.fn == "terrainEdit" then okr, errr = pcall(withActor, PL(a), replayTerrain, a)
 			elseif a.fn == "assetBuild" then okr, errr = pcall(withActor, PL(a), replayAssets, a)
 			elseif a.fn == "mpfCoJoin" then
 				G.coBusy = { a = a, phase = "apply", frame = G.frames }; okr = true
@@ -7531,6 +7552,9 @@ local function runNativeReplays()
 				okr, errr = pcall(withActor, PL(a), replayNative, a, 1)
 				G.refund = nil
 			end
+			-- (what this game built, at the step it has on its builder's game, see G.lateSkip: a late one keeps its place among the
+			-- builds of the same step and after, as harry:110 and 111 of issue #96, both of one step)
+			if not skip then G.builtAt = math.max(G.builtAt or -1, a.at) end
 			if not okr then
 				log("NATIVE REPLAY " .. tostring(a.uid) .. " failed: " .. tostring(errr))
 				-- (the engine threw: this game did not build what the others did, issue #49)
@@ -8082,6 +8106,7 @@ local function shipNativeBuilds(st)
 				G.natShipIds = rest
 			end
 			send("act", a)
+			G.builtAt = math.max(G.builtAt or -1, o.at)
 			log("native build shipped " .. a.uid .. " (built here at t=" .. o.at .. ", the other games build it at the same time) [frame " .. G.frames .. "]")
 		end
 	end
