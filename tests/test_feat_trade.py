@@ -11,6 +11,15 @@ GUI only, a client's figures refused, the first month without a penalty, pro rat
 month's end, the end after its months, a company gone, a station lost, the expiry); determinism (the same state and money on
 both games although their measures differ); the saved state is plain data and a reloaded game goes on the same; the window's
 file, view, requests and chat news.
+
+Integrated (the real files over a mocked game API, two games with different entity ids): mpfever_feat.lua loading the module,
+the bridge's SIM.featBridge (lots, transferLot, book, month), G.featBridge (send, write, T, lots) and G.featRequest,
+mpfever_eco.lua's E.lotsOf and E.transferLot, the module's own world reads (M.rt) and the window's U.featU / U.featTabRows: all
+off does nothing; a line sold with the seller's stations of its stops and their own tracks (a third company's station stays, the
+stations' own settings go, money both ways); a depot with its truck; a line changed since its offer refused; a supply contract
+measured (the tick says when it changed the state) and paid from the host's figures; the tab drawn, its look and Accept buttons
+through G.featRequest (a member who is not the chief sends nothing); and the auction's sale unchanged (E.transferLot without
+options moves the line and its vehicles only, as before).
 Needs lupa (pip install lupa). Run: python tests/test_feat_trade.py
 """
 import os
@@ -480,13 +489,13 @@ check(run(A, "return #CHAT") == 0, "a third company is not told of an offer betw
 run(A, 'ev("f_trade_answer", { id = S().seq, accept = true, mpfCo = 2, mpfFrom = "Bob#1" }); gui(false, "Carl#3", 3)')
 check(run(A, "return CHAT[1]") == "Sold: depot « Depot 7 », from Host Co to Bob Co for $900.", "a sale done is told to everybody: " + str(run(A, "return CHAT[1]")))
 run(A, 'ev("f_trade_offer", { to = 2, kind = "depot", key = "D:extra@6", price = 4000, mpfCo = 1, mpfFrom = "Host" }); CLOCK = CLOCK + 100; gui(false, "Bob#1", 2)')
-check(run(A, 'for _, l in ipairs(FILES["trade.txt"]) do if l:sub(1, 4) == "lot\\t" or l:sub(1, 3) == "st\\t" then return false end end return true') is True,
+check(run(A, 'for _, l in ipairs(FILES[M.FILE]) do if l:sub(1, 4) == "lot\\t" or l:sub(1, 3) == "st\\t" then return false end end return true') is True,
       "nobody looks at the tab: the map's assets and stations are not read")
 run(A, 'M.request("look", "", st, GENV); gui(false, "Bob#1", 2)')
-lines = run(A, 'return FILES["trade.txt"]')
-check(lines is not None and run(A, 'return FILES["trade.txt"][1]') == "me\t2\t1\t1\t1", "the window's file: company 2, its chief, both options")
+lines = run(A, 'return FILES[M.FILE]')
+check(lines is not None and run(A, 'return FILES[M.FILE][1]') == "me\t2\t1\t1\t1", "the window's file: company 2, its chief, both options")
 VIEW = '''
-local m = M.parse(FILES["trade.txt"])
+local m = M.parse(FILES[M.FILE])
 local rows = M.view(m, GENV.T, {})
 local out = {}
 for _, r in ipairs(rows) do
@@ -520,8 +529,9 @@ run(A, '''
 gui(false, "Bob#1", 2)
 UIW, REQ = {}, {}
 U = { T = GENV.T, read = function(f) return FILES[f] end, request = function(k, p) REQ[#REQ + 1] = { k = k, p = p } end,
-  text = function(s) return { text = s } end, button = function(l, fn, on) return { button = l, fn = fn, on = on } end,
-  row = function(ws) UIW[#UIW + 1] = ws end }
+  text = function(s) return { text = s } end, title = function(s) return { text = s } end,
+  button = function(l, fn, primary, enabled) return { button = l, fn = fn, on = enabled } end,
+  row = function(ws) return { row = ws } end, add = function(n) if n.row then UIW[#UIW + 1] = n.row end end }
 M.ui(U)
 for _, r in ipairs(UIW) do for _, w in ipairs(r) do if w.button == "Accept" and w.on then w.fn() break end end end
 ''')
@@ -545,6 +555,363 @@ before = run(A, "return shared()"), run(A, "return money()")
 both('step(60); newMonth(); gui(true, "Host", 1)')
 check((run(A, "return shared()"), run(A, "return money()")) == before and run(A, "return #SENT == 0 and #CHAT == 0 and next(FILES) == nil") is True,
       "a game with trade switched off: nothing changes, nothing is sent or written")
+
+# ---------------------------------------------------------------------------------------------------------------------------------
+# Integrated: the real options host (mpfever_feat.lua) loading the real module, the bridge's real helpers (SIM.featBridge,
+# G.featBridge, G.featRequest), mpfever_eco.lua's real E.lotsOf / E.transferLot, mpfever_co.lua, the module's own world reads
+# (M.rt, not replaced here) and the window's real U.featU / U.featTabRows, over a mocked game API. Two games (their entity ids
+# differ), the same events.
+CONTENT = os.path.join(HERE, "..", "mod", "mpfever_1", "content")
+
+
+def read(name):
+    with open(os.path.join(CONTENT, name), encoding="utf-8") as f:
+        return f.read()
+
+
+def extract(src, pattern, what):
+    import re
+    m = re.search(pattern, src, re.S | re.M)
+    if not m:
+        print(f"FAIL: {what} not found")
+        sys.exit(1)
+    return m.group(0)
+
+
+BRIDGE = read("mpfever_bridge.script.lua")
+UI = read("mpfever_ui.script.lua")
+SIMB_SRC = extract(BRIDGE, r"^SIM\.featBridge = function\(\)\n.*?^end\n", "SIM.featBridge")
+GUIB_SRC = extract(BRIDGE, r"^G\.featBridge = function\(\)\n.*?^end\n", "G.featBridge")
+GREQ_SRC = extract(BRIDGE, r"^G\.featRequest = function\(p\)\n.*?^end\n", "G.featRequest")
+WIN_SRC = extract(UI, r"^U\.featOff = .*?^U\.featTabRows = function\(K, st, key\)\n.*?^end\n", "the window's game options")
+
+# The world of one game (OFF: its entity ids). Company 1 (the host) owns the line "Coal" (Mine, Mill, and Carl's Port), its two
+# trucks, the stations Mine and Mill (their buildings, own tracks and a node) and the depot Garage (a truck in it); company 3 owns
+# Port; company 1 also has the line "Ore" (Port, Mill), whose truck delivers at Mill.
+WORLD2 = r'''
+local function e(n) return n + OFF end
+P1, P2, P3 = e(100), e(200), e(300)
+OWN, BAL, NAMES, CMDS, LOGS, EVENTS, CHATS, FILEDATA = {}, {}, {}, {}, {}, {}, {}, {}
+SG = { [e(10)] = { e(11) }, [e(20)] = { e(21) }, [e(30)] = { e(31) } }
+CONOF = { [e(11)] = e(12), [e(21)] = e(22), [e(31)] = e(32) }
+CONS = { [e(12)] = { frozenEdges = { e(13), e(14) }, frozenNodes = { e(15) }, depots = {} },
+  [e(22)] = { frozenEdges = { e(23) }, frozenNodes = {}, depots = {} },
+  [e(32)] = { frozenEdges = { e(33) }, frozenNodes = {}, depots = {} },
+  [e(50)] = { frozenEdges = { e(52) }, frozenNodes = {}, depots = { e(51) }, fileName = "depot/truck.con",
+    transf = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 900, 900, 0, 1 } } }
+LINES = { [e(40)] = { stops = { e(10), e(20), e(30) }, vehicles = { e(41), e(42) } }, [e(60)] = { stops = { e(30), e(20) }, vehicles = { e(61) } } }
+DEPOTVEH = { [e(51)] = { e(53) } }
+TV, LOAD = {}, {}
+NAMES[e(10)], NAMES[e(20)], NAMES[e(30)], NAMES[e(40)], NAMES[e(60)], NAMES[e(50)] = "Mine", "Mill", "Port", "Coal", "Ore", "Garage"
+NAMES[P1], NAMES[P2], NAMES[P3] = "Host Co", "Bob Co", "Carl Co"
+for _, n in ipairs({ 10, 11, 12, 13, 14, 15, 20, 21, 22, 23, 40, 41, 42, 50, 51, 52, 53, 60, 61 }) do OWN[e(n)] = P1 end
+for _, n in ipairs({ 30, 31, 32, 33 }) do OWN[e(n)] = P3 end
+BAL[P1], BAL[P2], BAL[P3] = 1000000, 1000000, 1000000
+NOW = 0
+local function keys(t) local out = {} for k in pairs(t) do out[#out + 1] = k end table.sort(out) return out end
+CARGO = { COAL = 3, PASSENGERS = 0 }
+api = {
+  type = {
+    JournalEntry = { new = function() return { category = {} } end, Type = { OTHER = 1, ACQUISITION = 3, MAINTENANCE = 4, INCOME = 5 } },
+    Vec3f = { new = function() return {} end },
+    ComponentType = { PLAYER_OWNED = "po", NAME = "name", LINE = "line", CONSTRUCTION = "con", STATION_GROUP = "sg",
+      TRANSPORT_VEHICLE = "tv" },
+    enum = { TransportVehicleState = { IN_DEPOT = 0, EN_ROUTE = 1, AT_TERMINAL = 2 } },
+  },
+  util = { getDefaultMonthDuration = function() return 20000 end },
+  res = { cargoTypeRep = {
+    find = function(n) return CARGO[n] or -1 end, getPassengerCargoTypeId = function() return 0 end,
+    get = function(id) for n, i in pairs(CARGO) do if i == id then return { name = n:sub(1, 1) .. n:sub(2):lower() } end end end,
+    getName = function(id) for n, i in pairs(CARGO) do if i == id then return n end end end,
+    getAll = function() return { [0] = {}, [3] = {} } end } },
+  cmd = {
+    sendCommand = function(c) CMDS[#CMDS + 1] = c end,
+    makeEntitySetPlayerCmd = function(x, p) OWN[x] = p; return { kind = "owner", e = x, p = p } end,
+    makeJournalBookAssetCmd = function(ent, je) BAL[ent] = (BAL[ent] or 0) + je.amount; return { kind = "book" } end,
+  },
+  engine = {
+    getComponent = function(x, ct)
+      if ct == "po" then return OWN[x] and { player = OWN[x] } or nil end
+      if ct == "name" then return { name = NAMES[x] or ("E" .. x) } end
+      if ct == "line" then
+        local l = LINES[x]
+        if not l then return nil end
+        local s = {}
+        for i, sg in ipairs(l.stops) do s[i] = { stationGroup = sg } end
+        return { stops = s }
+      end
+      if ct == "con" then return CONS[x] end
+      if ct == "sg" then return SG[x] and { stations = SG[x] } or nil end
+      if ct == "tv" then return TV[x] end
+      return nil
+    end,
+    util = { finance = { getPlayersBalance = function(p) return BAL[p] or 0 end } },
+    system = {
+      lineSystem = { getLinesForPlayer = function(p) local r = {} for _, l in ipairs(keys(LINES)) do if OWN[l] == p then r[#r + 1] = l end end return r end },
+      transportVehicleSystem = { getLineVehicles = function(l) return LINES[l] and LINES[l].vehicles or {} end,
+        getDepotVehicles = function(d) return DEPOTVEH[d] or {} end, getVehiclesForPlayer = function() return {} end },
+      streetConnectorSystem = { getConstructionEntityForStation = function(s) return CONOF[s] or -1 end,
+        getConstructionEntityForDepot = function(d) return e(50) end },
+      simEntityAtVehicleSystem = { getVehicleSimEntitiesCountForCargoType = function(v, cid) return LOAD[v] or 0 end },
+    },
+  },
+}
+R = { allEdges = function() return {} end, withoutAssets = function(l) return l end,
+  entitiesWith = function(name)
+    if name == "STATION_GROUP" then return keys(SG) end
+    if name == "CONSTRUCTION" then return keys(CONS) end
+    if name == "LINE" then return keys(LINES) end
+    return {}
+  end,
+  sgKey = function(sg) return "sg:" .. tostring(NAMES[sg]) end, ownerOf = function(x) return OWN[x] end }
+function log(s) LOGS[#LOGS + 1] = tostring(s) end
+function logHas(s) for _, l in ipairs(LOGS) do if l:find(s, 1, true) then return true end end return false end
+function gameTime() return NOW end
+STEP = 200
+BS = "/"
+TAB, NL = "\t", "\n"
+function coBook(ent, je) BAL[ent] = (BAL[ent] or 0) + je.amount end
+function T(fr, en) if LANG == "fr" then return fr end return en end
+C = { ROLE = "host", DIR = "D", BS = "/", NL = "\n", CR = "\r", T = T, Tf = function(fr, en) return en end,
+  IO = { open = function(path, mode)
+    if mode == "wb" then local buf = {} return { write = function(_, s) buf[#buf + 1] = s end, close = function() FILEDATA[path] = table.concat(buf) end } end
+    local s = FILEDATA[path]
+    if not s then return nil end
+    return { read = function() return s end, close = function() end }
+  end } }
+C.eco = function() return E end
+C.feat = function() return F end
+SIM = { ecoEnv = function() return ECOENV end }
+G = { me = "Host", myCo = 1, cmode = "separate" }
+G.coEvent = function(name, param) EVENTS[#EVENTS + 1] = { name = name, param = param } end
+G.featChat = function(t) CHATS[#CHATS + 1] = t return true end
+-- (the window)
+U = { isHost = function(s) return s and s.host == true end, winChanged = function() end }
+LINESENT = {}
+function sendLine(kind, p) LINESENT[#LINESENT + 1] = { kind = kind, p = p } end
+function money(n) return tostring(n) end
+K = { TEXT_W = 556, ICON_SETTINGS = "i" }
+function K.text(t, class, cls, w) return { kind = "text", t = tostring(t), cls = cls } end
+function K.muted(t) return { kind = "muted", t = tostring(t) } end
+function K.section(icon, t) return { kind = "section", t = t } end
+function K.gap() return { kind = "gap" } end
+function K.row(c) return { kind = "row", c = c } end
+function K.col(c) return { kind = "col", c = c } end
+function K.btn(label, tip, fn, primary, enabled) return { kind = "btn", t = label, fn = fn, enabled = enabled ~= false } end
+'''
+
+SETUP2 = r'''
+st = { co = { mode = "separate", canon = P1, list = {
+  { id = 1, key = "host", name = "Host Co", ent = P1, members = { { key = "host" } }, chief = "host" },
+  { id = 2, key = "bob", name = "Bob Co", ent = P2, members = { { key = "bob" } }, chief = "bob" },
+  { id = 3, key = "carl", name = "Carl Co", ent = P3, members = { { key = "carl" } }, chief = "carl" },
+}, stationRule = { ["sg:Mine"] = { rule = "toll", fee = 500, co = 1 }, ["sg:Port"] = { rule = "toll", fee = 300, co = 3 } },
+  vstop = { ["1"] = 0 } } }
+ECOENV = { log = log, CO = CO, R = R, STEP = 200, gameTime = gameTime }
+F.loader = function(id) if id == "trade" then return assert(load(TRADESRC, "=trade"))() end return nil end
+F.load(log)
+TR = F.byId.trade
+B = SIM.featBridge()
+GB = G.featBridge()
+function ev(name, param) F.simEvent(st, name, param, B) end
+function steps(n) local ch = false for i = 1, (n or 1) do NOW = NOW + 200; if F.simTick(st, B) then ch = true end end return ch end
+function S() return st.feat and st.feat.trade end
+function owners(list) local t = {} for _, n in ipairs(list) do t[#t + 1] = tostring(OWN[n + OFF] and (OWN[n + OFF] - OFF)) end return table.concat(t, " ") end
+function moneyOf() return (BAL[P1] - 1000000) .. " " .. (BAL[P2] - 1000000) .. " " .. (BAL[P3] - 1000000) end
+GUINOW = 100
+function gui(me, myCo) G.me, G.myCo = me, myCo; GUINOW = GUINOW + 2; F.gui(st, G.featBridge(), GUINOW) end
+function file() return FILEDATA["D/feat_trade_trade.txt"] end
+'''
+
+
+def game2(off):
+    L = lua52.LuaRuntime(unpack_returned_tuples=True)
+    L.globals().OFF = off
+    L.execute(WORLD2)
+    g = L.globals()
+    g.CO = L.execute(read("mpfever_co.lua"))
+    g.E = L.execute(read("mpfever_eco.lua"))
+    g.F = L.execute(read("mpfever_feat.lua"))
+    g.TRADESRC = SRC
+    L.execute(SIMB_SRC)
+    L.execute(GUIB_SRC)
+    L.execute(GREQ_SRC)
+    L.execute(WIN_SRC)
+    L.execute(SETUP2)
+    return L
+
+
+A2, B2 = game2(0), game2(5000)
+
+
+def both2(code):
+    return run(A2, code), run(B2, code)
+
+
+def same2(what):
+    sa, sb = run(A2, 'return ser(S() or {}, { here = true })'), run(B2, 'return ser(S() or {}, { here = true })')
+    ma, mb = run(A2, "return moneyOf()"), run(B2, "return moneyOf()")
+    check(sa == sb and ma == mb, "integrated, the two games agree: " + what + ("" if sa == sb else "\n          A " + sa + "\n          B " + sb)
+          + ("" if ma == mb else "\n          money A " + ma + " / B " + mb))
+
+
+for L2 in (A2, B2):
+    L2.execute(r'''
+function ser(t, skip)
+  if type(t) ~= "table" then return type(t) == "string" and string.format("%q", t) or tostring(t) end
+  local keys = {}
+  for k in pairs(t) do if not (skip and skip[k]) then keys[#keys + 1] = k end end
+  table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+  local out = {}
+  for _, k in ipairs(keys) do out[#out + 1] = "[" .. ser(k) .. "]=" .. ser(t[k]) end
+  return "{" .. table.concat(out, ",") .. "}"
+end
+''')
+
+print("integrated: all options off")
+both2('''
+ev("f_trade_offer", { to = 2, kind = "depot", key = "D:depot/truck.con@900,900", price = 5, mpfCo = 1, mpfFrom = "Host" })
+CH0 = steps(200)
+gui("Host", 1)
+''')
+check(run(A2, 'return st.feat == nil and CH0 == false and #CMDS == 0 and #EVENTS == 0 and next(FILEDATA) == nil and moneyOf() == "0 0 0"') is True,
+      "no state, no command, no event, no file, no money: " + str(run(A2, "return logHas('are off')")))
+
+print("integrated: the host's options, the lots through the bridge")
+both2('ev("f_opts", { s = "contracts=1;sales=1", mode = "separate", mpfFrom = "Host" })')
+check(run(A2, 'return st.optsText') == "contracts=1;sales=1", "the host's f_opts switches both options on")
+lots_a = run(A2, 'local t = {} for _, l in ipairs(B.lots(st, 1)) do t[#t + 1] = l.kind .. "=" .. l.key .. "/" .. tostring(l.vehicles or "") end return table.concat(t, " ")')
+lots_b = run(B2, 'local t = {} for _, l in ipairs(B.lots(st, 1)) do t[#t + 1] = l.kind .. "=" .. l.key .. "/" .. tostring(l.vehicles or "") end return table.concat(t, " ")')
+check(lots_a == lots_b and "line=L:Coal|sg:Mine;sg:Mill;sg:Port/2" in lots_a and "depot=D:depot/truck.con@900,900/" in lots_a and "station=sg:Mine/" in lots_a,
+      "SIM.featBridge.lots: mpfever_eco.lua's lots, the same keys on both games: " + lots_a)
+check(run(A2, 'return F.simEnv(TR, st, B).lots(1)[1].key == B.lots(st, 1)[1].key and F.guiEnv(TR, st, GB).lots(1) ~= nil and F.guiEnv(TR, st, GB).T("a", "b") == "b"') is True,
+      "the modules' env: lots in both halves, T in the interface half")
+
+print("integrated: a line sold with its stations and their own tracks")
+both2('ev("f_trade_offer", { to = 2, kind = "line", key = "L:Coal|sg:Mine;sg:Mill;sg:Port", price = 250000, mpfCo = 1, mpfFrom = "Host" })')
+check(run(A2, 'return #S().offers == 1 and S().offers[1].nveh == 2') is True, "the offer is kept, the line has 2 vehicles")
+both2('ev("f_trade_answer", { id = 1, accept = true, mpfCo = 2, mpfFrom = "Bob#1" })')
+check(run(A2, 'return owners({ 40, 41, 42 })') == "200 200 200", "the line and its trucks are company 2's")
+check(run(A2, 'return owners({ 10, 11, 12, 13, 14, 15, 20, 21, 22, 23 })') == "200 200 200 200 200 200 200 200 200 200",
+      "the seller's stations of its stops, their buildings, own tracks and node are company 2's: " + run(A2, 'return owners({ 10, 11, 12, 13, 14, 15, 20, 21, 22, 23 })'))
+check(run(A2, 'return owners({ 30, 31, 32, 33, 50, 51, 52, 53, 60, 61 })') == "300 300 300 300 100 100 100 100 100 100",
+      "a third company's station on the line, the depot and the other line stay where they were")
+check(run(A2, 'return moneyOf()') == "250000 -250000 0", "the buyer paid the seller 250 000 (through the bridge's book)")
+check(run(A2, 'return st.co.stationRule["sg:Mine"] == nil and st.co.stationRule["sg:Port"] ~= nil and st.co.vstop == nil') is True,
+      "the stations sold lose their own setting (as an auction's lot), a third company's keeps its own; the stops read afresh")
+check(run(A2, 'return logHas("2 station(s) of its stops, 4 own track(s) and node(s): 13 change hands")') is True,
+      "mpfever_eco.lua logs what changed hands")
+same2("after the line's sale (their entity ids differ)")
+
+print("integrated: a depot sold with the truck in it, a refusal of a lot that changed")
+both2('''
+ev("f_trade_offer", { to = 3, kind = "depot", key = "D:depot/truck.con@900,900", price = 40000, mpfCo = 1, mpfFrom = "Host" })
+ev("f_trade_answer", { id = S().seq, accept = true, mpfCo = 3, mpfFrom = "Carl#2" })
+''')
+check(run(A2, 'return owners({ 50, 51, 52, 53 })') == "300 300 300 300" and run(A2, 'return moneyOf()') == "290000 -250000 -40000",
+      "the depot, its truck and its own track are company 3's; 40 000 paid")
+both2('''
+ev("f_trade_offer", { to = 2, kind = "line", key = "L:Ore|sg:Port;sg:Mill", price = 1000, mpfCo = 1, mpfFrom = "Host" })
+LINES[60 + OFF].vehicles[2] = 62 + OFF; OWN[62 + OFF] = P1
+ev("f_trade_answer", { id = S().seq, accept = true, mpfCo = 2, mpfFrom = "Bob#1" })
+LINES[60 + OFF].vehicles[2] = nil; OWN[62 + OFF] = nil
+''')
+check(run(A2, 'return owners({ 60, 61 })') == "100 100" and run(A2, 'return S().news[#S().news].kind') == "changed" and run(A2, 'return moneyOf()') == "290000 -250000 -40000",
+      "a line that got a truck since its offer: refused, nothing moves")
+same2("after the depot and the refusal")
+
+print("integrated: a supply contract, the measure, the host's figures")
+both2('''
+ev("f_trade_ct_offer", { to = 2, role = "supply", station = "sg:Mill", cargo = "COAL", per = 50, price = 10, penalty = 2, months = 3, mpfCo = 1, mpfFrom = "Host" })
+ev("f_trade_ct_answer", { id = S().seq, accept = true, mpfCo = 2, mpfFrom = "Bob#1" })
+''')
+check(run(A2, 'return S().ct[1].state == "active" and S().ct[1].label == "Mill" and S().ct[1].payer == 2') is True,
+      "company 1 delivers coal at Mill, which company 2 bought: signed (the module's own station read, M.rt.station)")
+# (the Ore line's truck: stop index 1 of its line is Mill)
+both2('steps(1); TV[61 + OFF] = { state = 1, stopIndex = 1 }; LOAD[61 + OFF] = 40; CH1 = steps(1); CH2 = steps(1)')
+check(run(A2, 'return CH1 == true and CH2 == false and S().here.trk ~= nil') is True,
+      "the tick says when it changed the measure (a truck followed), and not when nothing changed (the state is saved only then)")
+both2('TV[61 + OFF] = { state = 2, stopIndex = 1 }; LOAD[61 + OFF] = 10; steps(1); TV[61 + OFF] = { state = 1, stopIndex = 0 }; CH3 = steps(1)')
+check(run(A2, 'return CH3 == true and S().here.cur[tostring(S().ct[1].id)]') == 30, "the truck unloaded 30 at Mill: counted (M.rt.watch, vehicle, load)")
+check(run(A2, 'return logHas("feat trade: contract") and logHas("vehicle(s) of company 1") and logHas("having unloaded 30 COAL")') is True,
+      "the measure's log lines for the in-game check")
+both2('NOW = 59800; steps(2)')
+check(run(A2, 'return S().due == 2 and S().here.last[tostring(S().ct[1].id)] == 30') is True, "the month's turn: month 2 is due, its count kept")
+run(B2, 'EVENTS = {}; C.ROLE = "client"; gui("Bob#1", 2)')
+check(run(B2, 'local n = 0 for _, x in ipairs(EVENTS) do if x.name == "f_trade_pay" then n = n + 1 end end return n') == 0, "a client's game sends no figures")
+run(A2, 'EVENTS = {}; gui("Host", 1)')
+pay = run(A2, 'for _, x in ipairs(EVENTS) do if x.name == "f_trade_pay" then return ser(x.param) end end')
+check(pay is not None, "the host's game sends its figures through G.coEvent (G.featBridge.send): " + str(pay))
+for L2 in (A2, B2):
+    L2.globals().PAYTXT = pay
+check(run(A2, 'local p = load("return " .. PAYTXT)() return p.month == 2 and p.ct[1].n == 30 and p.ct[1].lost == nil') is True, "its figures: month 2, 30 delivered")
+both2('local p = load("return " .. PAYTXT)(); p.mpfFrom = "Host"; ev("f_trade_pay", p)')
+check(run(A2, 'return moneyOf()') == "290300 -250300 -40000", "the month of the signature: 30 x 10 paid, no penalty")
+same2("after the contract's first month")
+
+print("integrated: the window (U.featTabRows, the real tab), its buttons through G.featRequest")
+both2('ev("f_trade_offer", { to = 1, kind = "station", key = "sg:Mine", price = 0, mpfCo = 2, mpfFrom = "Bob#1" })')
+run(A2, '''
+STS = { mode = "separate", opts = "contracts=1;sales=1" }
+CHATS = {}
+gui("Host", 1)
+ROWS = U.featTabRows(K, STS, "f_trade")
+''')
+check(run(A2, 'return file() ~= nil and file():find("me\\t1\\t1\\t1\\t1", 1, true) == 1') is True, "the interface half writes feat_trade_trade.txt (G.featBridge.write)")
+check(run(A2, 'return #LINESENT == 1 and LINESENT[1].kind == "feat_req" and LINESENT[1].p.m == "trade" and LINESENT[1].p.kind == "look"') is True,
+      "drawing the tab asks the module to look at the world (ui.log feat_req)")
+run(A2, 'G.featSt = st; G.featRequest(LINESENT[1].p); gui("Host", 1); ROWS = U.featTabRows(K, STS, "f_trade")')
+check(run(A2, 'return file():find("\\nlot\\tdepot", 1, true) == nil and file():find("\\nlot\\tline\\tL:Ore", 1, true) ~= nil') is True,
+      "after the look, its lots are in the file (the depot sold is not)")
+txt = run(A2, '''
+local out = {}
+local function walk(n)
+  if n.kind == "row" then local t = {} for _, c in ipairs(n.c) do t[#t + 1] = "[" .. tostring(c.t) .. (c.enabled and "" or " off") .. "]" end out[#out + 1] = table.concat(t, " ")
+  elseif n.t then out[#out + 1] = n.t end
+end
+for _, n in ipairs(ROWS) do walk(n) end
+return table.concat(out, "\\n")
+''')
+check("Bob Co offers you station « Mine » for $0." in txt and "[Accept] [Refuse]" in txt and "Sales between companies" in txt and "Supply contracts" in txt,
+      "the tab shows the offer received, its buttons, the sections")
+check("[Sell…]" in txt and "[Cancel the contract]" in txt, "the chief's sell buttons, the running contract's cancel")
+check("Contract of Host Co for Bob Co: 30/50 Coal delivered, $300 paid." in txt and "30 last month" in txt,
+      "the month paid in the news: the units delivered (not the news's number)")
+run(A2, '''
+LINESENT, EVENTS = {}, {}
+for _, n in ipairs(ROWS) do if n.kind == "row" then for _, c in ipairs(n.c) do if c.t == "Accept" then c.fn() end end end end
+for _, l in ipairs(LINESENT) do G.featRequest(l.p) end
+''')
+ans = run(A2, 'for _, x in ipairs(EVENTS) do if x.name == "f_trade_answer" then return x.param end end')
+check(ans is not None and ans.accept is True and ans.id == run(A2, 'return S().offers[1].id'),
+      "Accept: the window's request, G.featRequest, the module's chief check, then the event sent (G.coEvent)")
+run(A2, 'LINESENT, EVENTS, CHATS = {}, {}, {}; G.me, G.myCo = "Dan#3", 2')
+run(A2, 'for _, n in ipairs(ROWS) do if n.kind == "row" then for _, c in ipairs(n.c) do if c.t == "Accept" then c.fn() end end end end for _, l in ipairs(LINESENT) do G.featRequest(l.p) end')
+check(run(A2, 'return #EVENTS == 0 and #CHATS == 1') is True, "a player who is not the chief: nothing sent, told why in this game's chat")
+run(A2, 'G.me, G.myCo = "Host", 1')
+
+print("integrated: the auction's sale is the same as before (E.transferLot without options)")
+run(A2, '''
+for _, n in ipairs({ 10, 11, 12, 13, 14, 15, 20, 21, 22, 23, 40, 41, 42 }) do OWN[n + OFF] = P1 end
+st.co.stationRule["sg:Mine"] = { rule = "toll", fee = 500, co = 1 }
+st.co.vstop = { ["1"] = 0 }
+E.env = ECOENV
+local n = E.transferLot(ECOENV, st.co.list[1], st.co.list[2], { kind = "line", key = "L:Coal|sg:Mine;sg:Mill;sg:Port", label = "Coal" })
+TRN = n
+''')
+check(run(A2, 'return TRN == 3 and owners({ 40, 41, 42 }) == "200 200 200" and owners({ 10, 11, 12, 13, 20, 23 }) == "100 100 100 100 100 100"') is True,
+      "without options: the line and its vehicles only, as the auction sold them (no station, no own track)")
+check(run(A2, 'return st.co.stationRule["sg:Mine"] ~= nil and st.co.vstop ~= nil') is True, "and nothing of the registry touched")
+run(A2, '''
+for _, n in ipairs({ 40, 41, 42 }) do OWN[n + OFF] = P1 end
+st.co.list[1].gone = nil
+E.bankrupt(st, st.co.list[1], ECOENV, 1)
+E.event(st, "co_bid", { seq = st.co.auction.seq, lot = 1, amount = 100000, mpfCo = 2, mpfFrom = "Bob#1" }, ECOENV)
+BEFORE = BAL[P2]
+E.event(st, "co_lot_close", { seq = st.co.auction.seq, lot = 1, mpfFrom = "Host" }, ECOENV)
+''')
+check(run(A2, 'return owners({ 40, 41, 42, 10, 13 }) == "200 200 200 100 100" and BAL[P2] == BEFORE - 100000') is True,
+      "an auction's lot sold: the line and its vehicles change hands, the bid booked, as before")
 
 if failures:
     print(f"FAIL {len(failures)} case(s):")

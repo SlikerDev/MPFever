@@ -288,6 +288,10 @@ local function simEnv(M, st, B)
 		end
 		e.month = function() return e._B.month() end
 		e.date = function() return e._B.date() end
+		-- (a company's lots, as a bankrupt company's auction lists them, and the transfer of one to another company: mpfever_eco.lua's
+		-- E.lotsOf and E.transferLot through the bridge; nil when the bridge has none. Called from an event, the same on every game)
+		e.lots = function(id) local f = e._B.lots; if f then return f(e._st, id) end return nil end
+		e.transferLot = function(fromId, toId, lot) local f = e._B.transferLot; if f then return f(e._st, fromId, toId, lot) end return nil end
 		F.envs.sim[M.ID] = e
 	end
 	e._st, e._B = st, B
@@ -431,11 +435,14 @@ local function guiEnv(M, st, B)
 		end
 		e.realTime = function() return os.clock() end
 		e.gameTime = function() return e._B.gameTime() end
+		-- (a company's lots, as the simulation's env.lots: for the window's lists)
+		e.lots = function(id) local f = e._B.lots; if f then return f(e._st, id) end return nil end
 		F.envs.gui[M.ID] = e
 	end
 	e._st, e._B = st, B
 	e.isHost, e.me, e.myCo, e.mode = B.isHost, B.me, B.myCo, B.mode
-	e.R, e.CO = B.R, B.CO
+	-- (T(fr, en): the player's language, for the chat and the window's files)
+	e.R, e.CO, e.T = B.R, B.CO, B.T
 	return e
 end
 F.guiEnv = guiEnv

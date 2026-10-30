@@ -346,12 +346,81 @@ local function dropLotRule(reg, lot)
 	end
 end
 
+-- (0.6) The own tracks and nodes of constructions (a station's platforms, a depot's tracks), added to `all` once each
+local function frozenOf(cons, all, seen)
+	for _, con in ipairs(cons) do
+		pcall(function()
+			local cc = api.engine.getComponent(con, api.type.ComponentType.CONSTRUCTION)
+			if not cc then return end
+			for _, list in ipairs({ cc.frozenEdges, cc.frozenNodes }) do
+				for i = 1, #(list or {}) do
+					local e = list[i]
+					if type(e) == "number" and not seen[e] then seen[e] = true; all[#all + 1] = e end
+				end
+			end
+		end)
+	end
+end
+
+-- (0.6) The assets of a lot (E.lotsOf: a line with its vehicles, a station, a depot with the vehicles in it), found again by its key
+-- in company `from`'s, become company `to`'s; returns how many entities changed hands. The auction's sale (sell, below) goes
+-- through it with no opts, exactly as before; the sales between companies (mpfever_feat_trade.lua, through the bridge's
+-- SIM.featBridge) give opts:
+--   withStations  a line goes with the stations of its stops that `from` owns (each one as a station lot of its own)
+--   frozen        the own tracks and nodes of the stations' and depots' constructions change hands too (without them the buyer's
+--                 trains would pay the seller's toll inside a station they bought)
+--   reg           the registry: the own settings of the stations and depots that change hands go (as an auction's lot, see
+--                 dropLotRule: they follow the buyer's rules), and the vehicles' stops are read afresh for the fees (reg.vstop)
+-- Books nothing: the caller does.
+function E.transferLot(env, from, to, lot, opts)
+	opts = opts or {}
+	local ents, vehicles, cons = lotEntities(env, from, lot)
+	local all, seen = {}, {}
+	for _, e in ipairs(ents) do all[#all + 1] = e; seen[e] = true end
+	for _, v in ipairs(vehicles) do all[#all + 1] = v; seen[v] = true end
+	local stations = {}
+	if opts.withStations and lot.kind == "line" then
+		-- (the line's stops, read at once: a component read is only valid until the next one)
+		local sgs = {}
+		for _, l in ipairs(ents) do
+			pcall(function()
+				local lc = api.engine.getComponent(l, api.type.ComponentType.LINE)
+				for i = 1, #lc.stops do sgs[#sgs + 1] = lc.stops[i].stationGroup end
+			end)
+		end
+		for _, sg in ipairs(sgs) do
+			if not seen[sg] and env.R.ownerOf(sg) == from.ent then
+				for _, e in ipairs(stationEntities(env, sg)) do
+					if not seen[e] then
+						seen[e] = true
+						all[#all + 1] = e
+						local okc, cc = pcall(api.engine.getComponent, e, api.type.ComponentType.CONSTRUCTION)
+						if okc and cc then cons[#cons + 1] = e end
+					end
+				end
+				stations[#stations + 1] = env.R.sgKey(sg)
+			end
+		end
+	end
+	local nFrozen = #all
+	if opts.frozen then frozenOf(cons, all, seen) end
+	nFrozen = #all - nFrozen
+	local n = setOwner(all, from.ent, to.ent)
+	if opts.reg then
+		dropLotRule(opts.reg, lot)
+		for _, key in ipairs(stations) do dropLotRule(opts.reg, { kind = "station", key = key }) end
+		opts.reg.vstop = nil
+	end
+	if opts.withStations or opts.frozen then
+		env.log("companies: lot '" .. tostring(lot.label) .. "' (" .. tostring(lot.kind) .. ") of company " .. tostring(from.id) .. " to company "
+			.. tostring(to.id) .. ": " .. #ents .. " entities, " .. #vehicles .. " vehicle(s), " .. #stations .. " station(s) of its stops, "
+			.. nFrozen .. " own track(s) and node(s): " .. n .. " change hands")
+	end
+	return n, { stations = stations, vehicles = #vehicles, frozen = nFrozen }
+end
+
 local function sell(env, c, lot, winner, amount)
-	local ents, vehicles = lotEntities(env, c, lot)
-	local all = {}
-	for _, e in ipairs(ents) do all[#all + 1] = e end
-	for _, v in ipairs(vehicles) do all[#all + 1] = v end
-	local n = setOwner(all, c.ent, winner.ent)
+	local n = E.transferLot(env, c, winner, lot)
 	book(winner.ent, -amount, function(x) x.category.type = api.type.JournalEntry.Type.ACQUISITION end)
 	env.log("companies: auction: lot '" .. tostring(lot.label) .. "' (" .. lot.kind .. ") of company " .. c.id .. " sold to company "
 		.. winner.id .. " for " .. amount .. " (" .. n .. " entities change hands)")

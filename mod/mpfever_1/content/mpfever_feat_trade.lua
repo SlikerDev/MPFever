@@ -47,7 +47,8 @@
 
 local M = {}
 M.ID = "trade"
-M.FILE = "trade.txt"
+-- (the window's file: env.write("trade") writes feat_trade_trade.txt of the session folder, u.read("trade") reads it back)
+M.FILE = "trade"
 M.OPTIONS = {
 	{ id = "sales", title = { "Ventes entre entreprises", "Sales between companies" },
 		desc = { "Le chef d'une entreprise peut vendre une ligne (avec ses gares), une gare ou un dépôt à une autre entreprise, au prix convenu.",
@@ -213,7 +214,10 @@ function M.rt.R(env) return (env and env.R) or modFile("mpfever_refs.lua") end
 -- env.lots(id) when the options host gives it, else mpfever_eco.lua's E.lotsOf (the lots of a bankrupt company's auction).
 function M.rt.lots(env, st, c)
 	if not (c and c.ent) then return {} end
-	if env.lots then return env.lots(c.id) or {} end
+	if env.lots then
+		local lots = env.lots(c.id)
+		if type(lots) == "table" then return lots end
+	end
 	local E = modFile("mpfever_eco.lua")
 	if E and E.lotsOf then
 		local ok, lots = pcall(E.lotsOf, { R = M.rt.R(env), log = env.log }, c)
@@ -223,15 +227,18 @@ function M.rt.lots(env, st, c)
 end
 
 -- The lot's assets change hands, from company `from` to company `to` (records of the registry), as an auction's lot sold:
--- lot = {kind, key, label, withStations}. Returns how many entities moved, or nil and why when no transfer is available.
--- env.transferLot(fromId, toId, lot) when the options host gives it, else mpfever_eco.lua's E.transferLot(env, from, to, lot,
--- opts) once it exports one (see the integration notes: extracted from its sell()).
+-- lot = {kind, key, label, withStations, frozen}. Returns how many entities moved, or nil and why when no transfer is available.
+-- env.transferLot(fromId, toId, lot) (the options host's: mpfever_eco.lua's E.transferLot through the bridge, with the registry,
+-- so the stations' and depots' own settings go as an auction's do), else mpfever_eco.lua's E.transferLot loaded here.
 function M.rt.transfer(env, st, from, to, lot)
-	if env.transferLot then return env.transferLot(from.id, to.id, lot) end
+	if env.transferLot then
+		local n, why = env.transferLot(from.id, to.id, lot)
+		if n ~= nil or why ~= nil then return n, why end
+	end
 	local E = modFile("mpfever_eco.lua")
-	if E and E.transferLot then
+	if E and E.transferLot and M.rt.R(env) then
 		return E.transferLot({ R = M.rt.R(env), log = env.log, gameTime = env.gameTime, STEP = env.STEP }, from, to, lot,
-			{ withStations = lot.withStations })
+			{ withStations = lot.withStations, frozen = lot.frozen, reg = env.co })
 	end
 	return nil, "no transfer of assets in this version"
 end
@@ -456,7 +463,8 @@ local function sale(st, s, reg, env, name, param, mine, key, refuse)
 		news(s, { kind = "changed", from = o.from, to = o.to, what = what(o) })
 		return refuse("the offer changed")
 	end
-	local n, why = M.rt.transfer(env, st, seller, mine, { kind = o.kind, key = o.key, label = o.label, withStations = o.kind == "line" })
+	-- (a line with its stations (E5); a station's or a depot's own tracks with it: the buyer pays no toll inside what it bought)
+	local n, why = M.rt.transfer(env, st, seller, mine, { kind = o.kind, key = o.key, label = o.label, withStations = o.kind == "line", frozen = true })
 	if n == nil then
 		news(s, { kind = "failed", from = o.from, to = o.to, what = what(o) })
 		return refuse("transfer: " .. tostring(why))
@@ -540,7 +548,8 @@ local function contract(st, s, reg, env, name, param, mine, key, refuse)
 					c.pen = (c.pen or 0) + pen
 					c.last = n
 					if not first then c.done = (c.done or 0) + 1 end
-					news(s, { kind = "ct_paid", id = c.id, supplier = c.supplier, payer = c.payer, cargo = c.cargo, n = n, per = c.per,
+					-- (the units delivered as "units": a news's n is its number, see news)
+					news(s, { kind = "ct_paid", id = c.id, supplier = c.supplier, payer = c.payer, cargo = c.cargo, units = n, per = c.per,
 						amount = amount, pen = pen })
 					env.log("trade: contract " .. c.id .. ", month " .. m .. ": " .. n .. "/" .. c.per .. " delivered, " .. amount .. " paid, penalty " .. pen)
 					if f.lost then ended = "lost"
@@ -661,7 +670,12 @@ end
 -- through without standing there counts nothing. Known error (the study's 4.3): a vehicle that loads the same cargo there before
 -- it has unloaded all of it counts what it kept. The count is this game's (st.feat.trade.here); the host's is paid.
 M.watching = {}
-local function measure(h, c, x, cid)
+-- (this Lua state's log of the measure, for the in-game checks: how many vehicles each contract follows when that changes, and the
+-- first unloads counted; a count, not the clock)
+M.watchSeen, M.unloadLogs = {}, 0
+-- Whether this vehicle's look changed the measure (so that the state is saved, and the interface half sees it)
+local function measure(h, c, x, cid, env)
+	local changed = false
 	local k = tostring(c.id) .. ":" .. tostring(x.v)
 	local stt, idx = M.rt.vehicle(x.v)
 	local t = h.trk[k]
@@ -670,23 +684,36 @@ local function measure(h, c, x, cid)
 		-- (it left the stop, or went past it: what it unloaded there counts)
 		if t.low ~= nil then
 			local ck = tostring(c.id)
-			h.cur[ck] = (h.cur[ck] or 0) + math.max(0, (t.pre or 0) - t.low)
+			local n = math.max(0, (t.pre or 0) - t.low)
+			h.cur[ck] = (h.cur[ck] or 0) + n
+			if M.unloadLogs < 30 and env and env.log then
+				M.unloadLogs = M.unloadLogs + 1
+				env.log("feat trade: contract " .. c.id .. ": a vehicle of company " .. c.supplier .. " left the station having unloaded " .. n
+					.. " " .. tostring(c.cargo) .. " (load " .. tostring(t.pre) .. " -> lowest " .. tostring(t.low) .. "), this game's count this month "
+					.. h.cur[ck])
+			end
 		end
 		h.trk[k] = nil
 		t = nil
+		changed = true
 	end
 	if atStop then
 		local n = M.rt.load(x.v, cid)
-		if t.low == nil or n < t.low then t.low = n end
+		if t.low == nil or n < t.low then t.low = n; changed = true end
 	elseif stt == "en_route" and type(idx) == "number" and x.at[idx] then
 		if not t then
 			t = { i = idx }
 			h.trk[k] = t
+			changed = true
 		end
-		t.pre = M.rt.load(x.v, cid)
+		local pre = M.rt.load(x.v, cid)
+		if t.pre ~= pre then t.pre = pre; changed = true end
 	end
+	return changed
 end
 
+-- Every step: the measure. Returns true when it changed this game's count or the vehicles it follows (the options host saves
+-- the state then: the interface half reads the count for the window and, on the host's game, for its figures)
 function M.tick(st, env)
 	if env.mode ~= "separate" or not env.on("contracts") then return end
 	local s = peek(st)
@@ -694,13 +721,15 @@ function M.tick(st, env)
 	local running = {}
 	for _, c in ipairs(s.ct) do if c.state == "active" or c.state == "ending" then running[#running + 1] = c end end
 	if #running == 0 then
-		if s.here and s.here.trk and next(s.here.trk) ~= nil then s.here.trk = {} end
+		if s.here and s.here.trk and next(s.here.trk) ~= nil then s.here.trk = {}; return true end
 		return
 	end
+	local changed = false
 	local h = s.here
 	if not h then
 		h = { cur = {}, last = {}, trk = {} }
 		s.here = h
+		changed = true
 	end
 	h.cur, h.trk = h.cur or {}, h.trk or {}
 	-- (which vehicles serve each station: looked at again every M.REFRESH steps, at once for a contract just signed)
@@ -712,24 +741,31 @@ function M.tick(st, env)
 		if not w then
 			w = M.rt.watch(env, st, c, env.co) or {}
 			M.watching[c.id] = w
+			if M.watchSeen[c.id] ~= #w then
+				M.watchSeen[c.id] = #w
+				env.log("feat trade: contract " .. c.id .. ": " .. #w .. " vehicle(s) of company " .. c.supplier .. "'s lines stop at company "
+					.. c.payer .. "'s station " .. tostring(c.key) .. " (followed for " .. tostring(c.cargo) .. ")")
+			end
 		end
 		local cid = M.rt.cargoId(c.cargo)
 		if cid then
 			for _, x in ipairs(w) do
 				if watched then watched[tostring(c.id) .. ":" .. tostring(x.v)] = true end
-				measure(h, c, x, cid)
+				if measure(h, c, x, cid, env) then changed = true end
 			end
 		end
 	end
 	-- (a vehicle no longer on a line that serves the station, a contract over: forgotten)
 	if watched then
-		for k in pairs(h.trk) do if not watched[k] then h.trk[k] = nil end end
+		for k in pairs(h.trk) do if not watched[k] then h.trk[k] = nil; changed = true end end
 	end
+	return changed
 end
 
 -- ---------------------------------------------------------------------------------------------------------------- texts
 -- The texts are { French, English } pairs, as the options' titles: the options host's T picks the player's language (they are
--- not T("...", "...") calls of the code, which tests/test_lang.py would look up in lang.json: see the integration notes).
+-- not T("...", "...") calls of the code, which tests/test_lang.py would look up in lang.json: their translations come with the
+-- one translation pass of the 0.6 features).
 M.TX = {
 	offer = { "%s propose %s à %s pour %s.", "%s offers %s to %s for %s." },
 	refused = { "%s refuse l'offre de %s : %s.", "%s refuses the offer of %s: %s." },
@@ -863,7 +899,7 @@ function M.newsText(T, n, name, cargo)
 	if k == "ct_expired" then return tr(X.ct_expired, name(n.by)) end
 	if k == "ct_start" then return tr(X.ct_start, name(n.supplier), n.per, cargo(n.cargo), name(n.payer), n.label, M.money(n.price)) end
 	if k == "ct_paid" then
-		local t = tr(X.ct_paid, name(n.supplier), name(n.payer), n.n, n.per, cargo(n.cargo), M.money(n.amount))
+		local t = tr(X.ct_paid, name(n.supplier), name(n.payer), n.units or 0, n.per, cargo(n.cargo), M.money(n.amount))
 		if (n.pen or 0) > 0 then t = t .. tr(X.ct_penalty, M.money(n.pen)) end
 		return t
 	end
@@ -961,7 +997,7 @@ local function hostPay(st, s, reg, env)
 	env.log("trade: the host's figures of month " .. due .. " sent (" .. #fig .. " contract(s))")
 end
 
--- the window's file (trade.txt): what this player's company can do and sees
+-- the window's file (M.FILE: feat_trade_trade.txt): what this player's company can do and sees
 local function windowFile(st, s, reg, env, sales, contracts)
 	local T = M.T(env)
 	local mine = findCo(reg, tonumber(env.myCo))
@@ -985,6 +1021,15 @@ local function windowFile(st, s, reg, env, sales, contracts)
 		M.g.heavy = { sig = sig, lots = (sales and isChief and mine) and M.rt.lots(env, st, mine) or {},
 			stations = contracts and M.rt.stations(env, st, ids) or {} }
 		if contracts and not M.g.cargos then M.g.cargos = M.rt.cargos() end
+		-- (for the in-game check: what the window's lists hold, logged when it changes)
+		local nst = 0
+		for _, list in pairs(M.g.heavy.stations) do nst = nst + #list end
+		local said = #M.g.heavy.lots .. "/" .. nst .. "/" .. #(M.g.cargos or {})
+		if M.g.heavySaid ~= said then
+			M.g.heavySaid = said
+			env.log("feat trade: the window's lists: " .. #M.g.heavy.lots .. " lot(s) of company " .. tostring(mine and mine.id) .. " to sell, "
+				.. nst .. " station(s) of the companies, " .. #(M.g.cargos or {}) .. " cargo(s)")
+		end
 	end
 	for _, l in ipairs(M.g.heavy.lots) do
 		L[#L + 1] = "lot\t" .. tostring(l.kind) .. "\t" .. M.enc(l.key) .. "\t" .. M.enc(l.label) .. "\t" .. (int(l.vehicles) or 0) .. "\t" .. (int(l.reserve) or 0)
@@ -1136,7 +1181,7 @@ function M.view(m, T, f)
 	local X = M.TX
 	local rows = {}
 	local function tr(pair, ...) return M.tr(T, pair, ...) end
-	local function text(s) rows[#rows + 1] = { { text = s } } end
+	local function text(s, cls) rows[#rows + 1] = { { text = s, cls = cls } } end
 	local function row(items) rows[#rows + 1] = items end
 	-- (no file: not the companies mode; a file without a company: a player between two companies, for a few seconds)
 	if not m.me then text(tr(m.known and X.no_company or X.only_separate)); return rows end
@@ -1144,10 +1189,10 @@ function M.view(m, T, f)
 	local others = {}
 	for _, c in ipairs(m.cos) do if c.ok and c.id ~= m.me then others[#others + 1] = c end end
 	local off = not m.chief
-	if off then text(tr(X.only_chief)) end
+	if off then text(tr(X.only_chief), "warning") end
 	if #others == 0 then text(tr(X.no_other)) end
 	if m.sales then
-		text(tr(X.sales))
+		text(tr(X.sales), "title")
 		for _, o in ipairs(m.offers) do
 			local w = M.lotText(T, { kind = o.kind, label = o.label, nveh = o.nveh })
 			if o.to == m.me then
@@ -1186,7 +1231,7 @@ function M.view(m, T, f)
 		end
 	end
 	if m.contracts then
-		text(tr(X.contracts))
+		text(tr(X.contracts), "title")
 		for _, c in ipairs(m.ct) do
 			if c.state == "active" or c.state == "ending" then
 				local left = c.state == "ending" and tr(X.ct_ends) or (c.months > 0 and tr(X.ct_left, math.max(0, c.months - c.done)) or M.monthsText(T, 0))
@@ -1247,7 +1292,7 @@ function M.view(m, T, f)
 		end
 	end
 	if #m.news > 0 then
-		text(tr(X.news))
+		text(tr(X.news), "title")
 		for _, t in ipairs(m.news) do text(t) end
 	end
 	return rows
@@ -1266,9 +1311,11 @@ function M.act(u, item)
 	if u.refresh then u.refresh() end
 end
 
--- The tab, drawn with the window's helpers (mpfever_feat.lua): u.text(s) and u.button(label, onClick, enabled) make a widget,
--- u.row(widgets) lays a list of them on one line (without u.row, each widget is added as it is made). See the integration notes.
--- Drawing it tells the GUI half that the player looks at it (at most every 15 s): the lists of the world are read only then.
+-- The tab, drawn with the window's helpers (U.featU of mpfever_ui.script.lua, docs/FEATURES-0.6.md): each row of the view is its
+-- texts, one under the other at the window's width (u.title for a heading, u.text with a class), then its buttons side by side
+-- (u.row of u.button(label, fn, primary, enabled)), each put in the tab with u.add. The window draws it again after a button and
+-- about once a second. Drawing it tells the GUI half that the player looks at it (at most every 15 s): the lists of the world are
+-- read only then.
 function M.ui(u)
 	local T = u.T or function(fr, en) return en end
 	local now = os.clock()
@@ -1277,18 +1324,24 @@ function M.ui(u)
 		u.request("look", "")
 	end
 	local rows = M.view(M.parse(u.read(M.FILE) or {}), T, M.form)
+	local nodes = {}
+	local function add(n) if n ~= nil then if u.add then u.add(n) else nodes[#nodes + 1] = n end end end
 	for _, r in ipairs(rows) do
-		local ws = {}
+		local buttons = {}
 		for _, it in ipairs(r) do
 			if it.button then
 				local item = it
-				ws[#ws + 1] = u.button(it.button, function() M.act(u, item) end, not it.off)
+				buttons[#buttons + 1] = u.button(it.button, function() M.act(u, item) end, false, not it.off)
+			elseif it.cls == "title" and u.title then
+				add(u.gap and u.gap(6) or nil)
+				add(u.title(it.text))
 			else
-				ws[#ws + 1] = u.text(it.text)
+				add(u.text(it.text, it.cls))
 			end
 		end
-		if u.row then u.row(ws) end
+		if #buttons > 0 then add(u.row and u.row(buttons) or buttons[1]) end
 	end
+	return nodes
 end
 
 return M
