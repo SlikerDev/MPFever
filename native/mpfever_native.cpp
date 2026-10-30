@@ -3105,6 +3105,26 @@ static bool InstallRoadOrder(u8*& mem)
     u32 add = FindSigRva("48 89 5C 24 18 48 89 74 24 20 55 57 41 56 48 8D 6C 24 C0 48 81 EC 40 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 38");
     u32 rng = FindSigRva("48 8B C4 48 89 58 10 55 56 57 41 54 41 55 41 56 41 57 48 8D A8 08 FF FF FF 48 81 EC C0 01 00 00 C5 F8 29 70 B8 C5 F8 29 78 A8 C5 78 29 40 98 C5 78 29 48 88 C5 78 29 90 78 FF FF FF C5 78 29 98 68 FF FF FF 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 58");
     if (!add || !rng) return false;
+    // (0.5.14) the layout the sort relies on, read in the functions' bodies, not only their prologues: entries of 20 bytes (the
+    // search loop and the push_back of Add, the push_back of AddRange), slots of 72 bytes and edges of 32 (the edge-data getter
+    // AddRange calls). Another game build with the same prologues and another layout: the order stays off, as in 0.5.13, instead
+    // of moving 20-byte blocks over other entries. (All read on 40425, stamp 6ad9ce10.)
+    {
+        const u8* fa = (const u8*)(g_base + add);
+        const u8* fr = (const u8*)(g_base + rng);
+        static const u8 push20[] = { 0x48, 0x83, 0x41, 0x08, 0x14 };                            // add qword [rcx+8], 20
+        static const u8 find20[] = { 0x39, 0x18, 0x74 };                                        // cmp [rax], ebx; je
+        static const u8 next20[] = { 0x48, 0x83, 0xC0, 0x14 };                                  // add rax, 20
+        static const u8 s72[] = { 0x48, 0x8D, 0x0C, 0xC0, 0x48, 0x8B, 0x47, 0x18 };             // slot = [data+0x18] + idx*72
+        static const u8 s32[] = { 0x48, 0xC1, 0xFE, 0x05 };                                     // edges of 32 bytes
+        bool lay = memcmp(fa + 0x12d, push20, 5) == 0 && memcmp(fr + 0x179, push20, 5) == 0
+            && memcmp(fa + 0xf0, find20, 3) == 0 && memcmp(fa + 0xf4, next20, 4) == 0 && fr[0x108] == 0xE8;
+        if (lay) {
+            const u8* g = fr + 0x108 + 5 + *(const i32*)(fr + 0x109);
+            lay = memcmp(g + 0x6d, s72, 8) == 0 && memcmp(g + 0x83, s32, 4) == 0;
+        }
+        if (!lay) return false;
+    }
     static const u8 proAdd[] = { 0x48, 0x89, 0x5C, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x55, 0x57, 0x41, 0x56 };
     static const u8 proRng[] = { 0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x10, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55 };
     void* t1 = DetourWhole(mem, add, proAdd, (int)sizeof(proAdd), (void*)RoadAdd);

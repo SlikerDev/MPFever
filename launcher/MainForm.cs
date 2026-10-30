@@ -1569,6 +1569,8 @@ namespace MPFever
                 SaveSetting("bankrupt", mo.ToString(CultureInfo.InvariantCulture));
                 Log.W(mo == 0 ? T("Faillite : jamais", "Bankruptcy: never") : F("Faillite après {0} mois de dette", "Bankruptcy after {0} months in debt", mo));
                 if (relay != null) BroadcastSession();
+                // (the players' lobbies show the rules too: their summary kept the old months)
+                BroadcastLobby();
                 MenuStatus();
             }
             else if (cmd == "invite")

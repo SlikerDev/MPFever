@@ -1135,7 +1135,14 @@ SIM.coStartCanon = function(st, start)
 		if po and po.player == canon then owned = owned + 1; break end
 	end
 	pcall(function() if #api.engine.system.lineSystem.getLinesForPlayer(canon) > 0 then owned = owned + 1 end end)
-	if owned > 0 then log("companies: the savegame's company already runs vehicles or lines: it keeps its money"); return end
+	-- (and a loan: a map prepared with borrowed money lost the money and kept the debt; the game's loans are the savegame's
+	-- company's until the registry is made)
+	pcall(function()
+		local e = api.engine.system.gameScriptSystem.getEntityForGameScript(GAME_SCRIPTS.loan)
+		local s = e and e >= 0 and C.marshal(api.engine.getComponent(e, api.type.ComponentType.GAME_SCRIPT).state) or nil
+		if type(s) == "table" and type(s.obtainedLoans) == "table" and #s.obtainedLoans > 0 then owned = owned + 1 end
+	end)
+	if owned > 0 then log("companies: the savegame's company already runs vehicles or lines, or has a loan: it keeps its money"); return end
 	local acc = api.engine.getComponent(canon, api.type.ComponentType.ACCOUNT)
 	local bal = acc and tonumber(acc.balance) or nil
 	if not bal then return end
@@ -1237,6 +1244,8 @@ local function simApplyDue(state)
 	-- actions. Purchases waiting for their step (one per step, a.spread) are kept. MPFEVER_KEEPSTALE=1: as before
 	if not SIM.loadChecked then
 		SIM.loadChecked = true
+		-- (the names of the savegame as every game loaded it: the first check sends what changed since, see R.nameSeed)
+		if K.nameSyncOn() then pcall(R.nameSeed) end
 		if os.getenv("MPFEVER_KEEPSTALE") ~= "1" then
 			local kept, gone = {}, {}
 			for _, a in ipairs(q) do
@@ -4383,20 +4392,22 @@ G.ownTracksRemoved = function(m)
 	-- (a construction replaced, not only taken away: a station bulldozed has its own removal, see removalPlan)
 	if type(m) ~= "table" or type(m.proposal) ~= "table" or #(m.toRemove or {}) == 0 or #(m.toAdd or {}) == 0
 		or #(m.proposal.removedSegments or {}) == 0 then return false end
-	local own = {}
+	local own, nOwn = {}, 0
 	for _, c in ipairs(m.toRemove) do
 		local id = type(c) == "table" and c.entity or c
 		if type(id) == "number" and id >= 0 then
 			pcall(function()
 				local con = api.engine.getComponent(id, api.type.ComponentType.CONSTRUCTION)
-				if con then for i = 1, #con.frozenEdges do own[con.frozenEdges[i]] = true end end
+				if con then for i = 1, #con.frozenEdges do own[con.frozenEdges[i]] = true; nOwn = nOwn + 1 end end
 			end)
 		end
 	end
+	-- (and, second, whether it takes them ALL away: the new construction keeps no own track, issue #97, see G.replayByReplace)
+	local any, gone = false, 0
 	for _, sg in ipairs(m.proposal.removedSegments) do
-		if type(sg) == "table" and own[sg.entity] then return true end
+		if type(sg) == "table" and own[sg.entity] then any = true; gone = gone + 1; own[sg.entity] = nil end
 	end
-	return false
+	return any, any and gone >= nOwn
 end
 
 local STREET_FORMS = {
@@ -4513,7 +4524,15 @@ G.replayByReplace = function(a)
 	-- (what it takes away and adds, against the tool's build: the same entities taken away, as many added)
 	local function ids(list)
 		local t = {}
-		pcall(function() for i = 1, #list do t[#t + 1] = tonumber(type(list[i]) == "table" and list[i].entity or list[i]) or -1 end end)
+		-- (the tool's side: plain tables after the translation; the engine's: its own objects, userdata, read by their field)
+		pcall(function()
+			for i = 1, #list do
+				local x = list[i]
+				local id = x
+				if type(x) ~= "number" then id = x.entity end
+				t[#t + 1] = tonumber(id) or -1
+			end
+		end)
 		table.sort(t)
 		for i, v in ipairs(t) do t[i] = tostring(v) end
 		return table.concat(t, ",")
@@ -4563,7 +4582,8 @@ end
 local function replayNativeConstruction(a)
 	local m0 = a.args[1]
 	if not hasConstructionSegments(m0) and not a.industryEdit and not a.ownTracks then return false end
-	if a.ownTracks and not hasConstructionSegments(m0) and os.getenv("MPFEVER_EDITREPLACE") ~= "0" then return G.replayByReplace(a) end
+	-- (0.5.14, issue #97: a station edit that takes ALL its own tracks away; one that keeps some, issue #90, the conversion below)
+	if a.ownTracks and a.ownTracksAll and not hasConstructionSegments(m0) and os.getenv("MPFEVER_EDITREPLACE") ~= "0" then return G.replayByReplace(a) end
 	local cArgs = C.deser(C.ser(a.args))
 	local miss = R.translateIn(cArgs, G.bind)
 	if #miss > 0 then log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: unresolved " .. table.concat(miss, ",")) return false end
@@ -5821,7 +5841,9 @@ local function replayNative(a, formIndex)
 		-- script forms first, as before, but never the street part alone)
 		if #missing == 0 and not hasConstructionSegments(a.args[1]) and os.getenv("MPFEVER_OWNTRACKS") ~= "0" and G.ownTracksRemoved(m1) then
 			a.ownTracks = true
-			log("NATIVE REPLAY " .. tostring(a.uid) .. ": the edit takes away tracks of the construction it replaces: the tool's proposal")
+			a.ownTracksAll = select(2, G.ownTracksRemoved(m1)) == true
+			log("NATIVE REPLAY " .. tostring(a.uid) .. ": the edit takes away " .. (a.ownTracksAll and "all the" or "some")
+				.. " tracks of the construction it replaces: the tool's proposal")
 		end
 		if hasConstructionSegments(a.args[1]) or a.ownTracks then
 			if replayNativeConstruction(a) then return end
@@ -14502,6 +14524,8 @@ end
 -- This GUI half starts with the game, and again after a resynchronisation (the host's savegame loaded here): what the
 -- files already hold belongs to the previous game state, and the savegame's script state holds the host's records.
 local function resumeAfterLoad(state)
+	-- (the names of the savegame as every game loaded it, for the checks made in a pause, see R.nameSeed)
+	if K.nameSyncOn() then pcall(R.nameSeed) end
 	-- the game time of the savegame loaded now (the session's start, or the host's game of a resynchronisation): the acts stamped
 	-- later cannot be in it (see G.alreadyBuilt)
 	pcall(function() G.loadT = gameTime() end)
@@ -14915,6 +14939,8 @@ G.coEco = function(st, reg, c)
 	local shareWant = nil
 	if newRules then shareWant = G.coShare ~= false end
 	local startWant = newRules and tonumber(G.coStart) or nil
+	-- (as mpfever_eco.lua keeps it: 0 to 10 billion; another value was never kept, and co_rules went again every 10 s)
+	if startWant and (startWant < 0 or startWant > 1e10) then startWant = nil end
 	-- (the computer companies with their colour, level and start money, "n:colour:level[:money],...": a lobby on this savegame
 	-- gives them their level and money again)
 	local aiWant = newRules and type(G.coAi) == "string" and G.coAi or nil
@@ -15380,13 +15406,13 @@ G.pings = {}
 G.PING_KINDS = { here = { 0.15, 0.7, 1.0 }, warn = { 1.0, 0.3, 0.1 }, build = { 0.25, 0.95, 0.3 } }
 G.pingArm = function(p)
 	if os.getenv("MPFEVER_PINGS") == "0" or type(p) ~= "table" or not G.PING_KINDS[p.k] then return end
-	G.pingArmed = { k = p.k, till = G.frames + 900 }
+	G.pingArmed = { k = p.k, till = os.clock() + 15 }
 	log("map signal armed: " .. p.k .. " (the next click on the map places it)")
 end
 G.pingClick = function(name, param)
 	local a = G.pingArmed
 	G.pingArmed = nil
-	if not a or G.frames > a.till then return end
+	if not a or os.clock() > a.till then return end
 	local pos = nil
 	if name == "select-world" and type(param) == "table" and type(param.pos) == "table" then pos = param.pos end
 	if not pos then
@@ -15455,7 +15481,7 @@ G.pingTick = function()
 			G.pings[key] = nil
 		end
 	end
-	if G.pingArmed and G.frames > G.pingArmed.till then G.pingArmed = nil; log("map signal: no click within 15 s") end
+	if G.pingArmed and os.clock() > G.pingArmed.till then G.pingArmed = nil; log("map signal: no click within 15 s") end
 end
 
 H.preview = function(from, p)

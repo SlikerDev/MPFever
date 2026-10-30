@@ -988,7 +988,8 @@ R.nameOf = nameOf
 -- ("Ingolstadt Fishing Grounds West" on an English game, "Ingolstadt Fischzucht" on a German one), so the games of players of
 -- two languages differed in the checks ("names", "lines") and reloaded. The host's game sends the names that are new or changed
 -- since its last check (the names part fills R.nameCollect), and the other games take them: a name changes nothing in the
--- simulation. Gives nil for the first call (nothing to compare with yet) and when nothing changed. (MPFEVER_NAMESYNC=0: off)
+-- simulation. Gives nil when nothing changed, and for a first call with no baseline (R.nameSeed sets one at every load).
+-- (MPFEVER_NAMESYNC=0: off)
 R.NAMESYNC_MAX = 400
 function R.nameChanges(collected)
 	local prev = R.namesPrev
@@ -1008,6 +1009,16 @@ function R.nameChanges(collected)
 		list[i] = nil
 	end
 	return list
+end
+
+-- the names of the savegame as every game loaded it, the baseline of the next R.nameChanges: a station, line or vehicle named
+-- between the load and the first check went unsent before, the first check only set the baseline
+function R.nameSeed()
+	local col = {}
+	for _, cname in ipairs({ "STATION_GROUP", "LINE", "TRANSPORT_VEHICLE" }) do
+		for _, e in ipairs(R.entitiesWith(cname)) do col[e] = { k = cname, nm = nameOf(e) } end
+	end
+	R.namesPrev = col
 end
 
 function R.lineText(e)

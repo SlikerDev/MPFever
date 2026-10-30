@@ -10,7 +10,7 @@ MPFever - Changelog
     Settings tab). A lobby opened on a savegame starts with that savegame's rules. MPFEVER_SHARESWITCH=0: as before.
   - NEW: the start money now applies to the host's company too at the start of a new game (it had the game's own, often 0,
     while every other company had 2 million): once, when the companies are first set up, and only if that company runs no
-    vehicle and no line yet. A game already under way keeps everybody's money.
+    vehicle, no line and no loan yet. A game already under way keeps everybody's money.
   - NEW: sharing rules off: every track, station, stop and depot is open and free for every company, whatever a company or one
     of its stations had set (those settings are kept and count again when the host switches the rules back on). The station
     and depot windows then say so instead of offering their settings. Dedicated server: sharing-rules=true/false in
@@ -22,9 +22,10 @@ MPFever - Changelog
   - FIX (issue #97, "build not reproduced: conversion built"): the edit of a modular street station that took its last own
     tracks away (a module fewer, no new segment). The replay's dry run, two copies of the station meant to be refused, was
     built instead (two constructions of one proposal are not checked against each other, only their tracks are, and it had
-    none left): two stations on the other games, then a resync. Such an edit is now rebuilt with the game's own replacement of
-    the station, built only when it takes away exactly what the builder's tool took away (else the host's game is reloaded at
-    once, nothing built twice). MPFEVER_EDITREPLACE=0: as before.
+    none left): two stations on the other games, then a resync. Such an edit, one that takes ALL the station's own tracks away,
+    is now rebuilt with the game's own replacement of the station, built only when it takes away exactly what the builder's
+    tool took away (else the host's game is reloaded at once, nothing built twice); an edit that keeps some of them (issue
+    #90) is replayed as in 0.5.13. MPFEVER_EDITREPLACE=0: as before.
   - FIX (vehicles drifting apart in long sessions, friends' 4-hour session of 2026-10-29): the order of the vehicles and persons
     on each road edge. The game keeps them in the order they arrived, and the vehicles queued at a stop take their places from
     it: on two games the same trucks of one line waited 0.2 m apart, the "vehicles" check differed and the games reloaded
