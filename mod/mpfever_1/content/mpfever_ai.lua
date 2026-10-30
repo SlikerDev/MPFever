@@ -30,11 +30,11 @@ local BUS_COST = 180000    -- a bus, until the first purchase measures it
 -- distance flown, so the short town lines earn the least)
 local LEVELS = {
 	{ name = "easy", tick = 150, reserve = 700000, maxBus = 4, maxTruck = 5, busUse = 0.85, truckUse = 0.6, waiting = 80, freightShare = 1 / 3,
-		freightMax = 4000, compete = false, townMin = 600, pause = 1200, bootstrap = 1, settle = 360000, freeCash = 3000000, profitFirst = false, runMonths = 6 },
+		freightMax = 4000, compete = false, townMin = 600, pause = 1200, bootstrap = 1, settle = 480000, freeCash = 3000000, maxUnproven = 1, profitFirst = false, runMonths = 6, addMargin = 1.3, giveUp = 0.4, ramp = 480000 },
 	{ name = "normal", tick = 60, reserve = 400000, maxBus = 8, maxTruck = 10, busUse = 0.75, truckUse = 0.45, waiting = 40, freightShare = 1 / 2,
-		freightMax = 5000, compete = false, townMin = 500, pause = 600, bootstrap = 2, settle = 240000, freeCash = 2000000, profitFirst = true, runMonths = 4 },
+		freightMax = 5000, compete = false, townMin = 500, pause = 600, bootstrap = 2, settle = 360000, freeCash = 2000000, maxUnproven = 1, profitFirst = true, runMonths = 4, addMargin = 1.15, giveUp = 0.5, ramp = 360000 },
 	{ name = "hard", tick = 30, reserve = 350000, maxBus = 12, maxTruck = 14, busUse = 0.6, truckUse = 0.35, waiting = 25, freightShare = 2 / 3,
-		freightMax = 6500, compete = true, townMin = 300, pause = 300, bootstrap = 3, settle = 120000, freeCash = 1200000, profitFirst = true, runMonths = 3 },
+		freightMax = 6500, compete = true, townMin = 300, pause = 300, bootstrap = 3, settle = 240000, freeCash = 1200000, maxUnproven = 2, profitFirst = true, runMonths = 3, addMargin = 1.05, giveUp = 0.6, ramp = 300000 },
 }
 local LV = LEVELS[2]
 
@@ -135,6 +135,13 @@ local function townsForLines(E, ent)
 				if o ~= ent and (o ~= nil or os.getenv("MPFEVER_AIRETRY") == "0") then others = others + 1 end
 			end
 		end)
+		-- (0.5.14) a town another computer company already works on counts as served too: the companies all start at once, and
+		-- three of them built their rings in the same three towns in the tests of 2026-10-29. MPFEVER_AISPREAD=0: as before
+		if os.getenv("MPFEVER_AISPREAD") ~= "0" then
+			for _, S in pairs(E.G.AIS or {}) do
+				if S ~= E.G.AI and type(S.targets) == "table" and S.targets[t.e] then others = others + (LV.compete and 3 or 8) end
+			end
+		end
 		t.others = others
 		t.score = t.size / (1 + others / (LV.compete and 12 or 3))
 	end
@@ -252,7 +259,13 @@ local function bestBus(E)
 			local from, to = av and av.yearFrom or 0, av and av.yearTo or 0
 			if from <= year and (to == 0 or to > year) then
 				local seats = 0
+				-- (0.5.14: a model of one compartment only, the shape of the purchase below: one load setting; a model of more was a
+				-- shape no test ever sent the engine. MPFEVER_AIMULTICOMP=1: any model, as before)
+				local comps = 1
+				pcall(function() comps = #md.transportVehicle.compartments end)
+				if comps > 1 and os.getenv("MPFEVER_AIMULTICOMP") ~= "1" then seats = -1 end
 				pcall(function()
+					if seats < 0 then return end
 					for _, comp in ipairs(md.transportVehicle.compartments) do
 						for _, lc in ipairs(comp.loadConfigs) do seats = math.max(seats, lc.cargoEntry.capacity or 0) end
 					end
@@ -321,16 +334,23 @@ local function build(E, coId, cmd, what, ctxBits, jr)
 	local G = E.G
 	local A = G.AI
 	A.busy = { what = what, since = G.frames }
+	-- (the company's number when it asked: the answer comes later, when another company may be looking, 0.5.14)
+	local num = AINUM
+	local seq0 = G.autoBuildSeq
 	E.deferredSend(cmd, function(res, success)
 		local why = ""
 		if not success then pcall(function() why = " " .. E.C.ser(E.C.marshal(res.resultProposalData.errorState.messages)) end) end
-		L(E, what .. ": " .. (success and "built" or ("refused" .. why)))
+		E.log("AI" .. (num ~= 1 and tostring(num) or "") .. " " .. what .. ": " .. (success and "built" or ("refused" .. why)))
 		A.busy = nil
 		A.stopsCache = nil
 		A.lastResult = { what = what, ok = success, frame = G.frames }
 		if success and jr then journal(E, coId, jr.kind, jr.pos, jr.a, jr.b) end
-		if not success then A.failed = A.failed or {}; A.failed[what] = (A.failed[what] or 0) + 1 end
+		-- (a build this game did not take, res nil, is no refusal of the place: not counted against it)
+		if not success and (res ~= nil or os.getenv("MPFEVER_AIRETRY") == "0") then A.failed = A.failed or {}; A.failed[what] = (A.failed[what] or 0) + 1 end
 	end)
+	-- (a build this game did not take, during a resynchronisation or with no company here: no number of its own, nothing written
+	-- for it - the number would be the previous build's, perhaps another company's, 0.5.14)
+	if G.autoBuildSeq == seq0 and os.getenv("MPFEVER_AIRETRY") ~= "0" then L(E, what .. ": not taken by this game"); return end
 	local id = 100000 + G.autoBuildSeq
 	G.aiNatCo = G.aiNatCo or {}
 	G.aiNatCo[id] = coId
@@ -691,6 +711,18 @@ local function createLine(E, co, groups, town, name)
 		template = C.marshal(ln)
 	end
 	local stop0 = template.stops and template.stops[1]
+	-- (0.5.14: the loading mode and waiting times of a new stop, not the savegame line's: a full load or a long wait there held the
+	-- company's buses at every stop. Its cargo settings stay the line's: a new stop's load nothing. MPFEVER_AISTOPTPL=0: as before)
+	if stop0 and os.getenv("MPFEVER_AISTOPTPL") ~= "0" then
+		local fresh = nil
+		pcall(function() fresh = C.marshal(api.type.Line.Stop.new()) end)
+		if type(fresh) == "table" then
+			local s0 = {}
+			for k, v in pairs(stop0) do s0[k] = v end
+			for _, k in ipairs({ "loadMode", "minWaitingTime", "maxWaitingTime" }) do if fresh[k] ~= nil then s0[k] = fresh[k] end end
+			stop0 = s0
+		end
+	end
 	local stops = {}
 	-- there and back: A B C B
 	local order = {}
@@ -789,9 +821,21 @@ local function mayExpand(E, co, lines, money)
 	local why
 	if A.lastNewAt and A.lastNewAt <= now and now - A.lastNewAt < (LV.settle or 0) then
 		why = "its last new line fills (" .. math.floor((LV.settle - (now - A.lastNewAt)) / 4000) .. " day(s) left)"
-	elseif #lines >= (LV.bootstrap or 0) and money < RESERVE + (LV.freeCash or 0) then
-		local r = companyResult(E, lines)
-		if r == nil or r < 0 then why = "its lines do not earn yet (" .. tostring(r and math.floor(r)) .. " over 2 months)" end
+	elseif #lines >= (LV.bootstrap or 0) then
+		-- (its lines still filling or not paying their vehicles yet, see manageLines: at most the level's number of them at once)
+		local unproven = 0
+		for _, l in ipairs(lines) do
+			local born = A.born and A.born[l.e]
+			if (born and born <= now and now - born < (LV.ramp or 0)) or ((A.ratio or {})[l.e] or 0) < 1 then unproven = unproven + 1 end
+		end
+		-- (the money of a loan just taken is not money to spare)
+		local spare = money - (A.loanCash or 0)
+		if unproven >= (LV.maxUnproven or 99) then
+			why = unproven .. " line(s) still filling or not paying their vehicles"
+		elseif spare < RESERVE + (LV.freeCash or 0) then
+			local r = companyResult(E, lines)
+			if r == nil or r <= 0 then why = "its lines do not earn yet (" .. tostring(r and math.floor(r)) .. " over 2 months)" end
+		end
 	end
 	if why then
 		if E.G.frames - (A.waitSaid or -100000) > 3600 then A.waitSaid = E.G.frames; L(E, "growth waits: " .. why) end
@@ -860,6 +904,24 @@ local function manageLines(E, co, lines, vehicles, money)
 	A.manageAt = G.frames
 	local probs = problemLines(E, co.ent)
 	A.emptyRuns = A.emptyRuns or {}
+	-- (0.5.14) what it remembers of lines and vehicles gone is dropped: MPFever gives a new entity the smallest free id, and a new
+	-- line took an old one's "empty" count, first trucks or age, and was given up or pruned at once. MPFEVER_AIRETRY=0: kept
+	local grace = os.getenv("MPFEVER_AIGRACE") ~= "0"
+	if os.getenv("MPFEVER_AIRETRY") ~= "0" then
+		local liveL, liveV = {}, {}
+		for _, l in ipairs(lines) do liveL[l.e] = true end
+		for _, v in ipairs(vehicles) do liveV[v.e] = true end
+		for _, t in ipairs({ A.emptyRuns, A.trucksFor, A.problemSeen, A.useHist, A.seenAt, A.losing, A.born, A.ratio }) do
+			if type(t) == "table" then for k in pairs(t) do if not liveL[k] then t[k] = nil end end end
+		end
+		if type(A.lineSent) == "table" then for k in pairs(A.lineSent) do if not liveV[k] then A.lineSent[k] = nil end end end
+	end
+	local nowG = E.gameTime()
+	A.born = A.born or {}
+	-- (0.5.14: each line's vehicles fit what it earns, see l.econ below. MPFEVER_AIFLEET=0: as before)
+	local fleet = os.getenv("MPFEVER_AIFLEET") ~= "0"
+	local yearMs = 1461000
+	pcall(function() local y = E.api.util.getDefaultYearDuration(); if type(y) == "number" and y > 0 then yearMs = y end end)
 	local emptiest, eUse
 	-- (in debt, only the vehicles of a line that loses money are sold: selling the buses of the lines that earned left the companies
 	-- of a test of 2026-10-29 at -1.6 million with lines and no vehicle, earning nothing any more. MPFEVER_AIDEBTSELL=0: as before,
@@ -870,7 +932,9 @@ local function manageLines(E, co, lines, vehicles, money)
 		for _, v in ipairs(vehicles) do if v.line == l.e then n = n + 1; last = v.e end end
 		local use = meanUse(E, l.e) or lineUse(E, l.e) or 0
 		local bal = lineBalance(E, l.e)
-		if n > 0 and (not losingOnly or (bal ~= nil and bal < 0)) and (not eUse or use < eUse) then emptiest, eUse = { line = l, last = last, n = n }, use end
+		-- (0.5.14, MPFEVER_AIGRACE: not a line still filling up, every young line loses money its first months)
+		local young = grace and A.born[l.e] and A.born[l.e] <= nowG and nowG - A.born[l.e] < (LV.ramp or 0)
+		if n > 0 and not young and (not losingOnly or (bal ~= nil and bal < 0)) and (not eUse or use < eUse) then emptiest, eUse = { line = l, last = last, n = n }, use end
 		-- (a freight line: its trucks come back empty, and a producer starts slowly once served: emptier, and given more time)
 		l.freight = os.getenv("MPFEVER_AIFREIGHT") ~= "0" and freightOf(E, l) or nil
 		local emptyUse, emptyLooks = l.freight and 0.04 or 0.08, l.freight and 6 or 3
@@ -878,8 +942,30 @@ local function manageLines(E, co, lines, vehicles, money)
 		-- (a freight line that never had its first trucks yet is not empty: it waits for them, see the first trucks in step)
 		local waitsTrucks = l.freight and n == 0 and ((A.trucksFor or {})[l.e] or 0) == 0
 		local empty = not waitsTrucks and (n == 0 or (use < emptyUse and (bal == nil or bal <= 0)))
-		A.emptyRuns[l.e] = empty and ((A.emptyRuns[l.e] or 0) + 1) or 0
+		-- (0.5.14) a new line has two game months to get its vehicles and fill before it counts as empty, and only the regular looks
+		-- count (in debt they come every 20 s: three looks were a minute). MPFEVER_AIGRACE=0: as before
+		if grace then
+			if not A.born[l.e] or A.born[l.e] > nowG then A.born[l.e] = nowG end
+			if nowG - A.born[l.e] < 240000 then empty = false end
+		end
+		if not grace or period == 7200 then A.emptyRuns[l.e] = empty and ((A.emptyRuns[l.e] or 0) + 1) or 0 end
 		l.use, l.bal = use, bal
+		-- (0.5.14) what the line earns against what its vehicles cost to run, over the same two months: its income (the balance
+		-- plus the running costs it paid), the running costs of one vehicle, and their ratio (1: it pays its vehicles)
+		if fleet then
+			local run = 0
+			for _, v in ipairs(vehicles) do
+				if v.line == l.e then
+					local okc, c = pcall(function() return E.api.engine.util.vehicle.getRunningCost(v.e) end)
+					if okc and type(c) == "number" then run = run + c end
+				end
+			end
+			local run2m = run * 240000 / yearMs
+			local income = (bal or 0) + run2m
+			l.econ = { run2m = run2m, income = income, perVeh = n > 0 and run2m / n or nil, ratio = run2m > 0 and income / run2m or nil }
+			A.ratio = A.ratio or {}
+			A.ratio[l.e] = l.econ.ratio
+		end
 		-- (a line that stays empty three looks in a row: its buses sold one by one, the line given up with the last)
 		if A.emptyRuns[l.e] >= emptyLooks and n > 0 and period == 7200 then
 			L(E, string.format("line %d empty for %d looks: a bus less", l.e, A.emptyRuns[l.e]))
@@ -955,6 +1041,7 @@ local function manageLines(E, co, lines, vehicles, money)
 	-- most, the game refuses more than its loans' maximum. MPFEVER_AILOAN=0: none)
 	if money < 0 and losingOnly and os.getenv("MPFEVER_AILOAN") ~= "0" and G.frames - (A.loanAsked or -100000) > 7200 then
 		A.loanAsked = G.frames
+		A.loanAskMoney = money
 		act(E, co.id, "makeScriptingSendEventCmd", { n = 4, [1] = "mpfever", [2] = "mpfever", [3] = "ai_loan", [4] = {} })
 		A.busy = { what = "loan", since = G.frames, until_ = G.frames + 120 }
 		L(E, "in debt (" .. math.floor(money) .. "): a loan asked")
@@ -971,6 +1058,10 @@ local function manageLines(E, co, lines, vehicles, money)
 		L(E, "money to spare (" .. math.floor(money) .. "): its oldest loan repaid if it has one")
 		return true
 	end
+	-- (a loan's money, seen at the next look after asking: kept apart from the money to spare, see mayExpand; spent down with it)
+	if A.loanAskMoney and money - A.loanAskMoney > 500000 then A.loanCash = (A.loanCash or 0) + money - A.loanAskMoney end
+	A.loanAskMoney = nil
+	if A.loanCash and money < RESERVE + A.loanCash then A.loanCash = math.max(0, money - RESERVE) end
 	local reinvest = os.getenv("MPFEVER_AIREINVEST") ~= "0"
 	local bestBuy = nil
 	for _, l in ipairs(lines) do
@@ -995,24 +1086,29 @@ local function manageLines(E, co, lines, vehicles, money)
 		end
 		A.problemSeen = A.problemSeen or {}
 		A.problemSeen[l.e] = probs[l.e] and true or nil
-		-- (0.5.14, Normal and Hard) a line that has run six months and still loses money with more than two vehicles: one vehicle
-		-- less after two looks in a row (three on Normal), so that its fleet fits what it carries; before, a losing line kept every
-		-- vehicle until the company was in debt, then everything was sold at once. MPFEVER_AIPRUNE=0: as before
-		if os.getenv("MPFEVER_AIPRUNE") ~= "0" and LV.name ~= "easy" and period == 7200 then
+		-- (0.5.14) a fleet that fits what the line earns: once the line had time to fill (the level's ramp), one vehicle less when it
+		-- does not pay its vehicles' running costs (two looks in a row), and its last one when it pays less than the level's share of
+		-- them (the line is then given up as empty). Before, a losing line kept every vehicle until the company was in debt, then
+		-- everything was sold at once. MPFEVER_AIFLEET=0 (and MPFEVER_AIPRUNE=0: none): losing lines with more than two vehicles
+		if period == 7200 and (fleet or (os.getenv("MPFEVER_AIPRUNE") ~= "0" and LV.name ~= "easy")) then
 			A.seenAt = A.seenAt or {}
-			local now = E.gameTime()
-			if not A.seenAt[l.e] or A.seenAt[l.e] > now then A.seenAt[l.e] = now end
+			if not A.seenAt[l.e] or A.seenAt[l.e] > nowG then A.seenAt[l.e] = nowG end
+			local age = nowG - A.seenAt[l.e]
 			A.losing = A.losing or {}
-			if n > 2 and l.bal and l.bal < 0 and now - A.seenAt[l.e] > 720000 then
-				A.losing[l.e] = (A.losing[l.e] or 0) + 1
-				if A.losing[l.e] >= (LV.name == "hard" and 2 or 3) then
-					A.losing[l.e] = 0
-					L(E, string.format("line %d loses money (%d over 2 months) with %d vehicles: one less", l.e, math.floor(l.bal), n))
-					sellVehicle(E, co, last, "losing line " .. l.e)
-					return true
-				end
+			local under
+			if fleet then
+				local r = l.econ and l.econ.ratio
+				under = r ~= nil and age > LV.ramp and ((n > 1 and r < 1) or (n == 1 and r < LV.giveUp))
 			else
+				under = n > 2 and l.bal and l.bal < 0 and age > 720000
+			end
+			A.losing[l.e] = under and ((A.losing[l.e] or 0) + 1) or 0
+			if A.losing[l.e] >= ((fleet or LV.name == "hard") and 2 or 3) then
 				A.losing[l.e] = 0
+				L(E, string.format("line %d does not pay its vehicles (%s of their running costs, balance %d over 2 months) with %d vehicle(s): one less",
+					l.e, l.econ and l.econ.ratio and (math.floor(l.econ.ratio * 100) .. "%") or "?", math.floor(l.bal or 0), n))
+				sellVehicle(E, co, last, "line " .. l.e .. " does not pay its vehicles")
+				return true
 			end
 		end
 		-- (a freight line: a truck more when the cargo waiting at the producer fills one, or the trucks are full one way)
@@ -1028,7 +1124,11 @@ local function manageLines(E, co, lines, vehicles, money)
 				-- (0.5.14) the busy line that earns the most per vehicle gets the next one; a full line that loses money gets none on
 				-- Normal and Hard (each more of its vehicles loses more). MPFEVER_AIREINVEST=0: the first busy line, as before
 				local per = (l.bal or 0) / math.max(1, n)
-				if (LV.name == "easy" or l.bal == nil or l.bal >= 0) and (not bestBuy or per > bestBuy.per) then bestBuy = { l = l, per = per } end
+				-- (with MPFEVER_AIFLEET: only while one more vehicle would still pay, its income shared by one more, with the level's margin)
+				local pays
+				if fleet and l.econ and l.econ.perVeh then pays = l.econ.income / (n + 1) >= l.econ.perVeh * LV.addMargin
+				else pays = LV.name == "easy" or l.bal == nil or l.bal >= 0 end
+				if pays and (not bestBuy or per > bestBuy.per) then bestBuy = { l = l, per = per } end
 			else
 				local depot = garagesNear(E, co.ent, l.mid or (l.freight and l.freight.from.pos) or { x = 0, y = 0 }, 5000)[1]
 				if depot then
@@ -1190,7 +1290,7 @@ local function pairProject(E, co, stops, lines, vehicles, money, grow)
 	for _, w in ipairs(wanted) do
 		local s = stopAt(stops, w.p.p)
 		if not s then
-			if money < RESERVE + 60000 then return true end
+			if money < RESERVE + 60000 then return "wait" end
 			if stopNear(E, co, stops, w.p.p, w.town .. ":" .. w.p.use) then return true end
 			if w.p.use == "RESIDENTIAL" then
 				L(E, "no street for a stop in " .. townName(E, w.town) .. ": pair left")
@@ -1216,14 +1316,15 @@ local function pairProject(E, co, stops, lines, vehicles, money, grow)
 	end
 	if not line then
 		-- (a line only with the money for its first buses)
-		if money < RESERVE + 2 * (A.busCost or BUS_COST) then return true end
+		if money < RESERVE + 2 * (A.busCost or BUS_COST) then return "wait" end
 		createLine(E, co, groups, pair.a.e, AINAME .. " " .. na .. " - " .. nb)
 		return true
 	end
 	local n = 0
 	for _, v in ipairs(vehicles) do if v.line == line.e then n = n + 1 end end
-	if n < 3 then
-		if money < RESERVE + (A.busCost or BUS_COST) then return true end
+	-- (0.5.14, MPFEVER_AIFLEET: two buses to begin with, more as it earns, see manageLines; three before)
+	if n < ((os.getenv("MPFEVER_AIFLEET") ~= "0") and 2 or 3) then
+		if money < RESERVE + (A.busCost or BUS_COST) then return "wait" end
 		A.forLine = line.e
 		buyBus(E, co, g.depot)
 		return true
@@ -1353,7 +1454,8 @@ local function producedOf(E, ind, c)
 	if ind.primary or os.getenv("MPFEVER_AIANYPRODUCER") == "1" then
 		local most = 0
 		pcall(function() most = api.engine.util.stock.getCargoMaxProductionPerYear(ind.stockList, c) or 0 end)
-		return most * 0.5
+		-- (0.5.14: a tenth of its most, a producer that makes the cargo now comes first; half before. MPFEVER_AIRETRY=0: half)
+		return most * (os.getenv("MPFEVER_AIRETRY") == "0" and 0.5 or 0.1)
 	end
 	return nil
 end
@@ -1405,7 +1507,11 @@ local function bestTruck(E, cargo)
 			local from, to = av and av.yearFrom or 0, av and av.yearTo or 0
 			if from <= year and (to == 0 or to > year) then
 				local cap = 0
+				-- (one compartment only, as for the buses above; MPFEVER_AIMULTICOMP=1: any model)
+				local comps = 1
+				pcall(function() comps = #md.transportVehicle.compartments end)
 				pcall(function()
+					if comps > 1 and os.getenv("MPFEVER_AIMULTICOMP") ~= "1" then return end
 					for _, comp in ipairs(md.transportVehicle.compartments) do
 						for _, lc in ipairs(comp.loadConfigs) do
 							if api.res.cargoTypeRep.hasCargoType(lc.cargoEntry.cargoTypeSet, cargo) then cap = math.max(cap, lc.cargoEntry.capacity or 0) end
@@ -1546,6 +1652,18 @@ end
 -- The best freight route not served yet: a producer, an industry that takes its cargo 0.9 to 5 km away, no other company's line
 -- at either, a road between them (looked for once per route, one route per step: the path finding costs). Score: the most the
 -- producer can make of that cargo, times the distance (the fare grows with it), less for long routes.
+-- (0.5.14) the producers and cargos the company's freight lines already serve, "producer:cargo": one line each (four lines of one
+-- company on one farm in the tests of 2026-10-29 shared its cargo four ways). MPFEVER_AIONEPERPRODUCER=0: as before
+local function servedByMe(E, lines)
+	local mine = {}
+	if os.getenv("MPFEVER_AIONEPERPRODUCER") == "0" then return mine end
+	for _, l in ipairs(lines or {}) do
+		local okf, f = pcall(freightOf, E, l)
+		if okf and f and f.from then mine[tostring(f.from.e) .. ":" .. tostring(f.cargo)] = true end
+	end
+	return mine
+end
+
 local function bestFreight(E, co, lines)
 	local api = E.api
 	local A = E.G.AI
@@ -1558,6 +1676,7 @@ local function bestFreight(E, co, lines)
 		A.retryInd = nil
 	end
 	local others = servedByOthers(E, co.ent)
+	local mine = servedByMe(E, lines)
 	local inds = industries(E)
 	local cut = A.roadChecked or {}
 	local cands = {}
@@ -1571,7 +1690,7 @@ local function bestFreight(E, co, lines)
 					if q.e ~= p.e and not others[q.road.group] and cut[p.e] ~= false and cut[q.e] ~= false and takes(E, q, c) then
 						local d = dist(p.pos, q.pos)
 						local key = p.e .. ">" .. q.e .. ":" .. c
-						if d > FREIGHT_MIN and d < LV.freightMax and A.freightTried[key] ~= false and not (A.freightDone or {})[key] then
+						if d > FREIGHT_MIN and d < LV.freightMax and A.freightTried[key] ~= false and not (A.freightDone or {})[key] and not mine[p.e .. ":" .. c] then
 							cands[#cands + 1] = { from = p, to = q, cargo = c, d = d, key = key, score = (prod + 50) * d / (1 + (d / 3000) ^ 2) }
 						end
 					end
@@ -1642,6 +1761,7 @@ local function bestTownFreight(E, co, lines)
 	local A = E.G.AI
 	A.freightTried = A.freightTried or {}
 	local others = servedByOthers(E, co.ent)
+	local mine = servedByMe(E, lines)
 	local inds = industries(E)
 	local cands = {}
 	for _, t in ipairs(townsBySize(E)) do
@@ -1652,7 +1772,7 @@ local function bestTownFreight(E, co, lines)
 					for _, ind in ipairs(inds) do
 						if not others[ind.road.group] and (A.roadChecked or {})[ind.e] ~= false then
 							for _, c in ipairs(ind.outputs) do
-								if c == w.cargo and producedOf(E, ind, c) then
+								if c == w.cargo and producedOf(E, ind, c) and not mine[ind.e .. ":" .. c] then
 									local d = dist(ind.pos, p)
 									local key = ind.e .. ">town" .. t.e .. ":" .. c
 									if d > FREIGHT_MIN and d < LV.freightMax and A.freightTried[key] ~= false and not (A.freightDone or {})[key] then
@@ -2119,7 +2239,8 @@ local function step(E)
 			if f and (A.trucksFor[l.e] or 0) < asks then
 				local n = 0
 				for _, v in ipairs(vehicles) do if v.line == l.e then n = n + 1 end end
-				if n >= 2 then A.trucksFor[l.e] = asks
+				-- (0.5.14, MPFEVER_AIFLEET: one truck to begin with, more as cargo waits and the line earns; two before)
+				if n >= ((os.getenv("MPFEVER_AIFLEET") ~= "0") and 1 or 2) then A.trucksFor[l.e] = asks
 				elseif money > RESERVE + (A.truckCost or BUS_COST) then
 					local depot = garagesNear(E, co.ent, f.from.pos, 5000)[1]
 					if depot then
@@ -2144,7 +2265,8 @@ local function step(E)
 	-- (Normal and Hard, 0.5.14: the lines between towns before the towns' own lines, a fare grows with the distance flown and the
 	-- short town lines earn the least. MPFEVER_AIORDER=0: the towns first, as before)
 	local pairsFirst = LV.profitFirst and os.getenv("MPFEVER_AIORDER") ~= "0"
-	if pairsFirst and pairProject(E, co, stops, lines, vehicles, money, grow) then return end
+	-- (a pair that only waits for money lets the towns' lines and their buses go on, see pairProject's "wait")
+	if pairsFirst and pairProject(E, co, stops, lines, vehicles, money, grow) == true then return end
 	for _, t in ipairs(townsForLines(E, co.ent)) do
 		local town = t.e
 		if (A.skipTown and A.skipTown[town]) or t.size < LV.townMin then goto continue end
@@ -2163,7 +2285,8 @@ local function step(E)
 			end
 			local have, missing = townProject(E, co, town, stops)
 			-- (a town's line not begun yet: only when the company may grow, see mayExpand)
-			if not grow and #missing > 0 and not lineFor(E, lines, (function() local g = {} for _, h in ipairs(have) do g[#g + 1] = h.stop.group end return g end)()) then goto continue end
+			-- (a town with no stop of the company yet: a new project; one under way, begun when it could grow, goes on)
+			if not grow and #missing > 0 and #have == 0 then goto continue end
 			if #missing > 0 then
 				-- (a town's line is begun only with the money to end it: its stops and two buses; stops left without a line cost
 				-- their upkeep for nothing)
@@ -2226,7 +2349,9 @@ local function step(E)
 			-- buses: two at first, more as the town is bigger
 			local onLine = 0
 			for _, v in ipairs(vehicles) do if v.line == line.e then onLine = onLine + 1 end end
-			local wantBuses = math.min(5, LV.maxBus, 2 + math.floor(#groups / 2))
+			-- (0.5.14, MPFEVER_AIFLEET: one bus to begin with, more as it fills and earns, see manageLines: one bus well filled was the
+			-- only town line that earned in the tests of 2026-10-29, two to five at 20-30 % lost money)
+			local wantBuses = (os.getenv("MPFEVER_AIFLEET") ~= "0") and 1 or math.min(5, LV.maxBus, 2 + math.floor(#groups / 2))
 			if onLine < wantBuses and not A.noBuses then
 				if money < RESERVE + (A.busCost or BUS_COST) then return end
 				A.forLine = line.e
@@ -2240,7 +2365,7 @@ local function step(E)
 	for _, l in ipairs(lines) do
 		local n = 0
 		for _, v in ipairs(vehicles) do if v.line == l.e then n = n + 1 end end
-		if n < 2 and not A.noBuses and money > RESERVE + (A.busCost or BUS_COST) and ((A.emptyRuns or {})[l.e] or 0) == 0 then
+		if n < ((os.getenv("MPFEVER_AIFLEET") ~= "0") and 1 or 2) and not A.noBuses and money > RESERVE + (A.busCost or BUS_COST) and ((A.emptyRuns or {})[l.e] or 0) == 0 then
 			local f = os.getenv("MPFEVER_AIFREIGHT") ~= "0" and freightOf(E, l)
 			local depot = garagesNear(E, co.ent, l.mid or (f and f.from.pos) or { x = 0, y = 0 }, 5000)[1]
 			if depot then
@@ -2250,7 +2375,7 @@ local function step(E)
 			end
 		end
 	end
-	if not pairsFirst and pairProject(E, co, stops, lines, vehicles, money, grow) then return end
+	if not pairsFirst and pairProject(E, co, stops, lines, vehicles, money, grow) == true then return end
 	-- (0.5.14: nothing done with money to spare, said once a minute: the reason shows in the log)
 	if money > 2 * RESERVE and G.frames - (A.idleSaid or -100000) > 3600 then
 		A.idleSaid = G.frames
@@ -2269,7 +2394,7 @@ M.f = { aiCompany = aiCompany, myStops = myStops, myDepots = myDepots, myLines =
 function M.tick(E, st)
 	local G, C = E.G, E.C
 	if C.ROLE ~= "host" or G.cmode ~= "separate" then return end
-	if not (G.connected and G.session and G.session.started) or G.session.resync or not G.myCo then return end
+	if not (G.connected and G.session and G.session.started) or G.session.resync or not G.myCo or G.coNone then return end
 	-- (nothing while the session is paused: its actions would wait for their turns)
 	if G.session.pauseAt ~= nil then return end
 	local list = M.listOf(G.coAi)
