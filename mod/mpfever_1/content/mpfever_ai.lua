@@ -950,7 +950,8 @@ end
 -- that takes its product), whose loss is accepted within a budget (LT.share of the company's money to spare, at most LT.cap) and
 -- a time (LT.horizonY game years), judged on its trend (its producer's production and its result over the last months, LT.proofY
 -- after its start) rather than on one month, never under the company's floor. Once it pays its trucks it is a line like the
--- others and the next one can start; a line given up waits LT.cooldownY before the next one. MPFEVER_AILONGFREIGHT=0: none, as in
+-- others and the next one can start; after a line given up the next one waits LT.cooldownY, longer each time (see ltEnd).
+-- Its first trucks come as any freight line's (see step), and it starts only while the company may grow. MPFEVER_AILONGFREIGHT=0: none, as in
 -- 0.5.14 (freight only with plenty of money). MPFEVER_AILTTREND=0: judged on its budget and time only; MPFEVER_AILTTRUCKS=0: its
 -- trucks as any line's (no truck more for the cargo waiting); MPFEVER_AILTCHAIN=0: raw producers only
 local LT = { share = 0.2, cap = 1500000, min = 300000, horizonY = 3, proofY = 1, grow = 1.25, cooldownY = 0.5, maxTrucks = 4, sample = 240000, keep = 8 }
@@ -992,6 +993,16 @@ local function ltJudge(lt, now, P, trend)
 		if not grew and not better then return "end", "its producer does not grow and its result gets no better" end
 	end
 	return "keep"
+end
+
+-- A long-term line's investment ends (its budget, its time, no growth, the floor): the fleet rules take it from now on, its route
+-- is not tried again as a long-term line, and the next one waits LT.cooldownY, twice as long after each one given up (at most 8
+-- times: the company does not throw a share of its money away every half year)
+local function ltEnd(A, lt, why, now, yearMs)
+	lt.state, lt.why = "ended", why
+	A.ltFailed = A.ltFailed or {}; A.ltFailed[lt.key or ""] = true
+	A.ltFails = (A.ltFails or 0) + 1
+	A.ltNextAt = now + LT.cooldownY * yearMs * 2 ^ math.min(3, A.ltFails - 1)
 end
 
 -- a long-term line in its investment (its loss accepted, see above): not judged by the fleet rules, not sold in debt before the
@@ -1374,9 +1385,7 @@ local function manageLines(E, co, lines, vehicles, money)
 	if money < low and not (loanFree and G.frames - (A.loanAsked or -100000) <= 7200) then
 		for e, lt in pairs(A.lt or {}) do
 			if lt.state == "invest" then
-				lt.state, lt.why = "ended", "money under its floor"
-				A.ltFailed = A.ltFailed or {}; A.ltFailed[lt.key or ""] = true
-				A.ltNextAt = nowG + LT.cooldownY * yearMs
+				ltEnd(A, lt, "money under its floor", nowG, yearMs)
 				L(E, "long-term line " .. e .. " ended: its money is under its floor (" .. math.floor(money) .. " for " .. math.floor(FLOOR) .. ")")
 				return true
 			end
@@ -2798,9 +2807,7 @@ local function ltSync(E, co, lines, vehicles, money)
 				if v == "paid" then
 					lt.state = "paid"
 				elseif v == "end" then
-					lt.state, lt.why = "ended", why
-					A.ltFailed = A.ltFailed or {}; A.ltFailed[lt.key or ""] = true
-					A.ltNextAt = now + LT.cooldownY * Y
+					ltEnd(A, lt, why, now, Y)
 				end
 			end
 		end
@@ -2819,7 +2826,7 @@ local function ltProject(E, co, stops, lines, vehicles, money)
 	for _, lt in pairs(A.lt or {}) do if lt.state == "invest" then return false end end
 	local now = E.gameTime()
 	local Y = yearOf(E)
-	if A.ltNextAt and now < A.ltNextAt and A.ltNextAt - now <= LT.cooldownY * Y then return false end
+	if A.ltNextAt and now < A.ltNextAt and A.ltNextAt - now <= 8 * LT.cooldownY * Y then return false end
 	if #lines < (LV.bootstrap or 0) then return false end
 	local spare = money - (A.loanCash or 0)
 	local budget = ltBudget(spare)

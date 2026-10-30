@@ -118,6 +118,11 @@ check(run('return G.AI.lt[601].state') == "ended", "its budget spent: ended")
 check(run('return G.AI.ltFailed["1001>1101:2"]') is True, "its route is not tried again as a long-term line")
 check(run('return G.AI.ltNextAt') == run('return TIME') + Y // 2, "the next one waits half a game year")
 check(run('return M.f.ltProject(E, CO1, {}, linesList(), vehiclesList(), MONEY[700])') is False, "nothing during that wait")
+run('addLine(602, { 1002, 1102 }, 1, { bal = -900000 }); G.AI.lt[602] = { state = "invest", key = "k2", from = 1001, stockList = 1004, cargo = 2, '
+    'born = TIME, budget = 300000, spent = 0, prod0 = 100, proofFrom = TIME, at = TIME - 240000, samples = {} }')
+run('M.f.ltSync(E, CO1, linesList(), vehiclesList(), MONEY[700])')
+check(run('return G.AI.lt[602].state') == "ended" and run('return G.AI.ltNextAt') == run('return TIME') + Y,
+      "a second one given up: the next one waits twice as long (a game year)")
 
 print("ltSync: a producer that does not grow, one that pays")
 run(WORLD)
