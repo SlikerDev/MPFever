@@ -24,13 +24,17 @@ local BUS_COST = 180000    -- a bus, until the first purchase measures it
 -- keeps back, the vehicles a line may get, when a line gets one more (seats used, cargo waiting), how many of its lines carry
 -- freight, how far its freight goes, and whether it competes with the players (Hard: the industries and towns they serve are
 -- not left to them).
+-- (0.5.14) and how it grows: its first lines (bootstrap) freely, then a new one only once the last one had time to fill
+-- (settle, game time) and while its lines earn (their result together) or it holds that much money besides its reserve (freeCash);
+-- whether the lines between towns and the freight come before the towns' own lines (profitFirst: a fare grows with the
+-- distance flown, so the short town lines earn the least)
 local LEVELS = {
 	{ name = "easy", tick = 150, reserve = 700000, maxBus = 4, maxTruck = 5, busUse = 0.85, truckUse = 0.6, waiting = 80, freightShare = 1 / 3,
-		freightMax = 4000, compete = false, townMin = 600, pause = 1200 },
+		freightMax = 4000, compete = false, townMin = 600, pause = 1200, bootstrap = 1, settle = 360000, freeCash = 3000000, profitFirst = false, runMonths = 6 },
 	{ name = "normal", tick = 60, reserve = 400000, maxBus = 8, maxTruck = 10, busUse = 0.75, truckUse = 0.45, waiting = 40, freightShare = 1 / 2,
-		freightMax = 5000, compete = false, townMin = 500, pause = 600 },
+		freightMax = 5000, compete = false, townMin = 500, pause = 600, bootstrap = 2, settle = 240000, freeCash = 2000000, profitFirst = true, runMonths = 4 },
 	{ name = "hard", tick = 30, reserve = 350000, maxBus = 12, maxTruck = 14, busUse = 0.6, truckUse = 0.35, waiting = 25, freightShare = 2 / 3,
-		freightMax = 6500, compete = true, townMin = 300, pause = 300 },
+		freightMax = 6500, compete = true, townMin = 300, pause = 300, bootstrap = 3, settle = 120000, freeCash = 1200000, profitFirst = true, runMonths = 3 },
 }
 local LV = LEVELS[2]
 
@@ -126,7 +130,9 @@ local function townsForLines(E, ent)
 		local others = 0
 		pcall(function()
 			for _, s in ipairs(api.engine.system.stationSystem.getStations(t.e)) do
-				if ownerOf(E, s) ~= ent then others = others + 1 end
+				-- (0.5.14: another company's station; a station nobody owns, an industry's own, is none. MPFEVER_AIRETRY=0: counted)
+				local o = ownerOf(E, s)
+				if o ~= ent and (o ~= nil or os.getenv("MPFEVER_AIRETRY") == "0") then others = others + 1 end
 			end
 		end)
 		t.others = others
@@ -715,6 +721,8 @@ local function createLine(E, co, groups, town, name)
 	template.stops = stops
 	name = name or (AINAME .. " " .. townName(E, town))
 	act(E, co.id, "makeLineCreateCmd", { n = 4, [1] = name, [2] = C.marshal(api.type.Vec3f.new(0.2, 0.5, 0.9)), [3] = co.ent, [4] = template })
+	-- (its growth waits until this line had time to fill, see mayExpand)
+	E.G.AI.lastNewAt = E.gameTime()
 	local jpos = centre(E, town, E.api.type.enum.LandUseType.RESIDENTIAL)
 	E.G.AI.busy = { what = "line " .. name, since = E.G.frames, linesBefore = #myLines(E, co.ent), jr = { kind = "line", pos = jpos, a = name } }
 	L(E, "line requested: " .. name .. " with " .. #order .. " stops")
@@ -752,6 +760,44 @@ local function lineBalance(E, line)
 	local now = E.gameTime()
 	local ok, b = pcall(function() return E.api.engine.util.finance.calculateBalance({ line }, now - 240000, now, true) end)
 	return ok and type(b) == "number" and b or nil
+end
+
+-- The result of the company's lines together over the last two months (earnings less upkeep), read at most every 10 s; nil
+-- when no line has one yet
+local function companyResult(E, lines)
+	local A = E.G.AI
+	if A.opAt and E.G.frames - A.opAt < 600 then return A.opResult end
+	A.opAt = E.G.frames
+	local sum, known = 0, 0
+	for _, l in ipairs(lines) do
+		local b = lineBalance(E, l.e)
+		if b then sum = sum + b; known = known + 1 end
+	end
+	A.opResult = known > 0 and sum or nil
+	return A.opResult
+end
+
+-- (0.5.14) Whether the company may open something new (stops, a line, a garage for a new line): its first lines freely (the
+-- level's bootstrap); then not before its last new line had time to fill (settle, game time), and only while its lines earn
+-- together or it holds plenty of money besides its reserve (freeCash). The tests of 2026-10-29: three companies opened 6 to 10
+-- lines in minutes with their 2 million, ran into debt, sold every vehicle and ended at -1.6 million. Vehicles for its lines
+-- that are full are not held back. MPFEVER_AIGOVERN=0: as before.
+local function mayExpand(E, co, lines, money)
+	if os.getenv("MPFEVER_AIGOVERN") == "0" then return true end
+	local A = E.G.AI
+	local now = E.gameTime()
+	local why
+	if A.lastNewAt and A.lastNewAt <= now and now - A.lastNewAt < (LV.settle or 0) then
+		why = "its last new line fills (" .. math.floor((LV.settle - (now - A.lastNewAt)) / 4000) .. " day(s) left)"
+	elseif #lines >= (LV.bootstrap or 0) and money < RESERVE + (LV.freeCash or 0) then
+		local r = companyResult(E, lines)
+		if r == nil or r < 0 then why = "its lines do not earn yet (" .. tostring(r and math.floor(r)) .. " over 2 months)" end
+	end
+	if why then
+		if E.G.frames - (A.waitSaid or -100000) > 3600 then A.waitSaid = E.G.frames; L(E, "growth waits: " .. why) end
+		return false
+	end
+	return true
 end
 
 -- the seats in use, sampled every 20 s: the mean of the last 6 samples (one look at a bus in a terminus said 2 %, the next 33 %)
@@ -856,10 +902,24 @@ local function manageLines(E, co, lines, vehicles, money)
 			-- town stop may be a stop of the town's bus line)
 			A.deadGroups = A.deadGroups or {}
 			if not l.freight then for _, g in ipairs(l.groups) do A.deadGroups[g] = true end end
+			-- (0.5.14: only for a line of one town; a line between two towns that failed says nothing of either town's own line,
+			-- and both towns were left for the whole session. MPFEVER_AIRETRY=0: as before)
+			local mine = {}
+			for _, g in ipairs(l.groups) do mine[g] = true end
+			local touched, nTouched = {}, 0
 			for town, pts in pairs(A.targets or {}) do
 				for _, s in ipairs(myStops(E, co.ent)) do
 					for _, w in ipairs(pts) do
-						if A.deadGroups[s.group] and dist(s.pos, w.p) < 200 then A.skipTown = A.skipTown or {}; A.skipTown[town] = true end
+						if mine[s.group] and dist(s.pos, w.p) < 200 and not touched[town] then touched[town] = true; nTouched = nTouched + 1 end
+					end
+				end
+			end
+			if nTouched <= 1 or os.getenv("MPFEVER_AIRETRY") == "0" then
+				for town, pts in pairs(A.targets or {}) do
+					for _, s in ipairs(myStops(E, co.ent)) do
+						for _, w in ipairs(pts) do
+							if A.deadGroups[s.group] and dist(s.pos, w.p) < 200 then A.skipTown = A.skipTown or {}; A.skipTown[town] = true end
+						end
 					end
 				end
 			end
@@ -900,9 +960,22 @@ local function manageLines(E, co, lines, vehicles, money)
 		L(E, "in debt (" .. math.floor(money) .. "): a loan asked")
 		return true
 	end
+	-- (0.5.14) money to spare: its oldest loan repaid, if it has one (the simulation decides on its own balance, the same on every
+	-- game, see the bridge's ai_repay), at most every 6 game months. Before, a loan was never repaid and its money was spent as
+	-- profit. MPFEVER_AIREPAY=0: never
+	local nowT = E.gameTime()
+	if os.getenv("MPFEVER_AIREPAY") ~= "0" and money > 2 * RESERVE + 1000000 and (not A.repayAt or A.repayAt > nowT or nowT - A.repayAt > 720000) then
+		A.repayAt = nowT
+		act(E, co.id, "makeScriptingSendEventCmd", { n = 4, [1] = "mpfever", [2] = "mpfever", [3] = "ai_repay", [4] = { keep = math.floor(RESERVE) } })
+		A.busy = { what = "loan repaid", since = G.frames, until_ = G.frames + 120 }
+		L(E, "money to spare (" .. math.floor(money) .. "): its oldest loan repaid if it has one")
+		return true
+	end
+	local reinvest = os.getenv("MPFEVER_AIREINVEST") ~= "0"
+	local bestBuy = nil
 	for _, l in ipairs(lines) do
-		local n = 0
-		for _, v in ipairs(vehicles) do if v.line == l.e then n = n + 1 end end
+		local n, last = 0, nil
+		for _, v in ipairs(vehicles) do if v.line == l.e then n = n + 1; last = v.e end end
 		local use = l.use
 		L(E, string.format("line %d: %d bus(es), %s of the seats used on average, balance of the last 2 months %s%s", l.e, n,
 			use and (math.floor(use * 100) .. "%") or "?", l.bal and tostring(math.floor(l.bal)) or "?", probs[l.e] and (", problem " .. tostring(probs[l.e])) or ""))
@@ -922,6 +995,26 @@ local function manageLines(E, co, lines, vehicles, money)
 		end
 		A.problemSeen = A.problemSeen or {}
 		A.problemSeen[l.e] = probs[l.e] and true or nil
+		-- (0.5.14, Normal and Hard) a line that has run six months and still loses money with more than two vehicles: one vehicle
+		-- less after two looks in a row (three on Normal), so that its fleet fits what it carries; before, a losing line kept every
+		-- vehicle until the company was in debt, then everything was sold at once. MPFEVER_AIPRUNE=0: as before
+		if os.getenv("MPFEVER_AIPRUNE") ~= "0" and LV.name ~= "easy" and period == 7200 then
+			A.seenAt = A.seenAt or {}
+			local now = E.gameTime()
+			if not A.seenAt[l.e] or A.seenAt[l.e] > now then A.seenAt[l.e] = now end
+			A.losing = A.losing or {}
+			if n > 2 and l.bal and l.bal < 0 and now - A.seenAt[l.e] > 720000 then
+				A.losing[l.e] = (A.losing[l.e] or 0) + 1
+				if A.losing[l.e] >= (LV.name == "hard" and 2 or 3) then
+					A.losing[l.e] = 0
+					L(E, string.format("line %d loses money (%d over 2 months) with %d vehicles: one less", l.e, math.floor(l.bal), n))
+					sellVehicle(E, co, last, "losing line " .. l.e)
+					return true
+				end
+			else
+				A.losing[l.e] = 0
+			end
+		end
 		-- (a freight line: a truck more when the cargo waiting at the producer fills one, or the trucks are full one way)
 		local busy = use and use > LV.busUse and n < LV.maxBus
 		if l.freight then
@@ -931,12 +1024,29 @@ local function manageLines(E, co, lines, vehicles, money)
 			if busy then L(E, string.format("line %d: %d %s waiting at the producer", l.e, waiting, cargoName(E, l.freight.cargo))) end
 		end
 		if busy and money > RESERVE + ((l.freight and A.truckCost or A.busCost) or BUS_COST) then
-			local depot = garagesNear(E, co.ent, l.mid or (l.freight and l.freight.from.pos) or { x = 0, y = 0 }, 5000)[1]
-			if depot then
-				A.forLine = l.e
-				buyFor(E, co, l, depot.depot)
-				return true
+			if reinvest then
+				-- (0.5.14) the busy line that earns the most per vehicle gets the next one; a full line that loses money gets none on
+				-- Normal and Hard (each more of its vehicles loses more). MPFEVER_AIREINVEST=0: the first busy line, as before
+				local per = (l.bal or 0) / math.max(1, n)
+				if (LV.name == "easy" or l.bal == nil or l.bal >= 0) and (not bestBuy or per > bestBuy.per) then bestBuy = { l = l, per = per } end
+			else
+				local depot = garagesNear(E, co.ent, l.mid or (l.freight and l.freight.from.pos) or { x = 0, y = 0 }, 5000)[1]
+				if depot then
+					A.forLine = l.e
+					buyFor(E, co, l, depot.depot)
+					return true
+				end
 			end
+		end
+	end
+	if bestBuy then
+		local l = bestBuy.l
+		local depot = garagesNear(E, co.ent, l.mid or (l.freight and l.freight.from.pos) or { x = 0, y = 0 }, 5000)[1]
+		if depot then
+			L(E, string.format("line %d gets a vehicle more (it earns %d per vehicle over 2 months)", l.e, math.floor(bestBuy.per)))
+			A.forLine = l.e
+			buyFor(E, co, l, depot.depot)
+			return true
 		end
 	end
 	return false
@@ -1041,10 +1151,13 @@ local function garageFor(E, co, p, money, key)
 end
 
 -- one step of the best pair's project: garage, a stop in each town, the line, its first buses. True when it acted (or waits)
-local function pairProject(E, co, stops, lines, vehicles, money)
+local function pairProject(E, co, stops, lines, vehicles, money, grow)
 	local A = E.G.AI
 	local pair = bestPair(E, co, lines, stops)
 	if not pair then return false end
+	-- (a new pair only when the company may grow, see mayExpand; the pair under way gets its line and first buses)
+	if grow == false and A.pairUnderWay ~= pair.key then return false end
+	A.pairUnderWay = pair.key
 	local na, nb = townName(E, pair.a.e), townName(E, pair.b.e)
 	local g = garageFor(E, co, pair.a.c, money, na)
 	if g == "building" then return true end
@@ -1112,6 +1225,7 @@ local function pairProject(E, co, stops, lines, vehicles, money)
 		return true
 	end
 	A.pairDone = A.pairDone or {}; A.pairDone[pair.key] = true
+	A.pairUnderWay = nil
 	L(E, "pair " .. na .. " - " .. nb .. " running (" .. n .. " buses, " .. math.floor(pair.d) .. " m)")
 	return true
 end
@@ -1121,6 +1235,18 @@ end
 -- Every industry has its own street station (the trucks of the players stop at the industry itself): a freight line is a line
 -- from a producer's station to the station of an industry that takes that cargo, with trucks that carry it. Nothing to build
 -- but the garage. MPFEVER_AIFREIGHT=0: buses only, as in 0.5.12.
+-- (0.5.14) A route left for want of a garage near its producer waits six game months, then is tried again (a garage may stand
+-- there by then: the company's own for a town, or another company's), instead of being left for the whole session: freight
+-- comes first, before the company has any garage, and the best routes were all left in the first minutes. Returns true when
+-- held. MPFEVER_AIRETRY=0: left for good, as before.
+local function G_HOLD(E, key)
+	if os.getenv("MPFEVER_AIRETRY") == "0" then return false end
+	local A = E.G.AI
+	A.freightHold = A.freightHold or {}
+	A.freightHold[key] = E.gameTime() + 720000
+	return true
+end
+
 local FREIGHT_MIN = 900      -- the shortest distance between the two industries (m); the longest is the level's (LEVELS)
 
 -- the road terminals of a construction's stations: { group, list = { { station, terminal, node } } } (station and terminal
@@ -1407,6 +1533,8 @@ local function createFreightLine(E, co, f, extra)
 	if extra then table.insert(template.stops, 2, freightStop(E, extra.road, stop0, f.cargo)) end
 	local name = AINAME .. " " .. cargoName(E, f.cargo) .. " " .. math.floor(dist(f.from.pos, f.to.pos) / 100) / 10 .. " km"
 	act(E, co.id, "makeLineCreateCmd", { n = 4, [1] = name, [2] = C.marshal(api.type.Vec3f.new(0.8, 0.5, 0.1)), [3] = co.ent, [4] = template })
+	-- (its growth waits until this line had time to fill, see mayExpand)
+	E.G.AI.lastNewAt = E.gameTime()
 	E.G.AI.busy = { what = "line " .. name, since = E.G.frames, linesBefore = #myLines(E, co.ent), jr = { kind = "freight", pos = f.from.pos, a = name, b = f.cargo } }
 	L(E, "freight line requested: " .. name .. " (industry " .. f.from.e .. " -> " .. tostring(f.to.e or ("town stop " .. tostring(f.to.road.group))) .. ")")
 end
@@ -1559,7 +1687,7 @@ local function townFreightProject(E, co, stops, lines, vehicles, money)
 	if os.getenv("MPFEVER_AIFREIGHTGARAGE") == "1" then g = garageFor(E, co, f.from.pos, money, "industry " .. f.from.e) else g = garagesNear(E, co.ent, f.from.pos, 5000)[1] end
 	if g == "building" then return true end
 	if not g then
-		L(E, "no garage for the town delivery " .. f.key .. ": left")
+		L(E, "no garage for the town delivery " .. f.key .. ": left" .. (G_HOLD(E, f.key) and " for now" or ""))
 		A.freightTried[f.key] = false
 		return false
 	end
@@ -1636,7 +1764,7 @@ local function industryProject(E, co, lines, vehicles, money)
 	if os.getenv("MPFEVER_AIFREIGHTGARAGE") == "1" then g = garageFor(E, co, f.from.pos, money, "industry " .. f.from.e) else g = garagesNear(E, co.ent, f.from.pos, 5000)[1] end
 	if g == "building" then return true end
 	if not g then
-		L(E, "no garage for the freight route " .. f.key .. ": route left")
+		L(E, "no garage for the freight route " .. f.key .. ": route left" .. (G_HOLD(E, f.key) and " for now" or ""))
 		A.freightTried[f.key] = false
 		return false
 	end
@@ -1834,6 +1962,14 @@ end
 -- the next freight step: deliveries to towns and routes between industries in turn (the kind the company has fewer lines of
 -- first, the other one when it has nothing to do). MPFEVER_AITOWNFREIGHT=0: between industries only.
 local function freightProject(E, co, stops, lines, vehicles, money)
+	-- (the routes left for want of a garage are tried again once their wait is over, see G_HOLD)
+	local A = E.G.AI
+	if A.freightHold and os.getenv("MPFEVER_AIRETRY") ~= "0" then
+		local now = E.gameTime()
+		for k, t in pairs(A.freightHold) do
+			if now >= t or t - now > 2 * 720000 then A.freightHold[k] = nil; if A.freightTried and A.freightTried[k] == false then A.freightTried[k] = nil end end
+		end
+	end
 	local nTown, nInd = 0, 0
 	for _, l in ipairs(lines) do
 		local f = freightOf(E, l)
@@ -1912,9 +2048,26 @@ local function step(E)
 	local depots = myDepots(E, co.ent)
 	local lines = myLines(E, co.ent)
 	local vehicles = myVehicles(E, co.ent)
+	-- (0.5.14) the money kept back: the level's, and at least a few months of what its vehicles cost to run (a fixed reserve let a
+	-- grown fleet fall into debt at its first bad months). Read at most every 10 s. MPFEVER_AIRESERVE=0: the level's only
+	if os.getenv("MPFEVER_AIRESERVE") ~= "0" then
+		if not A.runAt or G.frames - A.runAt > 600 then
+			A.runAt = G.frames
+			local run = 0
+			for _, v in ipairs(vehicles) do
+				local ok, c = pcall(function() return E.api.engine.util.vehicle.getRunningCost(v.e) end)
+				if ok and type(c) == "number" then run = run + c end
+			end
+			A.runCost = run
+		end
+		RESERVE = math.max(LV.reserve, LV.reserve / 2 + (A.runCost or 0) * (LV.runMonths or 4) / 12)
+	end
 	if G.frames - (A.reportAt or -100000) > 1800 then
 		A.reportAt = G.frames
-		L(E, string.format("company %d (entity %d): money %d, %d stop(s), %d depot(s), %d line(s), %d vehicle(s)", co.id, co.ent, money, #stops, #depots, #lines, #vehicles))
+		-- (0.5.14: what it keeps back, its lines' result together over the last two months and its fleet's running costs a year)
+		local res = companyResult(E, lines)
+		L(E, string.format("company %d (entity %d): money %d, %d stop(s), %d depot(s), %d line(s), %d vehicle(s), kept back %d, lines' 2-month result %s, running costs %d a year",
+			co.id, co.ent, money, #stops, #depots, #lines, #vehicles, math.floor(RESERVE), res and tostring(math.floor(res)) or "?", math.floor(A.runCost or 0)))
 	end
 	-- where each line runs: the middle of its stops (the garage of its new buses is looked for from there)
 	local groupPos = {}
@@ -1956,10 +2109,13 @@ local function step(E)
 		A.trucksFor = A.trucksFor or {}
 		for _, l in ipairs(lines) do
 			local f = freightOf(E, l)
-			if f and (A.trucksFor[l.e] or 0) < 2 then
+			-- (0.5.14: the trucks it has, not the ones asked for: two refused purchases left a line with no truck, given up as empty
+			-- soon after; at most 5 asks. MPFEVER_AIRETRY=0: two asks as before)
+			local asks = os.getenv("MPFEVER_AIRETRY") == "0" and 2 or 5
+			if f and (A.trucksFor[l.e] or 0) < asks then
 				local n = 0
 				for _, v in ipairs(vehicles) do if v.line == l.e then n = n + 1 end end
-				if n >= 2 then A.trucksFor[l.e] = 2
+				if n >= 2 then A.trucksFor[l.e] = asks
 				elseif money > RESERVE + (A.truckCost or BUS_COST) then
 					local depot = garagesNear(E, co.ent, f.from.pos, 5000)[1]
 					if depot then
@@ -1972,13 +2128,19 @@ local function step(E)
 			end
 		end
 	end
+	-- (0.5.14: whether it may open something new now, see mayExpand)
+	local grow = mayExpand(E, co, lines, money)
 	-- freight: a route of trucks while the company has fewer freight lines than half its lines (one at first), then the buses
-	if os.getenv("MPFEVER_AIFREIGHT") ~= "0" then
+	if os.getenv("MPFEVER_AIFREIGHT") ~= "0" and grow then
 		local nf = 0
 		for _, l in ipairs(lines) do if freightOf(E, l) then nf = nf + 1 end end
 		-- (a path search alone builds nothing: the buses' work goes on in the same look)
 		if nf < math.max(1, math.ceil(#lines * LV.freightShare)) and freightProject(E, co, stops, lines, vehicles, money) == true then return end
 	end
+	-- (Normal and Hard, 0.5.14: the lines between towns before the towns' own lines, a fare grows with the distance flown and the
+	-- short town lines earn the least. MPFEVER_AIORDER=0: the towns first, as before)
+	local pairsFirst = LV.profitFirst and os.getenv("MPFEVER_AIORDER") ~= "0"
+	if pairsFirst and pairProject(E, co, stops, lines, vehicles, money, grow) then return end
 	for _, t in ipairs(townsForLines(E, co.ent)) do
 		local town = t.e
 		if (A.skipTown and A.skipTown[town]) or t.size < LV.townMin then goto continue end
@@ -1996,6 +2158,8 @@ local function step(E)
 				goto continue
 			end
 			local have, missing = townProject(E, co, town, stops)
+			-- (a town's line not begun yet: only when the company may grow, see mayExpand)
+			if not grow and #missing > 0 and not lineFor(E, lines, (function() local g = {} for _, h in ipairs(have) do g[#g + 1] = h.stop.group end return g end)()) then goto continue end
 			if #missing > 0 then
 				-- (a town's line is begun only with the money to end it: its stops and two buses; stops left without a line cost
 				-- their upkeep for nothing)
@@ -2003,12 +2167,16 @@ local function step(E)
 				local w = missing[1]
 				local avoid = {}
 				for _, s in ipairs(stops) do avoid[#avoid + 1] = s.pos end
-				local segs = streetSegmentsNear(E, w.p, 300, avoid)
+				-- (within the 200 m townProject takes, 0.5.14: a stop built 200 to 300 m away was never found again and another one
+				-- was built, and another, until the town ran out of streets. MPFEVER_AIRETRY=0: 300 m as before)
+				local segs = streetSegmentsNear(E, w.p, os.getenv("MPFEVER_AIRETRY") == "0" and 300 or 200, avoid)
 				local tries = A.failed and A.failed["stop " .. town .. ":" .. w.use] or 0
 				local s = segs[1 + tries]
 				if not s or tries > 4 then
 					-- (a point of the ring is left out; a district centre without a stop leaves the town)
-					if w.use:sub(1, 4) == "RING" then
+					-- (0.5.14: a district centre too when the town has two stops already: the line is made with those, its stops were
+					-- left without a line before. MPFEVER_AIRETRY=0: the town skipped)
+					if w.use:sub(1, 4) == "RING" or (#have >= 2 and os.getenv("MPFEVER_AIRETRY") ~= "0") then
 						L(E, "no street for the stop " .. w.use .. " of " .. townName(E, town) .. ": point left out")
 						A.dropPoint = A.dropPoint or {}; A.dropPoint[town .. ":" .. w.use] = true
 						return
@@ -2047,6 +2215,7 @@ local function step(E)
 				-- (a line only with the money for its first two buses, as the lines between towns: a line left without one is given up
 				-- as empty after a few looks, its stops kept for nothing)
 				if money < RESERVE + 2 * (A.busCost or BUS_COST) then return end
+				if not grow then goto continue end
 				createLine(E, co, groups, town)
 				return
 			end
@@ -2077,7 +2246,7 @@ local function step(E)
 			end
 		end
 	end
-	pairProject(E, co, stops, lines, vehicles, money)
+	if not pairsFirst then pairProject(E, co, stops, lines, vehicles, money, grow) end
 end
 
 -- (for the dev probes)

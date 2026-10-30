@@ -2791,6 +2791,28 @@ local function handleEvent(userParams, state, src, id, name, param)
 				coLoanEvent(st, c.id, "Obtain", { offer, offer })
 			end)
 			if not okL then log("companies: ai_loan failed: " .. tostring(errL)) end
+		elseif name == "ai_repay" then
+			-- (0.5.14) a computer company with money to spare repays its oldest loan, as a player does from the loan window, when its
+			-- money on this simulation, at this step, covers the loan and its interest plus what it keeps back (param.keep): every
+			-- game decides the same. A player's company cannot send it. (mpfever_ai.lua: MPFEVER_AIREPAY=0, never sent)
+			local reg = st.co
+			local c = reg and reg.mode == "separate" and CO.find(reg, tonumber(param.mpfCo)) or nil
+			local okR, errR = pcall(function()
+				if not (c and c.ent and type(c.key) == "string" and c.key:sub(1, 3) == "ai:") then log("companies: ai_repay refused to company " .. tostring(param.mpfCo)); return end
+				local M = loanMods()
+				local lt = coLoanTable(st, c.id)
+				local loan = lt and lt.obtainedLoans and lt.obtainedLoans[1]
+				if not (M and loan) then return end
+				local amount = M.lu.getFullLoanAndInterestPayBack(loan)
+				local bal = api.engine.util.finance.getPlayersBalance(c.ent)
+				local keep = math.max(0, tonumber(param.keep) or 0)
+				if type(bal) ~= "number" or type(amount) ~= "number" or bal < amount + keep then
+					log("companies: computer company " .. c.id .. " cannot repay its loan yet (" .. tostring(bal) .. " for " .. tostring(amount) .. " + " .. keep .. ")")
+					return
+				end
+				coLoanEvent(st, c.id, "Repay", { loan, loan })
+			end)
+			if not okR then log("companies: ai_repay failed: " .. tostring(errR)) end
 		elseif name == "recolor" then
 			-- a company picks another colour in the MPFever window (one no other company has)
 			local reg = st.co
