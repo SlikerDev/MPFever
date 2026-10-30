@@ -246,6 +246,29 @@ namespace MPFever
                 Check(refused, "savegame differences: refused on another base");
             }
             catch (Exception e) { Check(false, "savegame differences: " + e.Message); }
+
+            // the game's rules kept in a savegame (0.5.14): the text "mpfrules:..." of mpfever_eco.lua's co_rules, a Lua string
+            // of the game's state (its length right before it), read back for the lobby opened on that savegame
+            try
+            {
+                byte[] Lua(string s)
+                {
+                    var t = Encoding.ASCII.GetBytes(s);
+                    return BitConverter.GetBytes(t.Length).Concat(t).ToArray();
+                }
+                var junk = Enumerable.Range(0, 5000).Select(k => (byte)(k * 7 % 256)).ToArray();
+                var save = junk.Concat(Lua("mpfrules:bankrupt=6;share=0;start=5000000;ai=1:7:3:1000000,2:3:1:-1;")).Concat(junk).ToArray();
+                string tmp = Path.Combine(Path.GetTempPath(), "mpfever-selftest-" + Guid.NewGuid().ToString("N") + ".sav");
+                Zstd.WriteRawFrame(tmp, save);
+                var r = SaveInfo.Rules(tmp);
+                Zstd.WriteRawFrame(tmp, junk);
+                var none = SaveInfo.Rules(tmp);
+                File.Delete(tmp);
+                Check(r != null && r.Count == 4 && r["bankrupt"] == "6" && r["share"] == "0" && r["start"] == "5000000" && r["ai"] == "1:7:3:1000000,2:3:1:-1",
+                    "savegame rules: read back (" + (r == null ? "none" : string.Join(";", r.Select(kv => kv.Key + "=" + kv.Value))) + ")");
+                Check(none == null, "savegame rules: none in a savegame without them");
+            }
+            catch (Exception e) { Check(false, "savegame rules: " + e.Message); }
             return ok;
         }
 
@@ -384,13 +407,14 @@ namespace MPFever
             var problems = new List<string>();
             var c = ServerConfig.Load(path, problems, out bool created);
             Check(created && problems.Count == 0 && c.Port == 28090 && c.World == "" && c.Password == "" && c.MaxPlayers == 8
-                  && c.CompanyMode == "shared" && c.PauseWhenEmpty && c.AutosaveMinutes == 10 && c.RestartOnCrash, "settings: template = defaults");
+                  && c.CompanyMode == "shared" && c.PauseWhenEmpty && c.AutosaveMinutes == 10 && c.RestartOnCrash && c.ShareRules, "settings: template = defaults");
             File.WriteAllText(path, "# comment\nworld=My Map 2\nport=28100\npassword=s3cr#t = x\nmax-players=1\ncompany-mode=separate\nowner=Lena\n"
-                + "start-speed=3\nwatchdog-seconds=5\nstart-money=abc\npause-when-empty=no\nbogus\n", new UTF8Encoding(false));
+                + "start-speed=3\nwatchdog-seconds=5\nstart-money=abc\npause-when-empty=no\nsharing-rules=false\nbogus\n", new UTF8Encoding(false));
             problems.Clear();
             c = ServerConfig.Load(path, problems, out created);
+            // (0.5.14: sharing-rules=false, everything open and free between the companies)
             Check(!created && c.World == "My Map 2" && c.Port == 28100 && c.Password == "s3cr#t = x" && c.MaxPlayers == 1 && c.CompanyMode == "separate"
-                  && c.Owner == "Lena" && c.StartSpeed == 1 && c.WatchdogSeconds == 30 && c.StartMoney == 2000000 && !c.PauseWhenEmpty && problems.Count == 3,
+                  && c.Owner == "Lena" && c.StartSpeed == 1 && c.WatchdogSeconds == 30 && c.StartMoney == 2000000 && !c.PauseWhenEmpty && !c.ShareRules && problems.Count == 3,
                   "settings: values, " + problems.Count + " line(s) ignored");
             try { Directory.Delete(dir, true); } catch { }
 
