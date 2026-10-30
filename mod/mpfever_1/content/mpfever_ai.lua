@@ -1367,6 +1367,17 @@ local function bestPair(E, co, lines, stops)
 			local key = math.min(a.e, b.e) .. "/" .. math.max(a.e, b.e)
 			if d > 1200 and d < 6000 and not (A.pairDone or {})[key] and not (A.pairFailed or {})[key] then
 				local score = a.size * b.size / d
+				-- (0.5.14) a pair another computer company runs or builds shares its passengers with it: its score as the share left
+				-- (twice less for the levels that do not compete). The three companies of a test of 2026-10-30 all built the same
+				-- three pairs and earned half of what two had. The pair this one builds keeps its score: never left half built.
+				-- MPFEVER_AIPAIRSPREAD=0: as before
+				if key ~= A.pairUnderWay and os.getenv("MPFEVER_AIPAIRSPREAD") ~= "0" then
+					local n = 0
+					for _, S in pairs(E.G.AIS or {}) do
+						if S ~= A and ((S.pairDone or {})[key] or S.pairUnderWay == key) then n = n + 1 end
+					end
+					score = score / (1 + n * (LV.compete and 1 or 2))
+				end
 				if not best or score > best.score then best = { a = a, b = b, d = d, key = key, score = score } end
 			end
 		end

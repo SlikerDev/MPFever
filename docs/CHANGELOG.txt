@@ -70,7 +70,9 @@ MPFever - Changelog
       (MPFEVER_AITOWNFREIGHT=1: as before); one freight line per producer and cargo, the producers at work first;
     * a garage open to it within 5 km is used, another company's or the town's, instead of building its own (650 000 each, a
       company of the tests built three in its first minutes; MPFEVER_AIOWNGARAGE=1: its own first);
-    * the computer companies spread over the map's towns instead of all building in the same three (MPFEVER_AISPREAD=0);
+    * the computer companies spread over the map's towns instead of all building in the same three (MPFEVER_AISPREAD=0), and
+      over the pairs of towns: a pair another computer company runs counts as the share of passengers left to it (three
+      companies of a test built the same three pairs; MPFEVER_AIPAIRSPREAD=0);
     * fixes: town stops looked for within 200 m (they were built up to 300 m away and never found again: stop after stop in
       the same place), freight routes and town garages tried again later instead of being left for the session, a line
       between two towns given up no longer leaves both towns, a new line no longer judged empty before its first vehicles,
