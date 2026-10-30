@@ -636,7 +636,7 @@ HOOKS = "\n".join(extract(BRIDGE, p, w) for p, w in (
 ))
 WINDOW = extract(UI, r"^U\.featOff = .*?^U\.featTabRows = function\(K, st, key\)\n.*?^end\n", "the window's game options")
 TABREQ = extract(UI, r"^\s*local tab, seq = s:match\(.*?\n", "the window's tab request pattern")
-check('"^([%w_]+)"' in TABREQ, "the window's tab request takes a game option's tab (f_market)")
+check('"^([%w_]+)"' in TABREQ or '"^([%w_:]+)"' in TABREQ, "the window's tab request takes a game option's tab (f_market; 0.6: a Hub's page too)")
 check(re.search(r"^H\.markettest = function\(from, p\)\n", BRIDGE, re.M) is not None, "the bridge has the markettest scenario")
 
 INTEG = r'''

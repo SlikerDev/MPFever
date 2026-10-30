@@ -1008,9 +1008,16 @@ function M.view(d, T, showAll)
 		return a.co < b.co
 	end)
 	local rows = {}
-	for _, x in ipairs(tot) do rows[#rows + 1] = { coName(x.co), M.pct(x.pa), M.pct(x.fr), tostring(x.towns), tostring(x.inds) } end
+	-- (0.6, the Hub: each row's company and its shares, for its band and its bars)
+	local ids, shares = {}, {}
+	for _, x in ipairs(tot) do
+		rows[#rows + 1] = { coName(x.co), M.pct(x.pa), M.pct(x.fr), tostring(x.towns), tostring(x.inds) }
+		ids[#ids + 1] = x.co
+		shares[#shares + 1] = { co = x.co, name = coName(x.co), pa = x.pa, fr = x.fr }
+	end
 	add({ kind = "text", text = tr("totals") })
-	add({ kind = "table", headers = { tr("company"), tr("passengers"), tr("cargo"), tr("towns"), tr("industries") }, rows = rows })
+	add({ kind = "table", headers = { tr("company"), tr("passengers"), tr("cargo"), tr("towns"), tr("industries") }, rows = rows, ids = ids, shares = shares,
+		me = d.me })
 	-- the towns, the most populated first
 	local mineSomewhere = false
 	local function mine(t) for _, c in ipairs(t.cos) do if c.co == d.me then return true end end return false end
@@ -1084,7 +1091,27 @@ function M.ui(u)
 				for _, r in ipairs(b.rows) do lines[#lines + 1] = r end
 				local widths = { math.max(120, W - 4 * M.NUM_W) }
 				for k = 2, #b.headers do widths[k] = M.NUM_W end
-				node = u.table(lines, widths, true)
+				if u.rich and b.ids then
+					-- (0.6, the Hub: this player's company on a band of its own, then the shares as bars in the companies' colours)
+					local ids, me = b.ids, b.me
+					out[#out + 1] = u.table(lines, widths, true, { highlight = function(i) return me ~= 0 and ids[i] == me end })
+					for pass = 1, 2 do
+						local k = pass == 1 and "pa" or "fr"
+						local any = false
+						for _, s in ipairs(b.shares or {}) do if (s[k] or -1) >= 0 then any = true end end
+						if any and u.bar then
+							out[#out + 1] = u.gap and u.gap(6) or nil
+							out[#out + 1] = text(M.say(T, k == "pa" and "passengers" or "cargo"), "muted")
+							for _, s in ipairs(b.shares or {}) do
+								local v = s[k] or -1
+								out[#out + 1] = u.bar(v >= 0 and v / 1000 or 0, (u.coColor and u.coColor(s.co)) or s.co, M.pct(v),
+									{ lead = s.name, leadW = math.floor(W * 0.3), labelW = 70 })
+							end
+						end
+					end
+				else
+					node = u.table(lines, widths, true)
+				end
 			else
 				out[#out + 1] = text(table.concat(b.headers, " | "), "muted")
 				for _, r in ipairs(b.rows) do out[#out + 1] = text(table.concat(r, " | ")) end
@@ -1096,8 +1123,9 @@ function M.ui(u)
 				if u.request then u.request("show", tostring(town)) else E.focusTown(town) end
 			end)
 			if btn and u.row then
-				-- (the line's text keeps the room of its button: one cell of u.table with a width)
-				local label = u.table and u.table({ { b.text } }, { W - M.SHOW_W }) or text(b.text)
+				-- (the line's text keeps the room of its button: one cell of u.table with a width; the Hub's u.row gives a text the room
+				-- its buttons leave)
+				local label = (not u.rich and u.table) and u.table({ { b.text } }, { W - M.SHOW_W }) or text(b.text)
 				node = u.row({ label, btn })
 			else
 				node = text(b.text)

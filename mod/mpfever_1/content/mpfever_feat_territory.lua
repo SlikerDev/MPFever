@@ -740,8 +740,10 @@ local function monthsLeft(untilT, now)
 end
 
 -- The window's file (env.write): tab-separated lines, read by M.ui on this game
---   rule  radiusKm years | me state(claim/has/late/none) monthsLeft canDrop | town e name free | terr co coName town radiusKm
---   status(on/forever/ended) monthsLeft mine | hc co coName pct amount
+--   rule  radiusKm years | me state(claim/has/late/none) monthsLeft canDrop | town e name free x y | terr co coName town radiusKm
+--   status(on/forever/ended) monthsLeft mine x y | hc co coName pct amount
+-- (0.6, the Hub: x y after town and terr, the town's or the territory's centre, for the tab's « View » buttons; read by this game's
+-- own window only)
 function M.fileLines(st, env, onT, onH)
 	local s = stateOf(st)
 	local now = M.now(env)
@@ -767,6 +769,7 @@ function M.fileLines(st, env, onT, onH)
 			for i, t in ipairs(M.townList) do
 				if i > M.TOWNS_MAX then break end
 				L[#L + 1] = "town\t" .. field(t.e) .. "\t" .. field(t.name) .. "\t" .. (M.canClaim(st, env, co, t.x, t.y) and 1 or 0)
+					.. "\t" .. math.floor(t.x + 0.5) .. "\t" .. math.floor(t.y + 0.5)
 			end
 		else L[#L + 1] = "me\tlate\t0\t0" end
 		for _, k in ipairs(sortedKeys(s and s.terr)) do
@@ -774,6 +777,7 @@ function M.fileLines(st, env, onT, onH)
 			local status = protects(t, st.co) and (t.untilT and "on" or "forever") or "ended"
 			L[#L + 1] = "terr\t" .. t.co .. "\t" .. field(companyName(st, t.co, Tx(env))) .. "\t" .. field(t.name) .. "\t" .. km(t.r)
 				.. "\t" .. status .. "\t" .. (status == "on" and monthsLeft(t.untilT, now) or -1) .. "\t" .. (t.co == co and 1 or 0)
+				.. "\t" .. (num(t.x) and math.floor(t.x + 0.5) or "") .. "\t" .. (num(t.y) and math.floor(t.y + 0.5) or "")
 		end
 	end
 	if onH then
@@ -828,10 +832,16 @@ end
 -- ---------------------------------------------------------------- the window's tab
 -- What the tab shows, from the file's lines: { { kind = "title"|"text"|"muted"|"button", text, label, req, payload }... }. Plain
 -- data, so that the tab can be drawn by any set of widgets (M.ui below draws it with the options host's).
+-- (0.6, the Hub) the items also say what they are for its tables: part ("rule", "mine", "claim", "others", "hc"), the town's or the
+-- territory's centre (x, y: its « View » button), and the cells (co, town, km, status, pct, amount).
 function M.uiModel(lines, T)
 	T = T or M.T
 	local out = {}
-	local function add(kind, text, label, req, payload) out[#out + 1] = { kind = kind, text = text, label = label, req = req, payload = payload } end
+	local function add(kind, text, label, req, payload, ex)
+		local it = { kind = kind, text = text, label = label, req = req, payload = payload }
+		for k, v in pairs(ex or {}) do it[k] = v end
+		out[#out + 1] = it
+	end
 	local rule, me, towns, terrs, hcs = nil, nil, {}, {}, {}
 	for _, line in ipairs(lines or {}) do
 		local f = {}
@@ -843,54 +853,73 @@ function M.uiModel(lines, T)
 		elseif f[1] == "hc" then hcs[#hcs + 1] = f end
 	end
 	if rule then
-		add("title", T("Territoires", "Territories"))
+		add("title", T("Territoires", "Territories"), nil, nil, nil, { part = "rule" })
 		local years = tonumber(rule[3]) or 0
 		add("muted", fill(T("Chaque entreprise revendique une ville pendant sa première année : rayon %s km, protégé %s après la revendication. Les rues et les voies restent libres.",
-			"Each company claims one town during its first year: radius %s km, protected %s after the claim. Streets and tracks stay free."), rule[2], yearsText(T, years)))
+			"Each company claims one town during its first year: radius %s km, protected %s after the claim. Streets and tracks stay free."), rule[2], yearsText(T, years)),
+			nil, nil, nil, { part = "rule" })
 		local mine = nil
 		for _, t in ipairs(terrs) do if t[8] == "1" then mine = t end end
 		if me and me[2] == "has" and mine then
 			local status = mine[6] == "forever" and T("protégé pour toujours", "protected for good")
 				or mine[6] == "on" and fill(T("protégé encore %s mois", "protected for %s more month(s)"), mine[7])
 				or T("plus protégé", "no longer protected")
-			add("text", fill(T("Votre territoire : %s (rayon %s km), %s.", "Your territory: %s (radius %s km), %s."), mine[4], mine[5], status))
+			add("text", fill(T("Votre territoire : %s (rayon %s km), %s.", "Your territory: %s (radius %s km), %s."), mine[4], mine[5], status), nil, nil, nil,
+				{ part = "mine", town = mine[4], km = mine[5], status = status, x = num(mine[9]), y = num(mine[10]) })
 			if me[4] == "1" then add("button", T("Vous pouvez encore changer d'avis pendant votre année de revendication.", "You may still change your mind during your claim year."),
-				T("Renoncer", "Give up"), "drop", "") end
+				T("Renoncer", "Give up"), "drop", "", { part = "mine" }) end
 		elseif me and me[2] == "claim" then
-			add("text", fill(T("Choisissez la ville de votre territoire (encore %s mois) :", "Choose the town of your territory (%s more month(s)):"), me[3]))
+			add("text", fill(T("Choisissez la ville de votre territoire (encore %s mois) :", "Choose the town of your territory (%s more month(s)):"), me[3]),
+				nil, nil, nil, { part = "claim", head = true })
 			for _, t in ipairs(towns) do
-				if t[4] == "1" then add("button", t[3], T("Revendiquer", "Claim"), "claim", t[2])
-				else add("muted", fill(T("%s (trop près d'un autre territoire)", "%s (too close to another territory)"), t[3])) end
+				if t[4] == "1" then add("button", t[3], T("Revendiquer", "Claim"), "claim", t[2], { part = "claim", town = t[3], x = num(t[5]), y = num(t[6]) })
+				else add("muted", fill(T("%s (trop près d'un autre territoire)", "%s (too close to another territory)"), t[3]), nil, nil, nil,
+					{ part = "claim", town = t[3], close = true, x = num(t[5]), y = num(t[6]) }) end
 			end
 		elseif me and me[2] == "late" then
-			add("muted", T("Le délai d'un an pour revendiquer une ville est passé.", "The year to claim a town is over."))
+			add("muted", T("Le délai d'un an pour revendiquer une ville est passé.", "The year to claim a town is over."), nil, nil, nil, { part = "mine" })
 		end
 		local others = {}
 		for _, t in ipairs(terrs) do if t[8] ~= "1" then others[#others + 1] = t end end
 		if #others > 0 then
-			add("title", T("Les territoires des autres", "The others' territories"))
+			add("title", T("Les territoires des autres", "The others' territories"), nil, nil, nil, { part = "others" })
 			for _, t in ipairs(others) do
 				local status = t[6] == "forever" and T("pour toujours", "for good")
 					or t[6] == "on" and fill(T("encore %s mois", "%s more month(s)"), t[7])
 					or T("plus protégé", "no longer protected")
-				add(t[6] == "ended" and "muted" or "text", fill(T("%s : %s, rayon %s km, %s", "%s: %s, radius %s km, %s"), t[3], t[4], t[5], status))
+				add(t[6] == "ended" and "muted" or "text", fill(T("%s : %s, rayon %s km, %s", "%s: %s, radius %s km, %s"), t[3], t[4], t[5], status), nil, nil, nil,
+					{ part = "others", co = t[3], coId = tonumber(t[2]), town = t[4], km = t[5], status = status, ended = t[6] == "ended", x = num(t[9]), y = num(t[10]) })
 			end
 		end
 	end
 	if #hcs > 0 then
-		add("title", T("Handicaps d'argent", "Money handicaps"))
-		add("muted", T("L'entreprise de la sauvegarde (celle de l'hôte) garde son argent.", "The savegame's company (the host's) keeps its money."))
+		add("title", T("Handicaps d'argent", "Money handicaps"), nil, nil, nil, { part = "hc" })
+		add("muted", T("L'entreprise de la sauvegarde (celle de l'hôte) garde son argent.", "The savegame's company (the host's) keeps its money."), nil, nil, nil, { part = "hc" })
 		for _, h in ipairs(hcs) do
-			add("text", fill(T("%s : %s % de l'argent de départ (%s)", "%s: %s % of the start money (%s)"), h[3], h[4], money(tonumber(h[5]) or 0)))
+			add("text", fill(T("%s : %s % de l'argent de départ (%s)", "%s: %s % of the start money (%s)"), h[3], h[4], money(tonumber(h[5]) or 0)), nil, nil, nil,
+				{ part = "hc", co = h[3], coId = tonumber(h[2]), pct = h[4], amount = money(tonumber(h[5]) or 0) })
 		end
 	end
 	return out
 end
 
+-- (0.6) the camera over a town or a territory (the window's « View » buttons; GUI only, as the journal's « Show »): from above at
+-- a distance that takes in the territory's circle (km: its radius), 1500 m for a town of the claim list. Whether it moved.
+function M.focus(x, y, km)
+	x, y = num(x), num(y)
+	if not (x and y) then return false end
+	local r = (num(km) or 0) * 1000
+	local d = r > 0 and math.max(1200, math.min(8000, r * 2.2)) or 1500
+	return pcall(function() api.gui.camera.focusPosition(api.type.Vec3f.new(x, y, 0), d) end)
+end
+
 -- The tab, drawn with the options host's widgets: u.text(s), u.muted(s) (else u.text), u.section(s) (else u.text), u.button(label,
 -- fn), u.row(list) (else the text and the button one under the other). Returns the list of widgets, top to bottom.
+-- (0.6) In the Hub (u.rich): the rules, then a card for this company's territory (« View », « Give up ») or the claim list as a
+-- table (each town with « View » and « Claim »), the others' territories as a table (« View »), the handicaps as a table.
 function M.ui(u)
 	local items = M.uiModel(u.read(M.NAME) or {}, u.T)
+	if u.rich and u.card and u.table then return M.uiRich(u, items) end
 	local out = {}
 	local text = u.text
 	local muted = u.muted or text
@@ -905,6 +934,90 @@ function M.ui(u)
 			if u.row then out[#out + 1] = u.row({ text(it.text), b })
 			else out[#out + 1] = text(it.text); out[#out + 1] = b end
 		else out[#out + 1] = text(it.text) end
+	end
+	return out
+end
+
+function M.uiRich(u, items)
+	local T = u.T or M.T
+	local W = tonumber(u.W) or 556
+	local out = {}
+	local function view(it, km)
+		if not (it.x and it.y) then return u.text("") end
+		local x, y = it.x, it.y
+		return u.button(T("Voir", "View"), function() M.focus(x, y, km) end, false, true, T("Amener la caméra sur place", "Take the camera there"))
+	end
+	local function part(p) local l = {} for _, it in ipairs(items) do if it.part == p then l[#l + 1] = it end end return l end
+	local rule = part("rule")
+	if #rule == 0 then
+		out[#out + 1] = u.muted(T("Aucun territoire dans cette partie.", "No territory in this game."))
+		return out
+	end
+	-- the rules (the title starts the page's first card)
+	for _, it in ipairs(rule) do out[#out + 1] = it.kind == "title" and u.title(it.text) or u.muted(it.text) end
+	-- this company's territory, or its claim
+	local mine = part("mine")
+	if #mine > 0 then
+		local kids, right = {}, {}
+		for _, it in ipairs(mine) do
+			if it.kind == "button" then
+				local req, payload = it.req, it.payload
+				kids[#kids + 1] = u.muted(it.text)
+				kids[#kids + 1] = u.row({ u.button(it.label, function() u.request(req, payload) end) })
+			elseif it.town then
+				kids[#kids + 1] = u.text(it.text)
+				if it.x then right[#right + 1] = view(it, tonumber(it.km)) end
+			else kids[#kids + 1] = u.muted(it.text) end
+		end
+		out[#out + 1] = u.gap(10)
+		out[#out + 1] = u.card(T("Votre territoire", "Your territory"), kids, { color = u.coColor and u.coColor(u.myCo) or nil, right = right, rightW = #right * 90 })
+	end
+	local claim = part("claim")
+	if #claim > 0 then
+		local lines = { { T("Ville", "Town"), T("État", "State"), "" } }
+		local headText = nil
+		for _, it in ipairs(claim) do
+			if it.head then headText = it.text
+			else
+				local cells = { view(it) }
+				if not it.close then
+					local req, payload = it.req, it.payload
+					cells[#cells + 1] = u.button(it.label, function() u.request(req, payload) end, true)
+				end
+				lines[#lines + 1] = { it.town or it.text, it.close and T("trop près d'un autre territoire", "too close to another territory") or T("libre", "free"), u.row(cells) }
+			end
+		end
+		local kids = {}
+		if headText then kids[#kids + 1] = u.text(headText) end
+		if #lines > 1 then kids[#kids + 1] = u.table(lines, { math.floor(W * 0.45), math.floor(W * 0.3), math.floor(W * 0.25) }, true)
+		else kids[#kids + 1] = u.muted(T("Aucune ville trouvée.", "No town found.")) end
+		out[#out + 1] = u.gap(10)
+		out[#out + 1] = u.card(T("Revendiquer une ville", "Claim a town"), kids)
+	end
+	-- the others' territories
+	local others = part("others")
+	local rows = { { T("Entreprise", "Company"), T("Ville", "Town"), T("Rayon", "Radius"), T("Protection", "Protection"), "" } }
+	for _, it in ipairs(others) do
+		if it.kind ~= "title" then rows[#rows + 1] = { it.co or "", it.town or "", (it.km or "?") .. " km", it.status or "", view(it, tonumber(it.km)) } end
+	end
+	if #rows > 1 then
+		out[#out + 1] = u.gap(10)
+		out[#out + 1] = u.card(T("Les territoires des autres", "The others' territories"), { u.table(rows, { 30, 26, 10, 22, 12 }, true) })
+	end
+	-- the money handicaps
+	local hc = part("hc")
+	local hrows = { { T("Entreprise", "Company"), T("Argent de départ", "Start money"), T("Montant", "Amount") } }
+	local note = nil
+	for _, it in ipairs(hc) do
+		if it.co then hrows[#hrows + 1] = { it.co, tostring(it.pct) .. " %", it.amount or "" }
+		elseif it.kind == "muted" then note = it.text end
+	end
+	if #hrows > 1 then
+		local kids = {}
+		if note then kids[#kids + 1] = u.muted(note) end
+		kids[#kids + 1] = u.table(hrows, { 50, 25, 25 }, true)
+		out[#out + 1] = u.gap(10)
+		out[#out + 1] = u.card(T("Handicaps d'argent", "Money handicaps"), kids)
 	end
 	return out
 end

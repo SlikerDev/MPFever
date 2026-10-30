@@ -11846,6 +11846,9 @@ end
 -- failed (ui_tab_shown.txt). For the screenshots of the test campaign ("AUTOTEST wintabs: <tab> drawn" in mod.log, the
 -- tab on screen from then until the next one is asked) and to check that no tab fails to draw. With one company for everybody
 -- the interface shows Session for Company and Rules (those tabs do not exist there): the results say so.
+-- (0.6) Then the Hub (unless MPFEVER_HUB=0): "hub:" opens it on its first page and its answer lists the session's pages, each then
+-- asked in its turn ("hub:<page>"; "AUTOTEST hub: <page> drawn, N rows" in mod.log, the page on screen until the next one). With the
+-- Hub, the tabs the small window no longer has (Company, Rules, Game, Settings) are drawn by the Hub: the results say "drawn as".
 H.wintabs = function(from, p)
 	if p.role ~= C.ROLE or AUTO.running then return end
 	AUTO.running = true
@@ -11854,6 +11857,7 @@ H.wintabs = function(from, p)
 	-- (the Game tab of 0.5.14 too: the game's rules, one company per player only, else Session is drawn in its place)
 	-- ((0.6) p.tabs: the tabs of another scenario, see H.pubtest)
 	local tabs = type(p.tabs) == "table" and p.tabs or { "session", "chat", "company", "rules", "game", "settings" }
+	if type(p.tabs) ~= "table" and os.getenv("MPFEVER_HUB") ~= "0" then tabs[#tabs + 1] = "hub:" end
 	local frames = math.max(3, tonumber(os.getenv("MPFEVER_WINTABSECONDS") or "") or 10) * 60
 	local function ask(i)
 		if i > #tabs then return autoFinish() end
@@ -11866,7 +11870,21 @@ H.wintabs = function(from, p)
 			if fr then s = fr:read("*a") or ""; fr:close() end
 			local seq, asked, shown, result, rows = s:match("^(%d+)" .. TAB .. "([^" .. TAB .. "]*)" .. TAB .. "([^" .. TAB .. "]*)" .. TAB .. "([^" .. TAB .. "]*)" .. TAB .. "(%d+)")
 			local line
-			if tonumber(seq) ~= i then line = "wintabs: " .. tabs[i] .. " NOT DRAWN (no answer from the interface)"
+			local hubPage = tabs[i]:match("^hub:(.*)$")
+			if hubPage == "" then
+				-- (the Hub's first answer: its pages, after the rows; each one asked next)
+				local pages = s:match("^%d+" .. TAB .. "[^" .. TAB .. "]*" .. TAB .. "[^" .. TAB .. "]*" .. TAB .. "[^" .. TAB .. "]*" .. TAB .. "%d+" .. TAB .. "([%w_,]+)")
+				if tonumber(seq) ~= i then line = "hub: NOT OPENED (no answer from the interface)"
+				else
+					local n = 0
+					for pg in (pages or ""):gmatch("[%w_]+") do n = n + 1; table.insert(tabs, i + n, "hub:" .. pg) end
+					line = "hub: opened on " .. tostring(shown) .. ", " .. n .. " page(s): " .. tostring(pages or "none")
+				end
+			elseif hubPage then
+				if tonumber(seq) ~= i then line = "hub: " .. hubPage .. " NOT DRAWN (no answer from the interface)"
+				else line = "hub: " .. hubPage .. " drawn" .. (shown ~= hubPage and (" as " .. tostring(shown)) or "") .. ", " .. tostring(rows) .. " rows"
+					.. (result ~= "ok" and (" (" .. tostring(result) .. ")") or "") end
+			elseif tonumber(seq) ~= i then line = "wintabs: " .. tabs[i] .. " NOT DRAWN (no answer from the interface)"
 			else line = "wintabs: " .. tabs[i] .. " drawn as " .. tostring(shown) .. ", " .. tostring(result) .. ", " .. tostring(rows) .. " rows" end
 			AUTO.results[#AUTO.results + 1] = line
 			log("AUTOTEST " .. line)

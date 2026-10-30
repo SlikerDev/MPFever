@@ -29,6 +29,13 @@ MPFever - Changelog
       a premium set by the host, computer companies buyable or not, 24 months of protection at the start.
     - Public games: players at most, a game still listed while it runs, the host's IP address shown or not (with a warning), a
       ban list kept by the host, every arrival approved by the host, Steam joins to a private game for Steam friends only.
+  - NEW: the MPFever Hub, a big window (about two thirds of the screen, three sizes with its - and + buttons) with a menu on
+    its left: "Game" (Session, Chat, Rules and options, Public games, Settings), "My company" (Company, Sharing rules, Team,
+    Trade, Stocks) and "Competition" (Ranking, Market shares, Tenders, Territories, Journal, AI companies); only the pages of
+    the session show. Its pages are cards, tables with a head and this player's row marked, and bars in the companies' colours
+    (rankings, market shares, stock values, tenders' progress). Territories: a "View" button takes the camera to each town of
+    the claim list and to each territory. The small window stays as a quick view (Session and Chat) with an "Open the Hub"
+    button; the bar's icon still opens it. MPFEVER_HUB=0: no Hub, the small window with every tab as before.
   - NEW (computer companies): a computer company never goes bankrupt any more, whatever its level (MPFEVER_AINOBANKRUPT=0: as
     before). It keeps a floor of money no purchase or build goes under, sells vehicles of its losing lines first when money
     runs low, takes the cheapest loan when needed and repays it (MPFEVER_AISOLVENT=0, MPFEVER_AIFLOOR=0, MPFEVER_AISTUCK=0).
