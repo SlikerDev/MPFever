@@ -12183,7 +12183,7 @@ H.tradetest = function(from, p)
 	AUTO.points = {}
 	local function note(t) AUTO.results[#AUTO.results + 1] = t; log("AUTOTEST " .. t) end
 	local F, E = C.feat(), C.eco()
-	if not (G.co and G.myCo and F and E) then note("tradetest: not in the companies mode, or no options host"); return autoFinish() end
+	if not (F and E) then note("tradetest: no options host"); return autoFinish() end
 	F.load(log)
 	local TR = F.byId.trade
 	if not TR then note("tradetest: no trade module"); return autoFinish() end
@@ -12216,6 +12216,8 @@ H.tradetest = function(from, p)
 	end
 	local steps, offerId, myLot = {}, nil, nil
 	local function step(what, start, done) steps[#steps + 1] = { what = what, start = start, done = done } end
+	-- (the client's company may come a moment after the scenario starts: MPFEVER_TOGETHER starts both at once)
+	step("a company here", function() end, function() return G.co ~= nil and G.myCo ~= nil end)
 	step("options on", function() end, function() local o = G.featSt and G.featSt.opts; return o and o.sales == "1" and o.contracts == "1" end)
 	if C.ROLE == "host" then
 		step("offer a lot", function()
