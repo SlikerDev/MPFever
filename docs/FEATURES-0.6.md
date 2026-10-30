@@ -60,6 +60,10 @@ function M.hearsNow(st) return bool end      -- optional, once a step (the top o
 -- applied by every game at the same step (as co_month in 0.5).
 function M.gui(st, env) end
 function M.request(kind, payload, st, env) end   -- optional: a request of the MPFever window (u.request on that side)
+function M.guiVeto(id, name, param, st, env) end -- optional: THIS player's interface event (guiHandleEvent: a tool's
+                                                 -- builder.proposalCreate...); a table returned is the bridge's answer to the
+                                                 -- game ({ errorMessages = { [text] = true }, skipRender }, as company.script's
+                                                 -- permits: the tool shows the text and does not build); nil: nothing to say
 function M.allow(a, st, env) return true end     -- optional: THIS player's own action, before it is shipped; return
                                                  -- false, reason to refuse it here (a chat notice tells the reason). For
                                                  -- territories and permissions: no desync, nothing was sent. See "allow".
@@ -101,6 +105,16 @@ t, now by default; a date the simulation needs is read by the host here and sent
 language), `env.module(id)`, `env.R`, `env.CO`.
 `env.realTime()` (os.clock, the GUI may), `env.gameTime()`, `env.T(fr, en)` (this game's language, the bridge's C.T), `env.R`,
 `env.CO`.
+`env.realTime()` (os.clock, the GUI may), `env.gameTime()`, `env.R`, `env.CO`, `env.T` (the bridge's C.T, this player's
+language; also in the simulation's env, for logs only).
+
+Per-player parameters: a parameter declared `perPlayer = true` also has one value per player, key `id.<param>_<player>` (the
+player's registry key, its name in lower case, written two letters a-p per byte by `F.playerPid(pid, key)`; 30 bytes at most);
+`env.param(id, "<param>.<key>")` gives the player's value, nil when it has none. The lobby shows one row per player but the host
+(MPFEVER_FEATPERPLAYER=0: the common row only), the players' line lists them.
+
+Other code of a game may ask a module on with `F.moduleOn(id, st, B)` (M and its interface env, nil while its options are off):
+the computer companies ask the territories so (mpfever_ai.lua's territoryCheck, MPFEVER_AITERRITORY=0: never).
 
 UI (`u` of M.ui, made by `U.featU` in mpfever_ui.script.lua): `u.T(fr, en)`, `u.Tf(fr, en, ...)`, `u.money(n)`, `u.W` (the
 text width), `u.isHost`, `u.me`, `u.mode`, `u.on(id)`, `u.param(id, pid)` (the session's options, as MPFever.exe sends them),
@@ -199,6 +213,8 @@ A module whose allow fails lets the action through (logged).
 | bridge, `guiHandleEvent` | `G.featTool` | the build the tool applies (for allow) |
 | bridge, `runPausedActions` | `G.featPausedAct`, `G.featDigests` | the note f_act of a paused action (with the modules' copies taken before it) |
 | bridge, `shipNativeBuilds`, `shipTerrain`, `runNativeReplays` | `G.featNativeAct` | a tool's build with its builder, to the modules with `M.digest` (f_act `only`) |
+| bridge, `guiHandleEvent` (end) | `G.featGuiVeto` (`G.featVeto`, `K.FEATVETO`) | M.guiVeto's answer returned to the game; MPFEVER_FEATVETO=0: never |
+| bridge, `runPausedActions` | `G.featPausedAct` | the note f_act of a paused action |
 | bridge, helpers | `SIM.featBridge`, `G.featBridge`, `G.featChat` | what the env is made of |
 | window | `U.featView`, `U.featTabs`, `U.featGameTab`, `U.featGameRows`, `U.featAsk`, `U.featU`, `U.featTabRows` | Game tab, modules' tabs |
 | lobby (`setup`) | `featView`, `featSection`, `featSummary` | the host's panel, the players' line |
@@ -209,6 +225,8 @@ The options host (mpfever_feat.lua): `F.MODULES`, `F.loader` (tests), `F.load`, 
 hook is logged the first 5 times, then every 100th), `F.applyOpts`, `F.simEvent`, `F.simTick`, `F.simAction`,
 `F.simGameEvent`, `F.hearsGameEvents`, `F.digests`, `F.gui`, `F.request`, `F.allow`, `F.wantsAllow`, `F.tabs`, `F.simEnv`, `F.guiEnv`.
 `F.simGameEvent`, `F.hearsGameEvents`, `F.wantsGameEvent`, `F.gui`, `F.request`, `F.allow`, `F.wantsAllow`, `F.tabs`, `F.simEnv`, `F.guiEnv`.
+`F.simGameEvent`, `F.hearsGameEvents`, `F.gui`, `F.request`, `F.allow`, `F.wantsAllow`, `F.tabs`, `F.simEnv`, `F.guiEnv`,
+`F.guiVeto`, `F.wantsVeto`, `F.moduleOn`, `F.playerPid`, `F.playerOf`.
 
 ## How to integrate a module
 

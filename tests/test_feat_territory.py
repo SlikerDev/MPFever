@@ -621,7 +621,7 @@ check("title|Money handicaps" in items and "Carl Co: 100 % of the start money (+
 run('''
 EE = guiEnv(G, 5, false, "Eve#3"); M.gui(G.st, EE)
 MADE, REQS = {}, {}
-U = { T = function(fr, en) return en end, read = function(f) return f == M.FILE and EE.writes[#EE.writes].lines or nil end,
+U = { T = function(fr, en) return en end, read = function(f) return f == M.NAME and EE.writes[#EE.writes].lines or nil end,
   request = function(k, p) REQS[#REQS + 1] = k .. ":" .. tostring(p) end,
   text = function(s) MADE[#MADE + 1] = "text:" .. s; return { s = s } end,
   button = function(label, fn) MADE[#MADE + 1] = "button:" .. label; return { label = label, fn = fn } end,
@@ -639,6 +639,287 @@ run('S(G).seen["5"] = S(G).t0; jump(G, YEAR + 1000); EE2 = guiEnv(G, 5, false, "
 check(run('return fileOf(EE2):find("me\\tlate", 1, true) ~= nil and M.request("claim", 13, G.st, EE2) == false') is True,
       "after the year: no claim list, a claim is refused here")
 check(run('return #M.uiModel({ "garbage", "rule\\t2" }, nil) > 0') is True, "the tab survives a damaged file")
+
+# ------------------------------------------------------------------------------------------------------------------------------
+# Integrated: the real options host (mpfever_feat.lua) with the real module, the bridge's real hooks (G.featGui, G.featGuiVeto,
+# guiHandleEvent), the window's real tab code (U.featU, U.featTabRows), the lobby's real featSection and the computer companies'
+# real territoryCheck, each extracted from its file as tests/test_feat_host.py does.
+import re
+
+CONTENT = HERE
+
+
+def read(name):
+    with open(os.path.join(CONTENT, name), encoding="utf-8") as f:
+        return f.read()
+
+
+def extract(src, pattern, what):
+    m = re.search(pattern, src, re.S | re.M)
+    if not m:
+        check(False, f"{what} found in its file")
+        print(f"FAIL {len(failures)} case(s): " + "; ".join(failures))
+        sys.exit(1)
+    return m.group(0)
+
+
+print("integrated: the options host and the module")
+LI = lua52.LuaRuntime(unpack_returned_tuples=True)
+LI.execute(MOCK)
+LI.globals().CO = LI.execute(SRC_CO)
+LI.globals().SRC_TERR = SRC_M
+LI.globals().F = LI.execute(read("mpfever_feat.lua"))
+runI = LI.eval("function(code) local f = assert(load(code)) return f() end")
+runI(r'''
+F.loader = function(id) if id == "territory" then return assert(load(SRC_TERR, "=territory"))() end return nil end
+LOGS = {}
+function log(s) LOGS[#LOGS + 1] = tostring(s) end
+function logged(pat) for _, l in ipairs(LOGS) do if l:find(pat, 1, true) then return true end end return false end
+F.load(log)
+TM = F.byId.territory
+NOW, BOOKED, FILES, CHAT, SENT = 0, {}, {}, {}, {}
+-- the bridge's helpers of the simulation half (SIM.featBridge) and of the interface half (G.featBridge, carl's game)
+SB = { log = log, STEP = 200, gameTime = function() return NOW end, month = function() return math.floor(NOW / 100000) end,
+  date = function() return nil end, money = function() return 0 end, R = {}, CO = CO, companies = function() return {} end,
+  book = function(ent, amount, who) BOOKED[#BOOKED + 1] = tostring(ent) .. ":" .. tostring(amount) .. ":" .. tostring(who) return true end }
+GB = { log = log, gameTime = function() return NOW end, R = {}, CO = CO, T = function(fr, en) return en end,
+  send = function(n, p) SENT[#SENT + 1] = { name = n, p = p } return true end, chat = function(t) CHAT[#CHAT + 1] = t return true end,
+  write = function(file, text) FILES[file] = text return true end, isHost = false, me = "Carl#2", myCo = 3, mode = "separate" }
+-- the game script's state as the bridge keeps it: state:get() gives a copy, only what is set again (state:set) stays
+GG = { st = {} }; makeReg(GG); SAVED = GG.st
+function step(n)
+  for _ = 1, n do
+    NOW = NOW + 200
+    local st = COPY(SAVED)
+    if F.simTick(st, SB) then SAVED = st end
+  end
+  GUI_TIME = NOW
+end
+function event(name, p) local st = COPY(SAVED); F.simEvent(st, name, p, SB); SAVED = st end
+function enc(key) return F.playerPid("money", key):sub(7) end
+''')
+# all off
+runI('step(100); OFFVETO = F.wantsVeto(SAVED.optsText or ""); OFFMOD = F.moduleOn("territory", SAVED, GB)')
+check(runI('return SAVED.feat == nil and #BOOKED == 0 and OFFVETO == false and OFFMOD == nil') is True,
+      "all options off: no state, no money, no answer to the tools, no module for the computer companies")
+# per-player parameters
+check(runI('return F.playerPid("money", "bob")') == "money_gcgpgc", "a player's parameter id: its key in the letters a-p")
+check(runI('local b, k = F.playerOf("money_gcgpgc"); return b .. "|" .. k') == "money|bob", "and back")
+check(runI('return F.playerOf("money") == nil and F.playerOf("money_abc") == nil and F.playerPid("money", string.rep("x", 31)) == nil') is True,
+      "no player in a plain id, an odd code, nor a key over 30 bytes")
+runI(r'''
+OPTS = "handicap=1;handicap.money=50;handicap.money_" .. enc("carl") .. "=150;handicap.money_" .. enc("eve") .. "=100;handicap.money_"
+  .. enc("bob") .. "=33;territory.radius_" .. enc("bob") .. "=3;territory=1"
+event("f_opts", { s = OPTS, mode = "separate", mpfFrom = "Host" })
+''')
+check(runI('return SAVED.optsText') == "handicap=1;handicap.money=50;handicap.money_" + "gdgbhcgm" + "=150;handicap.money_gfhggf=100;territory=1",
+      "the canon keeps a player's declared value (even the default), drops an undeclared one and a player's value of a common parameter")
+check(runI('return F.param(SAVED.opts, "handicap", "money.carl") == 150 and F.param(SAVED.opts, "handicap", "money.bob") == nil'
+           ' and F.param(SAVED.opts, "handicap", "money") == 50 and F.param(SAVED.opts, "handicap", "money.eve") == 100') is True,
+      "env.param(id, 'money.<key>'): the player's value, nil when it has none")
+summ = runI('local s = F.summary(SAVED.opts, "separate", function(fr, en) return en end); local o = {} '
+            'for _, x in ipairs(s) do o[#o + 1] = x.title .. "=" .. table.concat(x.params, ",") end return table.concat(o, "|")')
+check("Start money (carl): 150 %" in summ and "Start money: 50 %" in summ, "the players' line lists each player's own value: " + summ)
+# the simulation: handicaps once, the state kept by the tick's answer
+runI('step(100)')
+booked = runI('return table.concat(BOOKED, " ")')
+check(booked == "200:-1000000:territory 300:1000000:territory", "handicaps booked once at their %: bob 50 %, carl 150 %, eve 100 % nothing, "
+      "the host's company and the computer company nothing (" + booked + ")")
+runI('step(300)')
+check(runI('return #BOOKED') == 2, "not booked again: the tick says it changed the state, so the bridge keeps it")
+check(runI('local s = SAVED.feat.territory; return s.t0 ~= nil and s.hc["2"].pct == 50 and s.hc["3"].pct == 150 and s.hc["5"].pct == 100') is True,
+      "the state keeps the claim year's start and the handicaps")
+# a claim through the options host (mpfCo / mpfFrom as the bridge adds them)
+runI('event("f_territory_claim", { x = 1000, y = 1000, name = "Aville", mpfCo = 2, mpfFrom = "Bob#1" }); step(25)')
+check(runI('local t = SAVED.feat.territory.terr["2"]; return t and t.r == 2000 and t.name == "Aville" and t.by == "Bob#1"') is True,
+      "bob's claim of Aville taken through the options host")
+# the interface half: news, circle, the window's file under the options host's name
+runI('F.gui(SAVED, GB, 10)')
+check(runI('return FILES["feat_territory_board.txt"] ~= nil and FILES["feat_territory_board.txt"]:find("terr\\t2\\tBob Co\\tAville", 1, true) ~= nil') is True,
+      "the window's file written as feat_territory_board.txt (env.write's name rule)")
+check(runI('return ZONES["mpfever_terr_2"] ~= nil and ZONES["mpfever_terr_2"].r == 2000') is True, "bob's circle drawn")
+check(runI('return logged("feat territory: circle mpfever_terr_2 drawn")') is True, "and said in the log (for the in-game test)")
+check(runI('for _, c in ipairs(CHAT) do if c:find("Bob Co claimed Aville", 1, true) then return true end end return false') is True,
+      "the claim told in carl's chat, in the player's language through env.T")
+# the tools' hook
+runI(r'''
+STATION = "::/stations/rail/modular_station/modular_station.con"
+function toolParam(p, critical) return { ud(p), ud({ errorState = { critical = critical == true } }) } end
+V1 = F.guiVeto("constructionBuilder", "builder.proposalCreate", toolParam(conP(STATION, 1300, 900)), SAVED, GB)
+V2 = F.guiVeto("constructionBuilder", "builder.proposalCreate", toolParam(conP(STATION, 9000, 9000)), SAVED, GB)
+V3 = F.guiVeto("streetBuilder", "builder.proposalCreate", toolParam(trackP(1000, 1000)), SAVED, GB)
+V4 = F.guiVeto("constructionBuilder", "builder.proposalApply", toolParam(conP(STATION, 1300, 900)), SAVED, GB)
+V5 = F.guiVeto("constructionBuilder", "builder.proposalCreate", toolParam(conP(STATION, 1300, 900), true), SAVED, GB)
+V6 = F.guiVeto("mainView", "select", {}, SAVED, GB)
+''')
+check(runI('local n = 0 for t in pairs(V1.errorMessages) do n = n + 1; W1 = t end return n == 1 and V1.skipRender == false') is True
+      and runI('return W1') == "Territory of Bob Co (Aville): you cannot build a station, stop or depot here.",
+      "a station in bob's territory: the tool gets the reason in errorMessages (not built, still drawn)")
+check(runI('return V2 == nil and V3 == nil and V5 == nil and V6 == nil') is True,
+      "nothing said for a station outside, a street inside, a proposal the game already refuses, another event")
+check(runI('return V4 == nil and logged("WARNING the constructionBuilder tool applied a build turned down here")') is True,
+      "a build applied all the same is logged (the in-game check of errorMessages)")
+check(runI('return F.wantsVeto(SAVED.optsText) == true') is True, "the bridge is told to ask")
+
+print("integrated: the bridge's hooks")
+bridge = read("mpfever_bridge.script.lua")
+runI(r'''
+G = { frames = 1000, session = { started = true, resync = false }, connected = true, cmode = "separate", me = "Carl#2", myCo = 3 }
+C = { ROLE = "client", ACTIVE = true, T = function(fr, en) return en end, feat = function() return F end }
+K = { FEAT = true, FEATVETO = true }
+G.featBridge = function() return GB end
+G.coEvent = function() end
+PREVIEWS = 0
+G.previewOut = function() PREVIEWS = PREVIEWS + 1 end
+G.previewGone = function() end
+G.toolApplied = function() end
+G.featTool = function() end
+''')
+LI.execute(extract(bridge, r"^G\.featGui = function\(st\)\n.*?^end\n", "G.featGui"))
+LI.execute(extract(bridge, r"^G\.featGuiVeto = function\(id, name, param\)\n.*?^end\n", "G.featGuiVeto"))
+LI.execute(extract(bridge, r"^local function guiHandleEvent\(.*?^end\n", "guiHandleEvent").replace("local function guiHandleEvent", "function guiHandleEvent", 1))
+runI(r'''
+G.featOpts = nil
+G.featGui(SAVED)
+VETO_ON = G.featOn == true and G.featVeto == true
+R1 = guiHandleEvent(nil, nil, nil, "src", "constructionBuilder", "builder.proposalCreate", toolParam(conP(STATION, 1300, 900)))
+R2 = guiHandleEvent(nil, nil, nil, "src", "constructionBuilder", "builder.proposalCreate", toolParam(conP(STATION, 9000, 9000)))
+K.FEATVETO = false
+R3 = guiHandleEvent(nil, nil, nil, "src", "constructionBuilder", "builder.proposalCreate", toolParam(conP(STATION, 1300, 900)))
+K.FEATVETO = true
+-- all options off: G.featVeto false, the module never asked
+local calls = 0
+local gv = F.guiVeto
+F.guiVeto = function(...) calls = calls + 1 return gv(...) end
+G.featGui({})
+R4 = guiHandleEvent(nil, nil, nil, "src", "constructionBuilder", "builder.proposalCreate", toolParam(conP(STATION, 1300, 900)))
+OFFCALLS = calls
+F.guiVeto = gv
+''')
+check(runI('return VETO_ON') is True, "G.featGui: a module on answers the tools (G.featVeto)")
+check(runI('return type(R1) == "table" and R1.errorMessages ~= nil and R2 == nil and PREVIEWS == 4') is True,
+      "guiHandleEvent answers the game with the module's errorMessages for a station there, nothing outside; the preview still goes")
+check(runI('return R3 == nil') is True, "MPFEVER_FEATVETO=0: guiHandleEvent answers nothing (0.5.14)")
+check(runI('return G.featVeto == false and R4 == nil and OFFCALLS == 0') is True, "all options off: guiHandleEvent asks nothing, answers nothing")
+check(runI('return logged("turned down by territory")') is True, "the bridge logs the first answers")
+
+print("integrated: the window's tab")
+ui = read("mpfever_ui.script.lua")
+win_src = extract(ui, r"^U\.featOff = .*?^U\.featTabRows = function\(K, st, key\)\n.*?^end\n", "the window's game options")
+runI(r'''
+G.featGui(SAVED)
+F.gui(SAVED, GB, 20)
+U = { isHost = function(st) return st and st.host == true end, winChanged = function() end, menuRequest = function() return true end }
+LINES = {}
+function sendLine(kind, p) LINES[#LINES + 1] = { kind = kind, m = p.m, k = p.kind, payload = p.payload } end
+function money(n) return tostring(n) end
+T = function(fr, en) return en end
+FILEDATA = { ["D/feat_territory_board.txt"] = FILES["feat_territory_board.txt"] }
+C = { feat = function() return F end, DIR = "D", BS = "/", NL = "\n", CR = "\r", Tf = function(fr, en) return en end,
+  IO = { open = function(path) local s = FILEDATA[path] if not s then return nil end
+    return { read = function() return s end, close = function() end } end } }
+K = { TEXT_W = 556, ICON_SETTINGS = "i" }
+function K.text(t, class, cls, w) return { kind = "text", t = tostring(t) } end
+function K.muted(t, w) return { kind = "muted", t = tostring(t) } end
+function K.section(icon, t) return { kind = "section", t = t } end
+function K.gap() return { kind = "gap" } end
+function K.row(c) return { kind = "row", c = c } end
+function K.col(c) return { kind = "col", c = c } end
+function K.btn(label, tip, fn, primary, enabled) return { kind = "btn", t = label, fn = fn } end
+''')
+LI.execute(win_src)
+runI(r'''
+WST = { mode = "separate", opts = SAVED.optsText }
+TABS = U.featTabs(WST)
+ROWS = U.featTabRows(K, WST, "f_territory")
+CLAIM, TITLE = nil, false
+for _, r in ipairs(ROWS) do
+  if r.kind == "section" and r.t == "Territories" then TITLE = true end
+  if r.kind == "row" and r.c[2] and r.c[2].t == "Claim" and not CLAIM then CLAIM = r.c[2]; CLAIMTOWN = r.c[1].t end
+end
+if CLAIM then CLAIM.fn() end
+''')
+check(runI('return #TABS == 1 and TABS[1].key == "f_territory"') is True, "the window has the Territories tab while the option is on")
+check(runI('return TITLE and CLAIM ~= nil') is True, "its rows: the section's title (u.title) and a Claim button per free town")
+check(runI('local l = LINES[#LINES]; return l and l.kind == "feat_req" and l.m == "territory" and l.k == "claim" and l.payload == "14"') is True,
+      "the Claim button asks the bridge (feat_req) for the biggest free town (Douves)")
+# the bridge's G.featRequest then the module: the claim sent as carl's event, applied by every game
+LI.execute(extract(bridge, r"^G\.featRequest = function\(p\)\n.*?^end\n", "G.featRequest"))
+runI(r'''
+C = { ROLE = "client", ACTIVE = true, T = function(fr, en) return en end, feat = function() return F end }
+G.featSt = SAVED
+SENT = {}
+local l = LINES[#LINES]
+G.featRequest({ m = l.m, kind = l.k, payload = l.payload })
+if SENT[1] then local p = SENT[1].p; p.mpfCo, p.mpfFrom = 3, "Carl#2"; event(SENT[1].name, p) end
+step(25)
+''')
+check(runI('return SENT[1] and SENT[1].name == "f_territory_claim" and SAVED.feat.territory.terr["3"] and SAVED.feat.territory.terr["3"].name == "Douves"') is True,
+      "the request sends carl's claim, and the simulation gives carl Douves")
+
+print("integrated: the lobby's per-player choices")
+menu = read("mpfever_menu.lua")
+runI(r'''
+FEAT = F
+H = "H"
+function gap() return { kind = "gap" } end
+function text(t) return { kind = "text", t = tostring(t) } end
+function box(dir, c) return { kind = "box", c = c } end
+function button(label, fn, opts) return { kind = "btn", t = label, fn = fn, primary = opts and opts.primary } end
+MREQ = {}
+function request(cmd, arg) MREQ[#MREQ + 1] = cmd .. " " .. tostring(arg) end
+''')
+LI.execute(extract(menu, r"^\tlocal function featSection\(panel, w, fv, playerName, players\)\n.*?^\tend\n", "the lobby's featSection")
+           .replace("local function featSection", "function featSection", 1))
+runI(r'''
+local fv = { mode = "separate", offered = F.offered("separate"), map = F.parse(F.canon(SAVED.optsText, "separate")) }
+PANEL = {}
+featSection(PANEL, 600, fv, function() return "Host" end, { "Host", "Bob", "Carl (France)" })
+PROWS = {}
+for _, b in ipairs(PANEL) do
+  if b.kind == "box" and b.c[1] and b.c[1].kind == "box" and b.c[1].c[1] and b.c[1].c[1].kind == "text" then
+    local label = b.c[1].c[1].t:gsub("^%s+", "")
+    local primary = nil
+    for _, x in ipairs(b.c) do if x.kind == "btn" and x.primary then primary = x.t end end
+    PROWS[label] = { primary = primary, row = b }
+  end
+end
+for _, x in ipairs(PROWS["Bob"] and PROWS["Bob"].row.c or {}) do if x.kind == "btn" and x.t == "150 %" then x.fn() end end
+''')
+check(runI('return PROWS["Host"] == nil and PROWS["Bob"] ~= nil and PROWS["Carl"] ~= nil') is True,
+      "the host's panel: one row per player but the host, under the start money's own row")
+check(runI('return PROWS["Bob"].primary == "50 %" and PROWS["Carl"].primary == "150 %"') is True,
+      "each shows the player's value, else the parameter's")
+check(runI('return MREQ[1]') == "opt handicap.money_gcgpgc=150", "a click asks MPFever.exe for that player's value (its syntax: [a-z_])")
+
+print("integrated: the computer companies")
+ai = read("mpfever_ai.lua")
+runI(r'''
+AIENV = {}
+function L(E, s) log(s) end
+function aiCompany(E) return CO.find(SAVED.co, 4) end
+''')
+LI.execute(extract(ai, r"^local function territoryCheck\(E\)\n.*?^end\n", "the AI's territoryCheck").replace("local function territoryCheck", "function territoryCheck", 1))
+runI(r'''
+local E = { G = { featOn = true, featSt = SAVED, featBridge = function() return GB end }, C = { feat = function() return F end } }
+CHK = territoryCheck(E)
+IN1, IN2, OUT = CHK and CHK(1000, 1500), CHK and CHK(6000, 1000), CHK and CHK(20000, 20000)
+E.G.featOn = false
+OFF1 = territoryCheck(E)
+E.G.featOn = true
+local getenv = os.getenv
+os.getenv = function(k) if k == "MPFEVER_AITERRITORY" then return "0" end return getenv(k) end
+OFF2 = territoryCheck(E)
+os.getenv = getenv
+local bare = COPY(SAVED); bare.feat.territory.terr = {}
+E.G.featSt = bare
+OFF3 = territoryCheck(E)
+''')
+check(runI('return CHK ~= nil and IN1 == true and IN2 == true and OUT == false') is True,
+      "a computer company: blocked in bob's and carl's territories, free elsewhere")
+check(runI('return logged("feat territory: a place at 1000,1500 left out, territory of company 2 (Aville)")') is True, "said in the log")
+check(runI('return OFF1 == nil and OFF2 == nil and OFF3 == nil') is True,
+      "nothing checked with no option on, with MPFEVER_AITERRITORY=0, or with no territory: the AI as before")
 
 # ------------------------------------------------------------------------------------------------------------------------------
 if failures:

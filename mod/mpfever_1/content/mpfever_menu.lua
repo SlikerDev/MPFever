@@ -594,7 +594,8 @@ local function setup()
 		return fv
 	end
 	-- the section of the host's panel, as the rows of choices() (the label in a column of its own, then the buttons)
-	local function featSection(panel, w, fv, playerName)
+	-- (players: the lobby's players, the host first, for the parameters with one value per player: perPlayer)
+	local function featSection(panel, w, fv, playerName, players)
 		panel[#panel + 1] = gap(1, 12)
 		panel[#panel + 1] = text(T("Options de partie (0.6)", "Game options (0.6)"), "font-scale-title-3", w)
 		panel[#panel + 1] = text(T("Désactivées par défaut. Pour tous les joueurs ; gardées dans la sauvegarde.", "Off by default. For every player; kept in the savegame."), "font-scale-body", w)
@@ -619,6 +620,25 @@ local function setup()
 						row[#row + 1] = gap(4, 1)
 					end
 					panel[#panel + 1] = box(H, row, nil, { size = { w, -1 } })
+					-- (0.6, perPlayer) one row per player but the host (its company, the savegame's, keeps its money): the player's own
+					-- value, the parameter's while it has none (see FEAT.playerPid). MPFEVER_FEATPERPLAYER=0: the parameter's row only
+					if p.perPlayer == true and FEAT.playerPid and os.getenv("MPFEVER_FEATPERPLAYER") ~= "0" then
+						for i, name in ipairs(players or {}) do
+							local base = name:gsub("%s*%(.*$", "")
+							local ppid = i > 1 and FEAT.playerPid(p.id, base:lower()) or nil
+							if ppid then
+								local own = FEAT.param(fv.map, id, p.id .. "." .. base:lower())
+								local pcur = tostring(own ~= nil and own or FEAT.param(fv.map, id, p.id))
+								local prow = { box(H, { text("         " .. base, "font-scale-body", 290) }, nil, { size = { 300, -1 } }) }
+								for _, v in ipairs(p.values) do
+									local pick = tostring(v)
+									prow[#prow + 1] = button(FEAT.showValue(p, v, T), function() request("opt", id .. "." .. ppid .. "=" .. pick, playerName()) end, { font = "font-scale-body", primary = pcur == pick })
+									prow[#prow + 1] = gap(4, 1)
+								end
+								panel[#panel + 1] = box(H, prow, nil, { size = { w, -1 } })
+							end
+						end
+					end
 				end
 			end
 			panel[#panel + 1] = gap(1, 8)
@@ -1118,7 +1138,7 @@ local function setup()
 						end
 					end
 					-- (0.6) the game options of the separate mode
-					if fv then featSection(panel, w, fv, playerName) end
+					if fv then featSection(panel, w, fv, playerName, players) end
 					local list = { box(V, panel, nil, { padding = { 10, 12, 10, 12 }, background = { 1, 1, 1, 0.07 }, size = { w, -1 } }), gap(1, 12) }
 					for _, c in ipairs(below) do list[#list + 1] = c end
 					below = list

@@ -43,6 +43,9 @@ local K = {}
 -- (0.6) the game options (mpfever_feat.lua, docs/FEATURES-0.6.md): MPFEVER_FEAT=0 turns every one of their hooks off, as in 0.5.14.
 -- Read once, as the game loads: every game of a session is started with the host's settings
 K.FEAT = os.getenv("MPFEVER_FEAT") ~= "0"
+-- (0.6) the modules' answers to this player's interface events (M.guiVeto: a tool's build in another company's territory refused
+-- before the click, see G.featGuiVeto). MPFEVER_FEATVETO=0: the bridge answers nothing, as in 0.5.14
+K.FEATVETO = os.getenv("MPFEVER_FEATVETO") ~= "0"
 
 local function gameTime()
 	local gt = api.engine.getComponent(api.engine.util.getWorld(), api.type.ComponentType.GAME_TIME)
@@ -15762,6 +15765,14 @@ H.tenders = function(from, p)
 -- then shows the window's Competition tab (ui_tab_req.txt, as wintabs). 90 s after its part the host asks for the option off
 -- again (the test profile's game options as before). Nothing of it runs without the scenario.
 H.markettest = function(from, p)
+-- Territories scenario (0.6, MPFEVER_SCENARIO=terrtest, one company per player, the host then the client): the host's game puts
+-- the game options "territory" and "handicap" into the game as its session's (MPFEVER_TERRTEST_OPTS, else every player at 50 %
+-- of the start money and a 2 km territory for 5 years), then each game claims the biggest town its company may claim from the
+-- module's own claim list, as the window's button does. Each game checks its claim in its state and its circle on the ground;
+-- the client also checks that a station put at the host's town is turned down by the tool's hook (a proposal as the tool's
+-- event gives it) and its own handicap. "AUTOTEST terrtest:" lines in mod.log; the sync check afterwards says whether both
+-- games hold the same.
+H.terrtest = function(from, p)
 	if p.role ~= C.ROLE or AUTO.running then return end
 	AUTO.running = true
 	AUTO.results = {}
@@ -15875,6 +15886,75 @@ H.markettest = function(from, p)
 		G.waits[#G.waits + 1] = { at = G.frames + 60, fn = poll }
 	end
 	G.waits[#G.waits + 1] = { at = G.frames + 60, fn = poll }
+	local function note(t) AUTO.results[#AUTO.results + 1] = t; log("AUTOTEST terrtest: " .. t) end
+	local F = C.feat()
+	local M = F and (F.load(log) and F.byId.territory)
+	if not (K.FEAT and M) then note("FAILED: no options host or no territory module here"); return autoFinish() end
+	if G.cmode ~= "separate" then note("FAILED: one company per player needed (this session: " .. tostring(G.cmode) .. ")"); return autoFinish() end
+	if C.ROLE == "host" then
+		G.featOpts = os.getenv("MPFEVER_TERRTEST_OPTS") or "handicap=1;handicap.money=50;territory=1"
+		G.featOptsAt = nil
+		note("session options set to " .. G.featOpts)
+	end
+	local tries = 0
+	local function claimed()
+		local st = G.featSt or {}
+		local s = type(st.feat) == "table" and st.feat.territory or nil
+		local mine = s and s.terr and s.terr[tostring(G.myCo)]
+		if not mine then
+			if tries < 3 then tries = tries + 1; G.waits[#G.waits + 1] = { at = G.frames + 600, fn = claimed }; return end
+			note("FAILED: no territory of company " .. tostring(G.myCo) .. " in the state after 40 s")
+			return autoFinish()
+		end
+		note("territory of company " .. G.myCo .. ": " .. tostring(mine.name) .. " at " .. tostring(mine.x) .. "," .. tostring(mine.y) .. ", radius " .. tostring(mine.r)
+			.. ", until " .. tostring(mine.untilT))
+		note("its circle drawn here: " .. ((M.drawn or {})["mpfever_terr_" .. G.myCo] and "yes" or "NO"))
+		local hc = s.hc and s.hc[tostring(G.myCo)]
+		note("handicap of company " .. G.myCo .. ": " .. (hc and (hc.pct .. " %, " .. hc.amount) or "none") .. (G.myCo == 1 and " (the savegame's company: none expected)" or ""))
+		-- (the client: a station at another company's town, as the station tool's event gives it, must be turned down)
+		for k, t in pairs(s.terr or {}) do
+			if tonumber(k) ~= G.myCo and not t.ended then
+				local m = { __mat = true }
+				for i = 1, 16 do m[i] = 0 end
+				m[1], m[6], m[11], m[16], m[13], m[14] = 1, 1, 1, 1, t.x + 10, t.y + 10
+				local prop = { toAdd = { { fileName = "station/rail/modular_station/modular_station.con", transf = m, construction = { stations = { 1 }, depots = {} } } },
+					toRemove = {}, proposal = { edgeObjectsToAdd = {} } }
+				local okv, r = pcall(F.guiVeto, "constructionBuilder", "builder.proposalCreate", { prop, { errorState = { critical = false } } }, G.featSt, G.featBridge())
+				local said = nil
+				if okv and type(r) == "table" then for text in pairs(r.errorMessages or {}) do said = text end end
+				note("a station at " .. tostring(t.name) .. " (company " .. k .. "): " .. (said and ("turned down: " .. said) or ("NOT turned down" .. (okv and "" or (": " .. tostring(r))))))
+				m[13], m[14] = mine.x, mine.y
+				local okw, r2 = pcall(F.guiVeto, "constructionBuilder", "builder.proposalCreate", { prop, { errorState = { critical = false } } }, G.featSt, G.featBridge())
+				note("a station at its own town: " .. ((okw and r2 == nil) and "allowed" or "TURNED DOWN"))
+			end
+		end
+		autoFinish()
+	end
+	-- (the options in the game first: the host's f_opts, every game at the same step)
+	local waited = 0
+	local function claim()
+		local st = G.featSt or {}
+		if not (F.on(st.opts, "territory")) then
+			waited = waited + 1
+			if waited < 12 then G.waits[#G.waits + 1] = { at = G.frames + 300, fn = claim }; return end
+			note("FAILED: the option territory not in the game after 60 s (its options: " .. tostring(st.optsText) .. ")")
+			return autoFinish()
+		end
+		note("the game's options: " .. tostring(st.optsText))
+		local B = G.featBridge()
+		local _, env = F.moduleOn("territory", st, B)
+		local town = nil
+		for _, t in ipairs(M.towns()) do
+			if M.canClaim(st, env, G.myCo, t.x, t.y) then town = t; break end
+		end
+		if not town then note("FAILED: no town this company may claim"); return autoFinish() end
+		M.townList = M.townList or {}
+		M.townList[#M.townList + 1] = town
+		local okr, sent = pcall(F.request, "territory", "claim", tostring(town.e), st, B)
+		note("claim of " .. town.name .. " (town " .. town.e .. "): " .. (okr and "asked" or tostring(sent)))
+		G.waits[#G.waits + 1] = { at = G.frames + 600, fn = claimed }
+	end
+	G.waits[#G.waits + 1] = { at = G.frames + 120, fn = claim }
 end
 
 G.pingTick = function()
@@ -16074,10 +16154,13 @@ G.featGui = function(st)
 	-- (G.featTestOpts: the options an autotest scenario puts into a test's session, see H.journaltest; never set otherwise)
 	local want = G.featTestOpts or G.featOpts
 	if not G.featOn and (want == nil or want == "") then G.featAllow = false; return end
+	local want = G.featOpts
+	if not G.featOn and (want == nil or want == "") then G.featAllow = false; G.featVeto = false; return end
 	local F = C.feat()
 	if not F then return end
 	F.load(log)
 	G.featAllow = G.featOn and F.wantsAllow(have)
+	G.featVeto = G.featOn and F.wantsVeto ~= nil and F.wantsVeto(have)
 	if C.ROLE == "host" and want ~= nil and G.connected and G.session.started and not G.session.resync then
 		local mode = G.cmode == "separate" and "separate" or "shared"
 		-- (the canon of the session's text, kept while it is the same)
@@ -16261,6 +16344,22 @@ H.journaltest = function(from, p)
 		later(30, waitOn)
 	end
 	waitOn()
+end
+-- This player's interface event (guiHandleEvent), to the modules on that answer them (M.guiVeto, only while G.featVeto): their
+-- answer is the bridge's answer to the game, as company.script's permits ({ errorMessages, skipRender }: the tool shows the
+-- reason in red and does not build); nil when none turns it down. Anything failing here answers nothing.
+G.featGuiVeto = function(id, name, param)
+	local F = C.feat()
+	if not (F and F.guiVeto and G.featSt) then return nil end
+	local r, M = F.guiVeto(id, name, param, G.featSt, G.featBridge())
+	if type(r) ~= "table" then return nil end
+	G.featVetoN = (G.featVetoN or 0) + 1
+	if G.featVetoN <= 5 or G.featVetoN % 200 == 0 then
+		local why = {}
+		for t in pairs(type(r.errorMessages) == "table" and r.errorMessages or {}) do why[#why + 1] = tostring(t) end
+		log("options: " .. tostring(name) .. " of " .. tostring(id) .. " turned down by " .. tostring(M and M.ID) .. " (" .. G.featVetoN .. " so far): " .. table.concat(why, " | "))
+	end
+	return r
 end
 
 local function guiUpdate(userParams, state, guiState)
@@ -16520,6 +16619,12 @@ local function guiHandleEvent(userParams, state, guiState, src, id, name, param)
 		if not G.evSeen[key] then G.evSeen[key] = true; log("tool event: " .. key) end
 		-- BUILDLEAD: a construction tool is in hand (it sends these while the player aims, as well as when it builds)
 		if G.buildLead then G.buildToolSeen(tostring(id)) end
+	end
+	-- (0.6) a game option's answer (a station, stop or depot in another company's territory: the tool shows why and does not
+	-- build, see G.featGuiVeto). Only while a module on answers (G.featVeto); MPFEVER_FEATVETO=0 or MPFEVER_FEAT=0: never
+	if K.FEATVETO and G.featVeto and G.featOn then
+		local okv, r = pcall(G.featGuiVeto, id, name, param)
+		if okv and type(r) == "table" then return r end
 	end
 end
 

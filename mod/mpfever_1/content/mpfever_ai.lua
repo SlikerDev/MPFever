@@ -76,6 +76,35 @@ local function aiCompany(E)
 	return E.CO.byKey(reg, AIKEY)
 end
 
+-- (0.6, the game option "territory", F5) The players' territories (mpfever_feat_territory.lua): a computer company builds no stop,
+-- depot or garage within another company's territory, and leaves the towns there out of its lines. nil while no game option is
+-- on (the bridge's G.featOn: nothing read, the company plays as without the options) or while no territory protects against it;
+-- else a function(x, y) that says whether it may not build there. MPFEVER_AITERRITORY=0: never
+local function territoryCheck(E)
+	local G = E.G
+	if not (G and G.featOn) or os.getenv("MPFEVER_AITERRITORY") == "0" then return nil end
+	local ok, chk = pcall(function()
+		local co = aiCompany(E)
+		local F = co and E.C.feat and E.C.feat()
+		local st = G.featSt
+		if not (F and F.moduleOn and type(st) == "table" and G.featBridge) then return nil end
+		local T, env = F.moduleOn("territory", st, G.featBridge())
+		if not (T and T.blockedFor and T.anyFor and T.anyFor(st, co.id)) then return nil end
+		return function(x, y)
+			local okb, b, other, town = pcall(T.blockedFor, st, env, co.id, x, y)
+			if okb and b == true then
+				G.aiTerrN = (G.aiTerrN or 0) + 1
+				if G.aiTerrN <= 5 or G.aiTerrN % 200 == 0 then
+					L(E, "feat territory: a place at " .. math.floor(x) .. "," .. math.floor(y) .. " left out, territory of company " .. tostring(other) .. " (" .. tostring(town) .. ") [" .. G.aiTerrN .. " so far]")
+				end
+				return true
+			end
+			return false
+		end
+	end)
+	return ok and chk or nil
+end
+
 local function balanceOf(E, ent)
 	local ok, acc = pcall(function() return E.api.engine.getComponent(ent, E.api.type.ComponentType.ACCOUNT) end)
 	return ok and acc and acc.balance or 0
@@ -133,6 +162,16 @@ end
 local function townsForLines(E, ent)
 	local api = E.api
 	local list = townsBySize(E)
+	-- (0.6, F5) a town whose centre is in a player's territory is left out (see territoryCheck)
+	local terr = territoryCheck(E)
+	if terr then
+		local keep = {}
+		for _, t in ipairs(list) do
+			local c = centre(E, t.e, api.type.enum.LandUseType.RESIDENTIAL)
+			if not (c and terr(c.x, c.y)) then keep[#keep + 1] = t end
+		end
+		list = keep
+	end
 	for _, t in ipairs(list) do
 		local others = 0
 		pcall(function()
@@ -513,6 +552,8 @@ local function streetSegmentsNear(E, p, radius, avoid)
 	-- found is checked again here (still there, still free: a segment a build replaced since must not get a stop).
 	-- MPFEVER_AICACHE=0: every segment read at every call, as before
 	local T = E.G.AIT or {}
+	-- (0.6, F5) every place found serves a stop, a depot or a garage: none in a player's territory (see territoryCheck)
+	local terr = territoryCheck(E)
 	if os.getenv("MPFEVER_AICACHE") ~= "0" then
 		if not (T.segs and T.segsAt and E.G.frames - T.segsAt < 600 and E.G.frames >= T.segsAt) then
 			local all = {}
@@ -536,6 +577,7 @@ local function streetSegmentsNear(E, p, radius, avoid)
 			local d = dist(s.m, p)
 			local ok = d < radius
 			if ok then for _, q in ipairs(avoid or {}) do if dist(s.m, q) < 120 then ok = false; break end end end
+			if ok and terr and terr(s.m.x, s.m.y) then ok = false end
 			if ok then
 				-- (read again as the uncached path reads it: an id freed by a build may name another segment now, the half of a
 				-- segment cut by another company's garage. The ends taken from now; anything that differs drops the cache)
@@ -569,6 +611,7 @@ local function streetSegmentsNear(E, p, radius, avoid)
 					local d = dist(m, p)
 					local ok = len > 40 and len < 160 and d < radius
 					for _, q in ipairs(avoid or {}) do if dist(m, q) < 120 then ok = false end end
+					if ok and terr and terr(m.x, m.y) then ok = false end
 					if ok then list[#list + 1] = { e = e, d = d, a = a, b = b, m = m } end
 				end
 			end
@@ -583,6 +626,8 @@ local function findDepotPlace(E, co, p)
 	local api = E.api
 	local V = api.type.Vec4f.new
 	local tried = 0
+	-- (0.6, F5: the station itself out of a player's territory too, its street may be at the circle's edge)
+	local terr = territoryCheck(E)
 	for _, s in ipairs(streetSegmentsNear(E, p, 700, {})) do
 		if tried > 400 then break end
 		local dx, dy = s.b.x - s.a.x, s.b.y - s.a.y
@@ -605,7 +650,8 @@ local function findDepotPlace(E, co, p)
 			-- (0.6, dev probes only: the dry run without the buildings gathered, see keepBuildings, a house in the way is a refusal)
 			local bits = keepBuildings() and withoutBuildings(CTX_DEPOT) or CTX_DEPOT
 			local okd, pd = pcall(function() return api.engine.util.proposal.makeProposalData(sp, context(E, co.ent, bits)) end)
-			if okd and pd and #pd.errorState.messages == 0 and not pd.errorState.critical and not (keepBuildings() and buildingsHit(E, pd) > 0) then
+			if okd and pd and #pd.errorState.messages == 0 and not pd.errorState.critical and not (keepBuildings() and buildingsHit(E, pd) > 0)
+				and not (terr and terr(m.x, m.y)) then
 				return sp, s, pd.costs
 			end
 		end
@@ -632,6 +678,8 @@ local function garagePlaces(E, co, p, maxD)
 	local V = api.type.Vec4f.new
 	local out = {}
 	local tried = 0
+	-- (0.6, F5: the garage itself out of a player's territory too, 42 m from its street)
+	local terr = territoryCheck(E)
 	for _, s in ipairs(streetSegmentsNear(E, p, maxD, {})) do
 		if tried > 60 or #out >= 1 then break end
 		local c = api.engine.getComponent(s.e, api.type.ComponentType.BASE_EDGE)
@@ -654,7 +702,7 @@ local function garagePlaces(E, co, p, maxD)
 					if z < lo then lo = z end
 					if z > hi then hi = z end
 				end
-				local level = hi - lo <= 3
+				local level = hi - lo <= 3 and not (terr and terr(O.x, O.y))
 				local sp = api.type.SimpleProposal.new()
 				local ce = api.type.SimpleProposal.ConstructionEntity.new()
 				ce.fileName = GARAGE_FILE
@@ -1579,9 +1627,11 @@ local function bestPair(E, co, lines, stops)
 	local api = E.api
 	local A = E.G.AI
 	local towns = {}
+	-- (0.6, F5: no town whose centre is in a player's territory, see territoryCheck)
+	local terr = territoryCheck(E)
 	for _, t in ipairs(townsBySize(E)) do
 		local c = centre(E, t.e, api.type.enum.LandUseType.RESIDENTIAL)
-		if c and t.size > 150 then towns[#towns + 1] = { e = t.e, size = t.size, c = c } end
+		if c and t.size > 150 and not (terr and terr(c.x, c.y)) then towns[#towns + 1] = { e = t.e, size = t.size, c = c } end
 	end
 	local best
 	for i = 1, #towns do
@@ -2318,11 +2368,14 @@ local function bestTownFreight(E, co, lines, mode)
 	local fed = mode == "lt" and fedByMe(E, lines) or nil
 	local catch = os.getenv("MPFEVER_AITOWNCATCH") ~= "0"
 	local cands = {}
+	-- (0.6, F5: no delivery to a point in a player's territory, its stop would be there, see territoryCheck)
+	local terr = territoryCheck(E)
 	for _, t in ipairs(townsBySize(E)) do
 		if t.size >= 300 then
 			for _, w in ipairs(townWants(E, t.e)) do
 				local p = centre(E, t.e, api.type.enum.LandUseType[w.use])
 				if p and catch then p = townDropPoint(E, t.e, w.cargo) end
+				if p and terr and terr(p.x, p.y) then p = nil end
 				if p then
 					for _, ind in ipairs(inds) do
 						if not others[ind.road.group] and (A.roadChecked or {})[ind.e] ~= false
