@@ -91,7 +91,8 @@ WHAT WORKS
   MPFever card of the pause menu. Its tabs: Session (the players and their link, the sync
   state, the game speed, Steam invites, Report a problem, for the host a Resynchronise
   button, and signals on the map: "Here", "Watch out" or "Build here", then a click on the
-  map shows a circle in your company's colour there for 12 s on every player's game), Chat,
+  map shows a circle in the signal's colour, with your colour in its middle, there for 12 s on
+  every player's game), Chat,
   Company, Rules and Game (one company per player only), Settings.
 - Chat in the game: the Chat tab (or the "Chat" card of the pause menu); new messages show
   for a few seconds at the left of the screen.

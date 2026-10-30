@@ -6903,6 +6903,12 @@ function G.lateSkip(a, now)
 	if not since then return false end
 	log("LATE native build " .. tostring(a.uid) .. ": this game built at t=" .. since .. " since its t=" .. a.at .. ": not built here, the host's game is reloaded")
 	replayFailed(a, "late build after another build")
+	-- (the host's game left it out: the host's game is the one reloaded everywhere, so the build is gone on every game, its
+	-- builder's too; the chat says so. A player's game that left it out gets it back with the host's game)
+	if C.ROLE == "host" then
+		G.coSay(C.Tf("La construction de %s est arrivée trop tard sur la partie de l'hôte : elle n'a pas été gardée. Refaites-la.",
+			"%s's build reached the host's game too late and was not kept. Please make it again.", tostring(a.origin)))
+	end
 	return true
 end
 

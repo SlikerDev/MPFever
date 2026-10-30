@@ -1038,10 +1038,13 @@ local function manageLines(E, co, lines, vehicles, money)
 	end
 	local nowG = E.gameTime()
 	A.born = A.born or {}
-	-- (the lines there at this session's first look ran before it: not young, after a load as on a new game's first lines)
+	-- (the lines there at this session's first look ran before it: not young, after a load as on a new game's first lines. Only
+	-- those with a vehicle: a line made just before a resynchronisation, its bus not bought yet, keeps its grace, see below)
 	if not A.bornInit then
 		A.bornInit = true
-		for _, l in ipairs(lines) do A.born[l.e] = A.born[l.e] or (nowG - (LV.ramp or 0) - 1) end
+		local has = {}
+		for _, v in ipairs(vehicles) do has[v.line] = true end
+		for _, l in ipairs(lines) do if has[l.e] then A.born[l.e] = A.born[l.e] or (nowG - (LV.ramp or 0) - 1) end end
 	end
 	-- (0.5.14: each line's vehicles fit what it earns, see l.econ below. MPFEVER_AIFLEET=0: as before)
 	local fleet = os.getenv("MPFEVER_AIFLEET") ~= "0"
@@ -2559,7 +2562,9 @@ local function step(E)
 			-- (0.5.14, MPFEVER_AIFLEET: one bus to begin with, more as it fills and earns, see manageLines: one bus well filled was the
 			-- only town line that earned in the tests of 2026-10-29, two to five at 20-30 % lost money)
 			local wantBuses = (os.getenv("MPFEVER_AIFLEET") ~= "0") and 1 or math.min(5, LV.maxBus, 2 + math.floor(#groups / 2))
-			if onLine < wantBuses and not A.noBuses and not dropped(E, line.e) then
+			-- (0.5.14: not to a line whose bus was just sold for being empty, as the other purchases: it was bought back at the next
+			-- look, sold again at the next regular one, and the line never given up)
+			if onLine < wantBuses and not A.noBuses and not dropped(E, line.e) and ((A.emptyRuns or {})[line.e] or 0) < 3 then
 				if money < RESERVE + (A.busCost or BUS_COST) then return end
 				A.forLine = line.e
 				buyBus(E, co, depot.depot)
@@ -2660,7 +2665,7 @@ function M.tick(E, st)
 		T.slowest = 0
 	end
 	-- (a slow step waits longer before the next one)
-	if dt > 0.05 then T.nextAt = G.frames + TICK * 3; G.AI.lookAt = math.max(G.AI.lookAt, G.frames + TICK * 3) end
+	if dt > 0.05 then T.nextAt = G.frames + TICK * 3; G.AI.lookAt = math.max(G.AI.lookAt or 0, G.frames + TICK * 3) end
 end
 
 return M
