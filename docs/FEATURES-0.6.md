@@ -12,7 +12,10 @@ while the option is on**. Every option is **off by default**: with all options o
 - `mod/mpfever_1/content/mpfever_feat_<id>.lua`: one module per feature group (`journal`, `stats`, `market`, `territory`,
   `tenders`, `perms`, `trade`, `stock`). Listed once in `mpfever_feat.lua`'s `MODULES` list (one line each).
 - The public games options (`public`, note 09) are launcher and server-list work (C#): they declare their options in
-  `mpfever_feat_public.lua` (OPTIONS only) so the lobby shows them like the others.
+  `mpfever_feat_public.lua` so the lobby shows them like the others, and its window tab "Public game" (M.ui: no simulation
+  code) shows the host's own lines of mp_status.txt (`u.status`) with buttons that are requests to MPFever.exe (`u.exe`).
+  MPFever.exe reads them from the same string as the lobby (`GameOptions()`, launcher/PublicGames.cs). Autotest:
+  `MPFEVER_SCENARIO=pubtest` (MPFever.exe's `RunPubTest` and the bridge's `H.pubtest`).
 - The bridge (`mpfever_bridge.script.lua`), the window (`mpfever_ui.script.lua`), the lobby (`mpfever_menu.lua`) and
   MPFever.exe (`launcher/MainForm.cs`) only call the options host at a few hook points. **The bridge is at Lua's limit of
   200 locals in its main chunk: never add a `local` at its top level** (use fields of G, SIM, H or K).
@@ -143,7 +146,9 @@ UI (`u` of M.ui, made by `U.featU` in mpfever_ui.script.lua): `u.T(fr, en)`, `u.
 text width), `u.isHost`, `u.me`, `u.mode`, `u.on(id)`, `u.param(id, pid)` (the session's options, as MPFever.exe sends them),
 `u.read(name)` (the lines of `feat_<module>_<name>.txt` written by env.write; {} when there is none), `u.request(kind,
 payload)` (to M.request of the module on this game: ui.log "feat_req"), `u.send(name, param)` (an event of the module, sent as
-this player's command: stamped like the player's actions, checked by allow). Widgets, each returns its node: `u.title(t)`,
+this player's command: stamped like the player's actions, checked by allow), `u.status(key)` (a line `key=value` of this
+game's mp_status.txt, "" when there is none; the host's own lines too), `u.exe(cmd, arg)` (a request to MPFever.exe, as the
+window's own buttons send them: menu_req.txt). Widgets, each returns its node: `u.title(t)`,
 `u.text(t, cls)` (cls: "warning", "error", "success"...), `u.muted(t)`, `u.gap(h)`, `u.button(label, fn, primary, enabled,
 tip)` (the window draws again after fn), `u.input(placeholder, onValue, key, width)` (a text field; what was typed stays across
 the rebuilds; onValue(text) at every key), `u.row(nodes)`, `u.table(lines, widths, header)` (lines of cells; widths in pixels,

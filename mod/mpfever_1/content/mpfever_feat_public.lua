@@ -1,7 +1,10 @@
 -- MPFever 0.6: the public games' options (release/recherche-0.6/09-trouver-joueurs.md, the owner's decisions I2-I8 in
 -- 00-REPONSES.md). They are the work of MPFever.exe and of the public list (launcher/PublicGames.cs, serverlist/ServerList.cs),
--- not of the game: this module only declares them, so that the lobby's "Game settings" show them like the others (see
--- docs/FEATURES-0.6.md). Every one is off by default; with all of them off a game is hosted exactly as in 0.5.14.
+-- not of the game: this module declares them, so that the lobby's "Game settings" and the window's Game tab show them like the
+-- others (see docs/FEATURES-0.6.md), and draws the MPFever window's "Public game" tab while one of them is on (M.ui: the list's
+-- state, the arrivals waiting with Accept and Refuse, the ban list with Remove; from the host's own lines of mp_status.txt, its
+-- buttons are requests to MPFever.exe). No simulation code: no event, no state in the game. Every option is off by default;
+-- with all of them off a game is hosted exactly as in 0.5.14.
 --   public              the lobby shows in the public list (found by the host's Steam id, joined through Steam with no port to
 --                       open); max: the players at most (8, I7); late: it stays listed while the game runs (I2, off: the lobby
 --                       only); ip: the host's IP address shown in the list too (I3, the lobby warns the host). The game's name,
@@ -43,4 +46,91 @@ M.OPTIONS = {
 			"A private game takes only your Steam friends through Steam. Joining by the address still works." },
 		modes = "both" },
 }
+
+-- ---------------------------------------------------------------- the MPFever window's "Public game" tab
+-- Shown to every player while one of the options above is on. The host's from its own lines of mp_status.txt (MPFever.exe's
+-- PublicHostStatus, never sent to the players): pub (the list's state for this game: wait, listed, ended, !old, !off, !steam,
+-- !down, !<error>), pubname, pubip (the address shown in the list), pending (the arrivals waiting, name#id), pubkick, bans
+-- ("name|day;..."), pubfriends (Steam takes the host's friends only). Its buttons are the requests of the lobby's (admit,
+-- unban: launcher/PublicGames.cs's PublicMenuRequest); Kick and Ban are on the players' lines of the Session tab.
+M.TAB = { id = "public", title = { "Partie publique", "Public game" } }
+
+-- the list's state as the host reads it: its text and its class
+local function listState(p, T)
+	if p == "listed" then return T("La partie est dans la liste publique.", "The game is in the public list."), "success" end
+	if p == "ended" then return T("La partie n'est plus dans la liste publique (arrivées pendant la partie : non).", "The game is no longer in the public list (arrivals during the game: no)."), nil end
+	if p == "" or p == "wait" then return T("Partie publique : envoi à la liste publique...", "Public game: sending to the public list..."), nil end
+	if p == "!old" then return T("La liste publique ne prend pas encore les parties de joueurs : vos amis peuvent toujours rejoindre par Steam ou par l'adresse.",
+		"The public list does not take players' games yet: your friends can still join through Steam or by the address."), "warning" end
+	if p == "!off" then return T("Aucune liste publique n'est utilisée ici (serverlist= dans mpfever_settings.txt) : la partie n'y apparaît pas.",
+		"No public list is used here (serverlist= in mpfever_settings.txt): the game does not show in it."), "warning" end
+	if p == "!steam" then return T("Steam n'est pas encore prêt : la partie apparaîtra dans la liste dès qu'il le sera.", "Steam is not ready yet: the game will show in the list as soon as it is."), "warning" end
+	return T("La liste publique ne répond pas : vos amis peuvent toujours rejoindre par Steam ou par l'adresse.", "The public list does not answer: your friends can still join through Steam or by the address.")
+		.. ((p ~= "!down" and p:sub(1, 1) == "!") and (" (" .. p:sub(2) .. ")") or ""), "warning"
+end
+
+function M.ui(u)
+	local T = u.T
+	local function status(k) return type(u.status) == "function" and tostring(u.status(k) or "") or "" end
+	local public = u.on("public")
+	-- (the players: what the host's options mean for them)
+	if not u.isHost then
+		if public then u.add(u.text(T("Cette partie est publique : n'importe quel joueur de la même version peut la trouver dans la liste et la rejoindre.",
+			"This game is public: any player with the same version can find it in the list and join it."))) end
+		if u.on("join_approve") then u.add(u.muted(T("L'hôte accepte ou refuse chaque arrivée.", "The host accepts or refuses every arrival."))) end
+		if u.on("join_bans") then u.add(u.muted(T("L'hôte peut exclure ou bannir un joueur.", "The host can kick or ban a player."))) end
+		if u.on("join_steamfriends") and not public then u.add(u.muted(T("Par Steam, seuls les amis Steam de l'hôte peuvent rejoindre.", "Through Steam, only the host's Steam friends can join."))) end
+		return
+	end
+	if public then
+		u.add(u.title(T("Liste publique", "Public list")))
+		local text, cls = listState(status("pub"), T)
+		u.add(u.text(text, cls))
+		if status("pubname") ~= "" then u.add(u.muted(T("Nom de la partie", "Game name") .. T(" : ", ": ") .. status("pubname"))) end
+		u.add(u.muted(T("Joueurs au maximum", "Players at most") .. T(" : ", ": ") .. tostring(u.param("public", "max"))
+			.. "   ·   " .. T("Arrivées pendant la partie", "Arrivals during the game") .. T(" : ", ": ") .. (u.param("public", "late") == 1 and T("oui", "yes") or T("non", "no"))))
+		if status("pubip") ~= "" then
+			u.add(u.text((T("Votre adresse IP (%s) est visible par tous dans la liste publique : n'importe qui peut la voir et s'en servir.",
+				"Your IP address (%s) is shown to everybody in the public list: anyone can see and use it."):gsub("%%s", function() return status("pubip") end)), "warning"))
+		end
+		if u.mode ~= "separate" then
+			u.add(u.text(T("Une entreprise pour tous : un inconnu pourra construire, démolir et dépenser l'argent de l'entreprise.",
+				"One company for everybody: a stranger will be able to build, demolish and spend the company's money."), "warning"))
+		end
+		u.add(u.gap(8))
+	end
+	if u.on("join_steamfriends") then
+		u.add(u.text(status("pubfriends") == "1" and T("Steam : seuls vos amis Steam peuvent rejoindre par Steam.", "Steam: only your Steam friends can join through Steam.")
+			or T("Steam : tout le monde peut rejoindre par Steam (la partie est ou a été publique pendant cette session).", "Steam: everybody can join through Steam (the game is or was public during this session).")))
+		u.add(u.gap(8))
+	end
+	-- the arrivals waiting for the host's answer (join_approve; a player banned or a full game is refused before asking)
+	local pending = status("pending")
+	if u.on("join_approve") or pending ~= "" then
+		u.add(u.title(T("Arrivées", "Arrivals")))
+		if pending == "" then u.add(u.muted(T("Personne n'attend.", "Nobody is waiting."))) end
+		for who in pending:gmatch("[^,]+") do
+			local id = who
+			u.add(u.text(u.Tf("%s veut rejoindre la partie", "%s wants to join the game", (id:gsub("#%d+$", ""))), "warning"))
+			u.add(u.row({ u.button(T("Accepter", "Accept"), function() u.exe("admit", id .. " 1") end, true),
+				u.gap(6), u.button(T("Refuser", "Refuse"), function() u.exe("admit", id .. " 0") end) }))
+		end
+		u.add(u.gap(8))
+	end
+	-- the players banned from the host's games (join_bans; kept on its PC), each can be taken back
+	if u.on("join_bans") then
+		local banned = {}
+		for e in status("bans"):gmatch("[^;]+") do
+			local nm, day = e:match("^([^|]*)|?(.*)$")
+			if nm and nm ~= "" then banned[#banned + 1] = { nm = nm, day = day or "" } end
+		end
+		u.add(u.title((T("Joueurs bannis (%s)", "Banned players (%s)"):gsub("%%s", tostring(#banned)))))
+		u.add(u.muted(T("Exclure et Bannir : sur la ligne de chaque joueur de l'onglet Session.", "Kick and Ban: on each player's line of the Session tab.")))
+		for _, b in ipairs(banned) do
+			local nm = b.nm
+			u.add(u.text(nm .. (b.day ~= "" and ("   ·   " .. b.day) or "")))
+			u.add(u.row({ u.button(T("Retirer", "Remove"), function() u.exe("unban", nm) end) }))
+		end
+	end
+end
 return M

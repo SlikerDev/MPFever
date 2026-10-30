@@ -11846,7 +11846,8 @@ H.wintabs = function(from, p)
 	AUTO.results = {}
 	AUTO.points = {}
 	-- (the Game tab of 0.5.14 too: the game's rules, one company per player only, else Session is drawn in its place)
-	local tabs = { "session", "chat", "company", "rules", "game", "settings" }
+	-- ((0.6) p.tabs: the tabs of another scenario, see H.pubtest)
+	local tabs = type(p.tabs) == "table" and p.tabs or { "session", "chat", "company", "rules", "game", "settings" }
 	local frames = math.max(3, tonumber(os.getenv("MPFEVER_WINTABSECONDS") or "") or 10) * 60
 	local function ask(i)
 		if i > #tabs then return autoFinish() end
@@ -11867,6 +11868,18 @@ H.wintabs = function(from, p)
 		end }
 	end
 	ask(1)
+end
+-- (0.6) Public games scenario (MPFEVER_SCENARIO=pubtest, both games at once: MPFever.exe's RunPubTest has switched the options
+-- public, join_bans and join_approve on, and a stranger waits for the host's answer): each game says which options its game has
+-- (f_opts: "public=1" expected on both), then shows its MPFever window's "Public game" tab and its Session tab as the window
+-- scenario does (the host's offer Accept and Refuse for the stranger). "AUTOTEST pubtest: ..." in mod.log.
+H.pubtest = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	local have = type(G.featSt) == "table" and type(G.featSt.optsText) == "string" and G.featSt.optsText or ""
+	local line = "pubtest: the game's options " .. (have ~= "" and have or "none") .. (have:find("public=1", 1, true) and " (public on)" or " (PUBLIC NOT ON)")
+	log("AUTOTEST " .. line)
+	H.wintabs(from, { role = p.role, tabs = { "f_public", "session" } })
+	table.insert(AUTO.results, 1, line)
 end
 
 -- (0.6) Statistics scenario (MPFEVER_SCENARIO=featstats, companies mode, best with MPFEVER_SPEED=4): the host's game switches the

@@ -130,11 +130,14 @@ namespace MPFever
         // the host's addresses shown in its lobby: public (Internet, "" while looked up, "?" when unknown) and local network
         string lobbyPublic = "", lobbyLocal = "";
         int lobbyPort;
-        // (0.6) the session's game options, as the lobby's "Game settings" set them: "id=1;id.param=v;..." (docs/FEATURES-0.6.md);
-        // MPFever.exe reads them with OptOn and OptParam (the public games: PublicGames.cs)
-        volatile string gameOptions = "";
-        bool OptOn(string id) => OptValue(gameOptions, id) == "1";
-        string OptParam(string id, string p) => OptValue(gameOptions, id + "." + p);
+        // (0.6) the session's game options are GameOptions(): the string the lobby's "Game settings" edit ("id=1;id.param=v;...",
+        // docs/FEATURES-0.6.md), read through OptValue by MPFever.exe's own options (the public games: PublicGames.cs). Kept while
+        // mpfever_settings.txt is not written again (SaveSetting counts its writes): the status and the public games read them every
+        // second. (autotests, the scenario pubtest: the scenario's own options, never written into mpfever_settings.txt)
+        sealed class OptsCache { public int Gen; public string Text; }
+        volatile OptsCache gameOptsCache;
+        volatile string gameOptsTest;
+        static int settingsGen;
 
         /// <summary>One value of an options string "id=1;id.param=v;..." (the key "id" or "id.param"), or null when absent.</summary>
         internal static string OptValue(string opts, string key)
@@ -1040,6 +1043,8 @@ namespace MPFever
             var d = LoadSettings();
             d[k] = v;
             try { File.WriteAllLines(SettingsFile, d.Select(kv => kv.Key + "=" + kv.Value)); } catch { }
+            // (0.6: the game options kept by GameOptions are read again)
+            Interlocked.Increment(ref settingsGen);
         }
 
         /// <summary>The player name kept from the last host or join in the MPFever window (name= in mpfever_settings.txt),
@@ -2266,6 +2271,12 @@ namespace MPFever
                         }
                         continue;
                     }
+                    if (scenario == "pubtest")
+                    {
+                        // (0.6) the public games' options in a session of two games, both at once (PublicGames.cs's RunPubTest)
+                        if (role == "host") RunPubTest();
+                        continue;
+                    }
                     if (scenario == "resync")
                     {
                         // every game reloads the host's savegame (as when a player joins): the companies must come back as they were
@@ -3089,8 +3100,17 @@ namespace MPFever
         string GameOptions()
         {
             string v = server != null ? server.GameOptions : null;
-            if (v == null) LoadSettings().TryGetValue("gameopts", out v);
-            return GameOpts.Canon(v ?? "");
+            if (v != null) return GameOpts.Canon(v);
+            var test = gameOptsTest;
+            if (test != null) return GameOpts.Canon(test);
+            // (kept until SaveSetting writes the file again: read every second by the status and the public games)
+            int gen = Thread.VolatileRead(ref settingsGen);
+            var c = gameOptsCache;
+            if (c != null && c.Gen == gen) return c.Text;
+            LoadSettings().TryGetValue("gameopts", out v);
+            var s = GameOpts.Canon(v ?? "");
+            gameOptsCache = new OptsCache { Gen = gen, Text = s };
+            return s;
         }
 
         /// <summary>(the host) the game options a savegame was played with (the text "mpfopts:...;" its game keeps, see mpfever_feat.lua's

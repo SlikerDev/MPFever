@@ -1002,6 +1002,9 @@ namespace MPFever
         /// <summary>The player of this name (name#id) taking part in the session, or null.</summary>
         public Peer Find(string name) { lock (peers) return peers.FirstOrDefault(p => In(p) && p.Name == name); }
 
+        /// <summary>(0.6, the autotest pubtest) the port it listens on; 0 before Start.</summary>
+        public int Port { get { try { return (listener?.LocalEndpoint as IPEndPoint)?.Port ?? 0; } catch { return 0; } } }
+
         public void Start(int port)
         {
             // IPv4 and IPv6 on one socket (players behind DS-Lite, without a public IPv4 of their own, are reached over

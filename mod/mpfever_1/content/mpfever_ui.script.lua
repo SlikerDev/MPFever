@@ -2079,6 +2079,7 @@ U.pollTabReq = function()
 	local s = f:read("*a") or ""
 	f:close()
 	-- (a game option's tab too: "f_<id>", 0.6)
+	-- (0.6: a module's tab too, "f_<id>")
 	local tab, seq = s:match("^([%w_]+)" .. C.TAB .. "(%d+)")
 	if not tab or seq == U.tabReqSeq or not U.SessionWindow then return end
 	U.compact = false
@@ -3072,6 +3073,11 @@ U.featU = function(K, st, M)
 	end
 	-- (to M.request of the module on this game, through the bridge: ui.log "feat_req")
 	u.request = function(kind, payload) sendLine("feat_req", { m = M.ID, kind = tostring(kind), payload = payload }) end
+	-- (a line "key=value" of mp_status.txt, as MPFever.exe wrote it for this game; "" when there is none. The host's own lines too,
+	-- never sent to the players: the public games' pending, bans...)
+	u.status = function(key) return tostring(st and st[tostring(key)] or "") end
+	-- (a request to MPFever.exe, as the window's own buttons send them: menu_req.txt, OnMenuRequest)
+	u.exe = function(cmd, arg) return U.menuRequest(tostring(cmd), arg) end
 	-- (an event of the module, sent as a command of this player: stamped, applied by every game at the same step)
 	u.send = function(name, param)
 		if F.eventOwner[name] ~= M then log("window: event " .. tostring(name) .. " is not one of " .. M.ID .. "'s") return false end
