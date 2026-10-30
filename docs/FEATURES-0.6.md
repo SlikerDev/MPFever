@@ -63,19 +63,18 @@ function M.hearsNow(st) return bool end      -- optional, once a step (the top o
 -- applied by every game at the same step (as co_month in 0.5).
 function M.gui(st, env) end
 function M.request(kind, payload, st, env) end   -- optional: a request of the MPFever window (u.request on that side)
-function M.guiVeto(id, name, param, st, env) end -- optional: THIS player's interface event (guiHandleEvent: a tool's
-                                                 -- builder.proposalCreate...); a table returned is the bridge's answer to the
-                                                 -- game ({ errorMessages = { [text] = true }, skipRender }, as company.script's
-                                                 -- permits: the tool shows the text and does not build); nil: nothing to say
 function M.allow(a, st, env) return true end     -- optional: THIS player's own action, before it is shipped; return
                                                  -- false, reason to refuse it here (a chat notice tells the reason). For
                                                  -- territories and permissions: no desync, nothing was sent. See "allow".
 function M.guiVeto(id, name, param, st, env) end -- optional: the game's interface events on THIS player's game (the
                                                  -- bridge's guiHandleEvent); a value other than nil is the event's answer,
                                                  -- as the game's own scripts answer: builder.proposalCreate { errorMessages =
-                                                 -- { [text] = true }, skipRender } turns a tool's build down before the click,
+                                                 -- { [text] = true }, skipRender } turns a tool's build down before the click
+                                                 -- (as company.script's permits: the tool shows the text and does not build),
                                                  -- vehicleStore / mission.buyVehicle a text puts the store's buy button off,
-                                                 -- management.line / delete true keeps the line. The first module's answer wins.
+                                                 -- management.line / delete true keeps the line; nil: nothing to say. Every
+                                                 -- module on hears the event (F.guiVeto); the tables' texts are put together
+                                                 -- (skipRender when one asks for it), else the first module's answer wins.
 
 -- The MPFever window (mpfever_ui.script.lua), every game (optional): a tab of its own while one of the module's options is on.
 M.TAB = { id = "stats", title = { "Classement", "Ranking" } }
@@ -98,17 +97,15 @@ Simulation half (`env` of M.event / M.tick / M.month / M.onAction / M.onGameEven
   game's own subsidies book theirs; the same on every game when called from an event), `env.every(steps)` (true once every that many steps, from the game time: the same step on every game),
   `env.month()` (the game month's number), `env.date()` ({ year, month, day } of the calendar at this game time, or nil:
   decide with env.month(), the calendar follows the game's calendar speed), `env.module(id)` (another feature module loaded
-  in this Lua state, e.g. `env.module("tenders").wins`; nil when it is not there).
-  decide with env.month(), the calendar follows the game's calendar speed), `env.lots(coId)` (a company's lots as its auction
+  in this Lua state, e.g. `env.module("tenders").wins`; nil when it is not there), `env.lots(coId)` (a company's lots as its auction
   would list them, mpfever_eco.lua's E.lotsOf: `{ kind = "line"|"station"|"depot", key, label, vehicles, reserve }`, the same keys
   on every game; nil without mpfever_eco.lua), `env.transferLot(fromId, toId, lot)` (the lot's assets, found again by its key,
   become company toId's, as an auction's lot sold: mpfever_eco.lua's E.transferLot; `lot.withStations` a line with the stations
   of its stops that the seller owns, `lot.frozen` the constructions' own tracks and nodes too; the stations' and depots' own
-  settings go; returns how many entities changed hands, or nil and why; books nothing: call it from an event).
-  decide with env.month(), the calendar follows the game's calendar speed), `env.coMerge(fromId, intoId, opts)` (from an event
-  only: company fromId goes into company intoId at this step, the merge of companies of mpfever_eco.lua, `E.coMerge`; opts
-  `members = "release"`: its players get a new company instead of joining intoId; `gone = "taken"`; returns true, or false and
-  why; MPFEVER_STOCKMERGE=0: always false).
+  settings go; returns how many entities changed hands, or nil and why; books nothing: call it from an event),
+  `env.coMerge(fromId, intoId, opts)` (from an event only: company fromId goes into company intoId at this step, the merge of
+  companies of mpfever_eco.lua, `E.coMerge`; opts `members = "release"`: its players get a new company instead of joining
+  intoId; `gone = "taken"`; returns true, or false and why; MPFEVER_STOCKMERGE=0: always false).
 Every game runs this code; the host never decides alone here.
 
 GUI half (`env` of M.gui / M.request / M.allow; made by `F.guiEnv` from the bridge's `G.featBridge`): `env.log`, `env.on`,
@@ -117,15 +114,13 @@ player who joined), `env.myCo` (this player's company id, separate mode), `env.m
 this module, one of its M.EVENTS, stamped and applied by every game at the same step, as G.coEvent; not sent during a
 resynchronisation), `env.chat(text)` (a notice in this game's chat only), `env.write(name, lines)` (the file
 `feat_<module>_<name>.txt` of the session folder, name [a-z0-9_]+, lines a list or a text, written only when it changed),
-`env.realTime()` (os.clock, the GUI may), `env.gameTime()`, `env.R`, `env.CO`, `env.T` (the game's T(fr, en): texts in the
-player's language, e.g. a chat notice), `env.players()` (the names of the other players this game hears from, sorted).
 `env.realTime()` (os.clock, the GUI may), `env.gameTime()`, `env.date(t)` (the calendar's { year, month, day } at game time
-t, now by default; a date the simulation needs is read by the host here and sent in an event), `env.T(fr, en)` (this game's
-language), `env.module(id)`, `env.R`, `env.CO`.
-`env.realTime()` (os.clock, the GUI may), `env.gameTime()`, `env.T(fr, en)` (this game's language, the bridge's C.T), `env.R`,
-`env.CO`.
-`env.realTime()` (os.clock, the GUI may), `env.gameTime()`, `env.R`, `env.CO`, `env.T` (the bridge's C.T, this player's
-language; also in the simulation's env, for logs only).
+t, now by default; a date the simulation needs is read by the host here and sent in an event), `env.module(id)`, `env.R`,
+`env.CO`, `env.T(fr, en)` (the game's T, the bridge's C.T: texts in the player's language, e.g. a chat notice; English without
+the bridge's; also `env.T` in the simulation's env, for logs only), `env.players()` (the names of the other players this game
+hears from, sorted), `env.pvPoints(param)` (the points of a tool's route from its builder.proposalCreate param, G.pvPoints:
+`{ {x, y[, r]}... }`), `env.owner` (a dedicated server's game only: the session's owner), `env.lots(coId)` (as the
+simulation's, for the window's lists), `env.coName(id)` (a company's name as the chat writes it).
 
 Per-player parameters: a parameter declared `perPlayer = true` also has one value per player, key `id.<param>_<player>` (the
 player's registry key, its name in lower case, written two letters a-p per byte by `F.playerPid(pid, key)`; 30 bytes at most);
@@ -134,13 +129,6 @@ player's registry key, its name in lower case, written two letters a-p per byte 
 
 Other code of a game may ask a module on with `F.moduleOn(id, st, B)` (M and its interface env, nil while its options are off):
 the computer companies ask the territories so (mpfever_ai.lua's territoryCheck, MPFEVER_AITERRITORY=0: never).
-`env.realTime()` (os.clock, the GUI may), `env.gameTime()`, `env.R`, `env.CO`, `env.T(fr, en)` (the player's language),
-`env.pvPoints(param)` (the points of a tool's route from its builder.proposalCreate param, G.pvPoints: `{ {x, y[, r]}... }`),
-`env.players()` (the other players' session names), `env.owner` (a dedicated server's game only: the session's owner).
-`env.realTime()` (os.clock, the GUI may), `env.gameTime()`, `env.R`, `env.CO`, `env.T(fr, en)` (the player's language, C.T),
-`env.lots(coId)` (as the simulation's, for the window's lists).
-`env.realTime()` (os.clock, the GUI may), `env.gameTime()`, `env.R`, `env.CO`, `env.T(fr, en)` (this game's language),
-`env.coName(id)` (a company's name as the chat writes it).
 
 UI (`u` of M.ui, made by `U.featU` in mpfever_ui.script.lua): `u.T(fr, en)`, `u.Tf(fr, en, ...)`, `u.money(n)`, `u.W` (the
 text width), `u.isHost`, `u.me`, `u.mode`, `u.on(id)`, `u.param(id, pid)` (the session's options, as MPFever.exe sends them),
@@ -245,14 +233,12 @@ A module whose allow fails lets the action through (logged).
 | bridge, `stampHeld` | `G.featRefuse`, `G.featRequest` | allow of a window's command; the window's "feat_req" |
 | bridge, `pollNativeEvents` | `G.featRefuse`, `G.featTakeTool` | allow of a tool's build |
 | bridge, `guiHandleEvent` | `G.featTool` | the build the tool applies (for allow) |
-| bridge, `runPausedActions` | `G.featPausedAct`, `G.featDigests` | the note f_act of a paused action (with the modules' copies taken before it) |
-| bridge, `shipNativeBuilds`, `shipTerrain`, `runNativeReplays` | `G.featNativeAct` | a tool's build with its builder, to the modules with `M.digest` (f_act `only`) |
-| bridge, `guiHandleEvent` (end) | `G.featGuiVeto` (`G.featVeto`, `K.FEATVETO`) | M.guiVeto's answer returned to the game; MPFEVER_FEATVETO=0: never |
-| bridge, `guiHandleEvent` (end) | `G.featVeto`, `G.featGuiVeto` | the modules' guiVeto answer, returned (none while off) |
+| bridge, `guiHandleEvent` (end) | `G.featGuiVeto` (`G.featVeto`, `K.FEATVETO`) | every module's M.guiVeto hears it, their answer returned to the game (the tables' texts together); none while off; MPFEVER_FEATVETO=0: never |
 | bridge, `stampHeld` "speed_req" | `G.featRefuse` | allow of a speed or pause request |
 | bridge, `SIM.featNative` | `SIM.featWho`, `SIM.featBuildCo`, `SIM.featMe` (f_me from `G.featGui`) | a tool's build's builder and cost |
-| bridge, `H.session` | `G.featTestOpts` | an autotest's own options (MPFEVER_SCENARIO=permstest) |
-| bridge, `runPausedActions` | `G.featPausedAct` | the note f_act of a paused action |
+| bridge, `H.session` | `G.featTestOpts` | an autotest's own options (MPFEVER_SCENARIO=permstest, journaltest; `G.featGui` reads it too) |
+| bridge, `runPausedActions` | `G.featPausedAct`, `G.featDigests` | the note f_act of a paused action (with the modules' copies taken before it) |
+| bridge, `shipNativeBuilds`, `shipTerrain`, `runNativeReplays` | `G.featNativeAct` | a tool's build with its builder, to the modules with `M.digest` (f_act `only`) |
 | bridge, helpers | `SIM.featBridge`, `G.featBridge`, `G.featChat` | what the env is made of |
 | window | `U.featView`, `U.featTabs`, `U.featGameTab`, `U.featGameRows`, `U.featAsk`, `U.featU`, `U.featTabRows` | Game tab, modules' tabs |
 | lobby (`setup`) | `featView`, `featSection`, `featSummary` | the host's panel, the players' line |
@@ -261,12 +247,8 @@ A module whose allow fails lets the action through (logged).
 The options host (mpfever_feat.lua): `F.MODULES`, `F.loader` (tests), `F.load`, `F.parse`, `F.encode`, `F.canon`, `F.on`,
 `F.param`, `F.modOn`, `F.active`, `F.offered`, `F.summary`, `F.text`, `F.showValue`, `F.call` (every call protected; a failing
 hook is logged the first 5 times, then every 100th), `F.applyOpts`, `F.simEvent`, `F.simTick`, `F.simAction`,
-`F.simGameEvent`, `F.hearsGameEvents`, `F.digests`, `F.gui`, `F.request`, `F.allow`, `F.wantsAllow`, `F.tabs`, `F.simEnv`, `F.guiEnv`.
-`F.simGameEvent`, `F.hearsGameEvents`, `F.wantsGameEvent`, `F.gui`, `F.request`, `F.allow`, `F.wantsAllow`, `F.tabs`, `F.simEnv`, `F.guiEnv`.
-`F.simGameEvent`, `F.hearsGameEvents`, `F.gui`, `F.request`, `F.allow`, `F.wantsAllow`, `F.tabs`, `F.simEnv`, `F.guiEnv`,
-`F.guiVeto`, `F.wantsVeto`, `F.moduleOn`, `F.playerPid`, `F.playerOf`.
-`F.simGameEvent`, `F.hearsGameEvents`, `F.gui`, `F.request`, `F.allow`, `F.wantsAllow`, `F.guiVeto`, `F.wantsVeto`, `F.tabs`,
-`F.simEnv`, `F.guiEnv`.
+`F.simGameEvent`, `F.hearsGameEvents`, `F.wantsGameEvent`, `F.digests`, `F.gui`, `F.request`, `F.allow`, `F.wantsAllow`,
+`F.guiVeto`, `F.wantsVeto`, `F.moduleOn`, `F.playerPid`, `F.playerOf`, `F.tabs`, `F.simEnv`, `F.guiEnv`.
 
 ## How to integrate a module
 

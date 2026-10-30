@@ -1958,9 +1958,6 @@ SIM.featNative = function(state, param, seq0)
 	pcall(SIM.featWho, st, a, own, now)
 	if F.simAction(st, a, true, SIM.featBridge()) then state:set(st) end
 end
--- whether a module on hears the game's own script events (and the modules loaded, with this log, at the first look); st: the
--- state of this step (a module may have nothing to hear now, see F.hearsGameEvents)
-SIM.featHearing = function(text, st)
 -- The builder of a tool's build and its cost, the same on every game (a.origin, a.cost, a.co; a.uid for a replay): this game's own
 -- build, the capture just made (its cost as shipped, REFUND.costOf; its builder this game's player under its session name, as the
 -- others name it, told by the interface: f_me, see G.featGui; its company the one its owner references name: a computer
@@ -1999,8 +1996,9 @@ SIM.featBuildCo = function(args)
 	for co, k in pairs(tally) do if k > n or (k == n and co < best) then best, n = co, k end end
 	return best
 end
--- whether a module on hears the game's own script events (and the modules loaded, with this log, at the first look)
-SIM.featHearing = function(text)
+-- whether a module on hears the game's own script events (and the modules loaded, with this log, at the first look); st: the
+-- state of this step (a module may have nothing to hear now, see F.hearsGameEvents)
+SIM.featHearing = function(text, st)
 	local F = C.feat()
 	if not F then return false end
 	F.load(log)
@@ -3714,7 +3712,7 @@ H.session = function(from, p)
 	-- (the computer companies the host chose in its lobby, "n:colour,...": run by the host's game, see mpfever_ai.lua)
 	if p.cmode ~= nil then G.coAi = p.ai end
 	-- (0.6) the session's game options, the host's choice ("id=1;id.param=v;..."; none: nothing to change), see G.featGui
-	-- (G.featTestOpts: an autotest's own options, see H.permstest)
+	-- (G.featTestOpts: an autotest's own options, see H.permstest and H.journaltest)
 	if K.FEAT then G.featOpts = G.featTestOpts or (type(p.opts) == "string" and p.opts or nil) end
 	G.session.started = p.started == true
 	-- a resynchronisation is under way (see G.resyncRefuse); MPFEVER_RESYNCBUILDS=1: builds are not refused then (as before 0.5.0)
@@ -15972,30 +15970,6 @@ end
 -- after MPFEVER_TDWAIT more seconds (20) each company's count; the client's say what its game holds (the same tenders, the same
 -- signature, the window's file, the chat notice). Compare both games' "signature" lines and the final "sync:" line.
 H.tenders = function(from, p)
--- (0.6) Competition scenario (MPFEVER_SCENARIO=markettest, one company per player with two companies at least): the host asks
--- its MPFever.exe for the game option "market" (the "opt" request of the window's Game tab), every game applies it (f_opts),
--- the host's game measures the market shares and sends them (f_market_snap, mpfever_feat_market.lua); each game says what it
--- applied (the month, its towns, industries and alerts: compare the two games' lines) and how many lines its window file has,
--- then shows the window's Competition tab (ui_tab_req.txt, as wintabs). 90 s after its part the host asks for the option off
--- again (the test profile's game options as before). Nothing of it runs without the scenario.
-H.markettest = function(from, p)
--- Territories scenario (0.6, MPFEVER_SCENARIO=terrtest, one company per player, the host then the client): the host's game puts
--- the game options "territory" and "handicap" into the game as its session's (MPFEVER_TERRTEST_OPTS, else every player at 50 %
--- of the start money and a 2 km territory for 5 years), then each game claims the biggest town its company may claim from the
--- module's own claim list, as the window's button does. Each game checks its claim in its state and its circle on the ground;
--- the client also checks that a station put at the host's town is turned down by the tool's hook (a proposal as the tool's
--- event gives it) and its own handicap. "AUTOTEST terrtest:" lines in mod.log; the sync check afterwards says whether both
--- games hold the same.
-H.terrtest = function(from, p)
--- (0.6) Stock market scenario (MPFEVER_SCENARIO=stocktest on both games, one company per player, the game option "stock" on in the
--- host's lobby (or gameopts=stock=1 in its mpfever_settings.txt), MPFEVER_STOCKPROTECT=0 on both games for a savegame younger than
--- 2 game years, MPFEVER_TOGETHER=1 so that both games run it at once (the launcher waits 300 s), MPFEVER_SPEED=4 advised): once
--- the stock market opens (the game month after the option came), the client buys 2 shares of company MPFEVER_STOCKTARGET (1, the
--- host's, by default) and sells 1 back; with MPFEVER_STOCKTAKEOVER=1 it then buys up to 5 over the next months and takes the
--- company over (its players get a new company; a computer company is retired). Each game notes the stock market's state at every
--- change and its companies' money at the end: the two logs must show the same states, and the checks no resynchronisation.
--- Without MPFEVER_TOGETHER=1 the host only notes the state it has (the launcher runs the host's part first, then the client's).
-H.stocktest = function(from, p)
 	if p.role ~= C.ROLE or AUTO.running then return end
 	AUTO.running = true
 	AUTO.results = {}
@@ -16054,6 +16028,19 @@ H.stocktest = function(from, p)
 		G.waits[#G.waits + 1] = { at = G.frames + 120, fn = poll }
 	end
 	G.waits[#G.waits + 1] = { at = G.frames + 120, fn = poll }
+end
+
+-- (0.6) Competition scenario (MPFEVER_SCENARIO=markettest, one company per player with two companies at least): the host asks
+-- its MPFever.exe for the game option "market" (the "opt" request of the window's Game tab), every game applies it (f_opts),
+-- the host's game measures the market shares and sends them (f_market_snap, mpfever_feat_market.lua); each game says what it
+-- applied (the month, its towns, industries and alerts: compare the two games' lines) and how many lines its window file has,
+-- then shows the window's Competition tab (ui_tab_req.txt, as wintabs). 90 s after its part the host asks for the option off
+-- again (the test profile's game options as before). Nothing of it runs without the scenario.
+H.markettest = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
 	local t0 = G.frames
 	local function say(line) AUTO.results[#AUTO.results + 1] = line; log("AUTOTEST markettest: " .. line) end
 	if G.cmode ~= "separate" then say("skipped: one company per player only"); return autoFinish() end
@@ -16109,6 +16096,20 @@ H.stocktest = function(from, p)
 		G.waits[#G.waits + 1] = { at = G.frames + 60, fn = poll }
 	end
 	G.waits[#G.waits + 1] = { at = G.frames + 60, fn = poll }
+end
+
+-- Territories scenario (0.6, MPFEVER_SCENARIO=terrtest, one company per player, the host then the client): the host's game puts
+-- the game options "territory" and "handicap" into the game as its session's (MPFEVER_TERRTEST_OPTS, else every player at 50 %
+-- of the start money and a 2 km territory for 5 years), then each game claims the biggest town its company may claim from the
+-- module's own claim list, as the window's button does. Each game checks its claim in its state and its circle on the ground;
+-- the client also checks that a station put at the host's town is turned down by the tool's hook (a proposal as the tool's
+-- event gives it) and its own handicap. "AUTOTEST terrtest:" lines in mod.log; the sync check afterwards says whether both
+-- games hold the same.
+H.terrtest = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
 	local function note(t) AUTO.results[#AUTO.results + 1] = t; log("AUTOTEST terrtest: " .. t) end
 	local F = C.feat()
 	local M = F and (F.load(log) and F.byId.territory)
@@ -16178,6 +16179,21 @@ H.stocktest = function(from, p)
 		G.waits[#G.waits + 1] = { at = G.frames + 600, fn = claimed }
 	end
 	G.waits[#G.waits + 1] = { at = G.frames + 120, fn = claim }
+end
+
+-- (0.6) Stock market scenario (MPFEVER_SCENARIO=stocktest on both games, one company per player, the game option "stock" on in the
+-- host's lobby (or gameopts=stock=1 in its mpfever_settings.txt), MPFEVER_STOCKPROTECT=0 on both games for a savegame younger than
+-- 2 game years, MPFEVER_TOGETHER=1 so that both games run it at once (the launcher waits 300 s), MPFEVER_SPEED=4 advised): once
+-- the stock market opens (the game month after the option came), the client buys 2 shares of company MPFEVER_STOCKTARGET (1, the
+-- host's, by default) and sells 1 back; with MPFEVER_STOCKTAKEOVER=1 it then buys up to 5 over the next months and takes the
+-- company over (its players get a new company; a computer company is retired). Each game notes the stock market's state at every
+-- change and its companies' money at the end: the two logs must show the same states, and the checks no resynchronisation.
+-- Without MPFEVER_TOGETHER=1 the host only notes the state it has (the launcher runs the host's part first, then the client's).
+H.stocktest = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
 	local function note(t) AUTO.results[#AUTO.results + 1] = t; log("AUTOTEST " .. t) end
 	local function S() local st = G.featSt; return st and type(st.feat) == "table" and st.feat.stock or nil end
 	if not (G.co and G.myCo) then note("stocktest: not in the companies mode"); return autoFinish() end
@@ -16438,15 +16454,16 @@ G.featBridge = function()
 				G.featFiles[file] = text
 				return true
 			end,
-			-- (0.6: the player's language, the points of a tool's route, the other players this game hears from (their names,
-			-- sorted), a company's lots (mpfever_eco.lua's E.lotsOf, as the simulation's env.lots), see F.guiEnv)
-			T = C.T, pvPoints = function(param) return G.pvPoints(param) end,
+			-- (0.6, T = C.T above: the player's language; the points of a tool's route; the other players this game hears from:
+			-- their names, sorted, see F.guiEnv)
+			pvPoints = function(param) return G.pvPoints(param) end,
 			players = function()
 				local out = {}
 				for name in pairs(G.peers or {}) do if type(name) == "string" and name ~= G.me then out[#out + 1] = name end end
 				table.sort(out)
 				return out
 			end,
+			-- (a company's lots: mpfever_eco.lua's E.lotsOf, as the simulation's env.lots)
 			lots = function(st, id)
 				local E, reg = C.eco(), st and st.co
 				local c = E and E.lotsOf and type(reg) == "table" and CO.find(reg, tonumber(id)) or nil
@@ -16475,19 +16492,15 @@ G.featGui = function(st)
 	local have = type(st.optsText) == "string" and st.optsText or ""
 	G.featOn = have ~= ""
 	G.featSt = st
-	-- (G.featTestOpts: the options an autotest scenario puts into a test's session, see H.journaltest; never set otherwise)
+	-- (G.featTestOpts: the options an autotest scenario puts into a test's session, see H.journaltest and H.permstest; never set
+	-- otherwise)
 	local want = G.featTestOpts or G.featOpts
-	if not G.featOn and (want == nil or want == "") then G.featAllow = false; return end
-	local want = G.featOpts
-	if not G.featOn and (want == nil or want == "") then G.featAllow = false; G.featVeto = false; return end
-	local want = G.featOpts
 	if not G.featOn and (want == nil or want == "") then G.featAllow, G.featVeto = false, false; return end
 	local F = C.feat()
 	if not F then return end
 	F.load(log)
 	G.featAllow = G.featOn and F.wantsAllow(have)
 	G.featVeto = G.featOn and F.wantsVeto ~= nil and F.wantsVeto(have)
-	G.featVeto = G.featOn and F.wantsVeto(have)
 	if C.ROLE == "host" and want ~= nil and G.connected and G.session.started and not G.session.resync then
 		local mode = G.cmode == "separate" and "separate" or "shared"
 		-- (the canon of the session's text, kept while it is the same)
@@ -16541,20 +16554,28 @@ G.featTakeTool = function()
 	if t and G.frames - t.frame <= 5 then return t.compact end
 	return nil
 end
--- The game's interface events on this game (guiHandleEvent), for the modules on that answer them (M.guiVeto: a tool's proposal,
--- the vehicle store's buy button, the line window's delete): the answer guiHandleEvent returns, nil for none (as before 0.6).
--- The first answers of each kind are logged, for the in-game check that the game heeds them alongside its own scripts.
+-- The game's interface events on this game (guiHandleEvent, only while G.featVeto), for the modules on that answer them (M.guiVeto:
+-- a tool's proposal, the vehicle store's buy button, the line window's delete; every module on hears it, see F.guiVeto): the
+-- answer guiHandleEvent returns, as company.script's permits ({ errorMessages, skipRender }: the tool shows the reasons in red and
+-- does not build), nil for none (as before 0.6). Anything failing here answers nothing. The first answers of each kind are
+-- logged (a tool turned down: by which module, and why), for the in-game check that the game heeds them alongside its own scripts.
 G.featGuiVeto = function(id, name, param)
 	local F = C.feat()
-	if not F then return nil end
-	local r, M = F.guiVeto(id, name, param, G.featSt or {}, G.featBridge())
+	if not (F and F.guiVeto and G.featSt) then return nil end
+	local r, M = F.guiVeto(id, name, param, G.featSt, G.featBridge())
 	if r ~= nil then
 		G.featVetoLog = G.featVetoLog or {}
 		local k = tostring(id) .. "/" .. tostring(name)
 		local n = (G.featVetoLog[k] or 0) + 1
 		G.featVetoLog[k] = n
 		if n <= 3 or n % 500 == 0 then
-			local okS, s = pcall(function() return type(r) == "table" and C.ser(r):sub(1, 200) or tostring(r) end)
+			local okS, s = pcall(function()
+				if type(r) ~= "table" then return tostring(r) end
+				local why = {}
+				for t in pairs(type(r.errorMessages) == "table" and r.errorMessages or {}) do why[#why + 1] = tostring(t) end
+				table.sort(why)
+				return "turned down by " .. tostring(M and M.ID) .. ": " .. table.concat(why, " | ")
+			end)
 			log("options: " .. k .. " answered by " .. tostring(M and M.ID) .. " (" .. n .. "): " .. (okS and s or "?"))
 		end
 	end
@@ -16699,22 +16720,6 @@ H.journaltest = function(from, p)
 		later(30, waitOn)
 	end
 	waitOn()
-end
--- This player's interface event (guiHandleEvent), to the modules on that answer them (M.guiVeto, only while G.featVeto): their
--- answer is the bridge's answer to the game, as company.script's permits ({ errorMessages, skipRender }: the tool shows the
--- reason in red and does not build); nil when none turns it down. Anything failing here answers nothing.
-G.featGuiVeto = function(id, name, param)
-	local F = C.feat()
-	if not (F and F.guiVeto and G.featSt) then return nil end
-	local r, M = F.guiVeto(id, name, param, G.featSt, G.featBridge())
-	if type(r) ~= "table" then return nil end
-	G.featVetoN = (G.featVetoN or 0) + 1
-	if G.featVetoN <= 5 or G.featVetoN % 200 == 0 then
-		local why = {}
-		for t in pairs(type(r.errorMessages) == "table" and r.errorMessages or {}) do why[#why + 1] = tostring(t) end
-		log("options: " .. tostring(name) .. " of " .. tostring(id) .. " turned down by " .. tostring(M and M.ID) .. " (" .. G.featVetoN .. " so far): " .. table.concat(why, " | "))
-	end
-	return r
 end
 
 -- Team permissions scenario (0.6, MPFEVER_SCENARIO=permstest, a co-op session, any savegame; a vehicle with a depot lets the client
@@ -17055,9 +17060,11 @@ local function guiHandleEvent(userParams, state, guiState, src, id, name, param)
 		-- BUILDLEAD: a construction tool is in hand (it sends these while the player aims, as well as when it builds)
 		if G.buildLead then G.buildToolSeen(tostring(id)) end
 	end
-	-- (0.6) a game option's answer (a station, stop or depot in another company's territory: the tool shows why and does not
-	-- build, see G.featGuiVeto). Only while a module on answers (G.featVeto); MPFEVER_FEATVETO=0 or MPFEVER_FEAT=0: never
-	if K.FEATVETO and G.featVeto and G.featOn then
+	-- (0.6) the game options' answer to this event (M.guiVeto of every module on, see F.guiVeto: a tool turned down before the
+	-- click, a station, stop or depot in another company's territory, the vehicle store's buy button off, a line kept), returned
+	-- as the game's own scripts return theirs. Only while a module on answers (G.featVeto); nothing while no option is on: no
+	-- answer, as before. MPFEVER_FEATVETO=0 (K.FEATVETO false) or MPFEVER_FEAT=0: never
+	if K.FEATVETO ~= false and G.featVeto and G.featOn then
 		local okv, r = pcall(G.featGuiVeto, id, name, param)
 		if okv and r ~= nil then return r end
 	end

@@ -566,19 +566,11 @@ local function guiEnv(M, st, B)
 	end
 	e._st, e._B = st, B
 	e.isHost, e.me, e.myCo, e.mode = B.isHost, B.me, B.myCo, B.mode
-	-- (the game's T(fr, en), for a module's texts in the player's language: a notice of the chat...)
-	e.T = B.T
 	e.R, e.CO = B.R, B.CO
-	-- (this game's language: T(fr, en), the bridge's C.T)
-	-- (0.6) the texts in this player's language: the bridge's C.T when it gives it
-	e.T = B.T
-	-- (0.6: the player's language T(fr, en), the points of a tool's route (the bridge's G.pvPoints), the session's other players'
-	-- names, a dedicated server's owner (its game only); each nil when the bridge does not give it)
-	e.T, e.pvPoints, e.players, e.owner = B.T, B.pvPoints, B.players, B.owner
-	-- (T(fr, en): the player's language, for the chat and the window's files)
-	e.R, e.CO, e.T = B.R, B.CO, B.T
-	-- (this game's language, T(fr, en), and a company's name as the players see it, coName(id); nil when the bridge has none)
-	e.T, e.coName = B.T, B.coName
+	-- (0.6: e.T and e.players above, the bridge's C.T and the session's other players' names; the points of a tool's route (the
+	-- bridge's G.pvPoints), a dedicated server's owner (its game only), a company's name as the players see it, coName(id); each
+	-- nil when the bridge does not give it)
+	e.pvPoints, e.owner, e.coName = B.pvPoints, B.owner, B.coName
 	return e
 end
 F.guiEnv = guiEnv
@@ -629,29 +621,42 @@ function F.allow(a, st, B)
 end
 
 -- (0.6) some module on answers the game's interface events (M.guiVeto)
--- some module on answers the game's interface events (M.guiVeto)
 function F.wantsVeto(text)
 	for _, M in ipairs(F.active(text)) do if type(M.guiVeto) == "function" then return true end end
 	return false
 end
 
--- The game's interface events of this player (the bridge's guiHandleEvent: the tools' builder.proposalCreate...), to the modules
--- on with M.guiVeto(id, name, param, st, env): the first answer that is a table is the bridge's answer to the game, as the game's
--- own scripts answer (company.script: { errorMessages = { [text] = true }, skipRender }: the tool shows the text in red and does
--- not build). nil: no module turns it down. A module that fails turns nothing down (logged).
--- The game's interface events on THIS player's game (the bridge's guiHandleEvent: a tool's proposal, the vehicle store's buy
--- button, the line window's delete...): the first answer a module on gives (not nil), which the bridge returns as the event's
--- answer, as the game's own scripts veto a build (company.script's permits). nil: no module has a say. A failing module says
--- nothing (logged).
+-- The game's interface events on THIS player's game (the bridge's guiHandleEvent: a tool's proposal builder.proposalCreate, the
+-- vehicle store's buy button, the line window's delete...), to EVERY module on with M.guiVeto(id, name, param, st, env): each one
+-- hears it (a module may keep something of it: the plans' route, a build's cost that waits), and their answers make the bridge's
+-- answer to the game, as the game's own scripts answer (company.script: { errorMessages = { [text] = true }, skipRender }: the tool
+-- shows the texts in red and does not build). Two answers that are tables: one table with the texts of both (skipRender when one
+-- says so); else the first answer that is not nil (a text: the store's button is off; true: the line is kept). nil: no module
+-- has a say. A module that fails says nothing (logged). Returns the answer and the first module that gave one.
 function F.guiVeto(id, name, param, st, B)
+	local ans, by, merged = nil, nil, false
 	for _, M in ipairs(F.active(st.optsText)) do
 		if type(M.guiVeto) == "function" then
 			local ok, r = F.call("guiVeto", M, M.guiVeto, id, name, param, st, guiEnv(M, st, B))
-			if ok and type(r) == "table" then return r, M end
-			if ok and r ~= nil then return r, M end
+			if ok and r ~= nil then
+				if ans == nil then
+					ans, by = r, M
+				elseif type(ans) == "table" and type(r) == "table" then
+					-- (a copy: the modules' own tables stay as they are)
+					if not merged then
+						local c = {}
+						for k, v in pairs(ans) do c[k] = v end
+						c.errorMessages = {}
+						for k, v in pairs(type(ans.errorMessages) == "table" and ans.errorMessages or {}) do c.errorMessages[k] = v end
+						ans, merged = c, true
+					end
+					for k, v in pairs(type(r.errorMessages) == "table" and r.errorMessages or {}) do ans.errorMessages[k] = v end
+					if r.skipRender then ans.skipRender = true end
+				end
+			end
 		end
 	end
-	return nil
+	return ans, by
 end
 
 -- ---------------------------------------------------------------- the MPFever window
