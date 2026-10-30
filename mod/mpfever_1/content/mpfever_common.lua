@@ -830,6 +830,17 @@ function C.buildSig(m)
 		parts[#parts + 1] = p and string.format("%.0f,%.0f", p.x or 0, p.y or 0) or tostring(e)
 		parts[#parts + 1] = tostring(type(c) == "table" and type(c.comp) == "table" and c.comp.doubleSlipSwitch)
 	end
+	-- the file and place of each construction added: in a pause every build has the same game time, and two players' stations
+	-- (or one player's two depots) both read "one construction added". The second was taken for the engine's second
+	-- application of the first, not shipped, and stood on its own game only (money, constructions and towns out of sync,
+	-- #102). MPFEVER_SIGCON=0: counts only, as before
+	if os.getenv("MPFEVER_SIGCON") ~= "0" then
+		for _, ce in ipairs(type(m.toAdd) == "table" and m.toAdd or {}) do
+			local t = type(ce) == "table" and ce.transf or nil
+			parts[#parts + 1] = tostring(type(ce) == "table" and ce.fileName or "?"):match("[^/]*$") .. "@"
+				.. ((type(t) == "table" and type(t[13]) == "number") and string.format("%.0f,%.0f", t[13], t[14] or 0) or "?")
+		end
+	end
 	return table.concat(parts, "/")
 end
 

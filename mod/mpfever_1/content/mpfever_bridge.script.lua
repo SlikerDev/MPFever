@@ -61,7 +61,10 @@ end
 
 -- order-independent hash of a plain Lua value (game script states): tables are hashed as a sum over their entries,
 -- so that the iteration order (which differs between Lua states) does not matter
-local function valueHash(v, d)
+-- (noName: the texts kept under "name" left out. The subsidies' script keeps the title of each one in the language of the
+-- game that made it, "Transport Workers" here and "Arbeiter transportieren" there: games in different languages were found
+-- out of sync and reloaded at every new subsidy, #102. MPFEVER_SUBNAMES=1: hashed as before)
+local function valueHash(v, d, noName)
 	local t = type(v)
 	if t == "number" then
 		if v ~= v then return 1 end
@@ -77,8 +80,8 @@ local function valueHash(v, d)
 		for k, x in pairs(v) do
 			-- local counters, not game state: entity revisions (bumped by each game's own component writes) and the
 			-- interface clock of the mission script
-			if k ~= "revision" and k ~= "guiTimeSeconds" then
-				acc = (acc + C.hashStr(valueHash(k, d + 1), tostring(valueHash(x, d + 1)))) % 4294967296
+			if k ~= "revision" and k ~= "guiTimeSeconds" and not (noName and k == "name" and type(x) == "string") then
+				acc = (acc + C.hashStr(valueHash(k, d + 1), tostring(valueHash(x, d + 1, noName)))) % 4294967296
 			end
 		end
 		return acc
@@ -137,7 +140,7 @@ local function extendedParts(parts)
 			local c = api.engine.getComponent(e, api.type.ComponentType.GAME_SCRIPT)
 			if not c then return "absent" end
 			if dump then flatten(c.state, name, dump, 0) end
-			return tostring(valueHash(c.state, 0))
+			return tostring(valueHash(c.state, 0, name == "subventions" and os.getenv("MPFEVER_SUBNAMES") ~= "1"))
 		end)
 		if ok and v ~= "absent" then parts["script:" .. name] = v end
 	end
@@ -2780,8 +2783,10 @@ local function captureNativeBuild(state, param)
 	do
 		local okg, sig = pcall(C.buildSig, compact)
 		if okg and sig and st.replaySigs and st.replaySigs.at == now then
-			for _, s in ipairs(st.replaySigs.list or {}) do
+			for i, s in ipairs(st.replaySigs.list or {}) do
 				if s == sig then
+					-- (once: a third build alike at this time is the player's own)
+					if os.getenv("MPFEVER_SIGCON") ~= "0" then table.remove(st.replaySigs.list, i) end
 					log("build at t=" .. now .. ": the same as the action just applied here (the engine applies it again): not shipped")
 					state:set(st)
 					return

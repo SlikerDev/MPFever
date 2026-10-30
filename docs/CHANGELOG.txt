@@ -1,6 +1,20 @@
 MPFever - Changelog
 ===================
 
+0.6.1 - fewer reloads with players in different game languages, builds in a pause no longer lost
+  - FIX (#102): in a pause every build has the same game time, and a construction (station, depot...) made after another
+    player's one could be taken for the engine's second application of it: it was not shipped and stood on its builder's
+    game only (money, constructions and towns out of sync, then a reload). Each construction's file and place now tell them
+    apart, and a build is taken for the engine's second application once only. MPFEVER_SIGCON=0: as before.
+  - FIX (#101, #102): the subsidies' script keeps the title of each subsidy in the language of the game that made it
+    ("Transport Workers", "Arbeiter transportieren"): games in different languages reloaded at every new subsidy. The titles
+    are left out of the check. MPFEVER_SUBNAMES=1: checked as before.
+  - FIX (#101, #102): the default names of new vehicles, lines and stations are in each game's language; the host's game sends
+    its names after every check, but vehicles bought in a row kept the names different from one check to the next: "OUT OF
+    SYNC" at every purchase, and a reload. The names are now a part the games take from the host, as the money (a slight
+    drift at most). MPFEVER_NAMESCHECK=1: a reason to reload, as before.
+  - Test: tests/test_langdesync.py.
+
 0.6.0 - game options for every taste (all off by default), computer companies that never go bankrupt, fewer desyncs
   - NEW: game options, chosen by the host in the lobby ("Game settings...", section "Game options (0.6)", now in the co-op
     lobby too) and kept in the savegame. Every option is OFF by default: with all of them off, a game plays as in 0.5.14. An

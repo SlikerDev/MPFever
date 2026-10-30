@@ -74,7 +74,7 @@ namespace MPFever
 
     sealed partial class MainForm : Form
     {
-        public const string Version = "0.6.0";
+        public const string Version = "0.6.1";
         /// <summary>Developer mode (MPFever.exe --dev): local two-game test and determinism test buttons.</summary>
         public static bool Dev;
         public static bool MenuModeDefault;
@@ -249,7 +249,11 @@ namespace MPFever
         int postResyncHashN = -1;
         readonly HashSet<string> ignoredParts = new HashSet<string>();
         // parts every game corrects by itself from the host's values (not a reason to reload)
-        static readonly HashSet<string> CorrectedParts = new HashSet<string> { "money" };
+        // ("names": the default names of new vehicles, lines and stations are in each game's language, and the host's game sends
+        // its names after each check (namesync, 0.5.14). Bought in a row, the vehicles kept the part different from one check to
+        // the next: "OUT OF SYNC" at every purchase and a reload, #101/#102. MPFEVER_NAMESCHECK=1: a reason to reload, as before)
+        static readonly HashSet<string> CorrectedParts = Environment.GetEnvironmentVariable("MPFEVER_NAMESCHECK") == "1"
+            ? new HashSet<string> { "money" } : new HashSet<string> { "money", "names" };
         // parts only logged, never a reason to reload: "buildIds" reads a build's new ids by place a little after the build, and at
         // a speed above 1 the games read it at different steps (one after the next build had replaced the segment): the friends'
         // session of 2026-10-25 22:32 reloaded for nothing (every action's result was the same on both games)
