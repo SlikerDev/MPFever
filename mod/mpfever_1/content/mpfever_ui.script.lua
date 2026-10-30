@@ -2138,10 +2138,29 @@ U.TABS.session = function(K, st, ctx)
 	end
 	rows[#rows + 1] = K.gap(1, 8)
 	rows[#rows + 1] = K.section(K.ICON_PLAYERS, T("Joueurs", "Players") .. "  (" .. playerCount(st) .. ")")
+	-- (0.6, the host's game options join_bans and join_approve) Kick and Ban on each player's line, Accept and Refuse for each
+	-- arrival waiting: the host's own lines of mp_status.txt, pubkick= and pending= (launcher/PublicGames.cs)
+	local kick = st and st.pubkick == "1" and U.isHost(st)
 	for _, pl in ipairs(st and st.players or {}) do
 		if pl.role ~= "server" then
 			local line, cls = playerLine(pl, st.me)
-			rows[#rows + 1] = K.row { K.icon(K.ICON_PERSON, 20), K.gap(6, 1), K.text(line, nil, cls, W - 26) }
+			if kick and pl.role ~= "host" and pl.state ~= "left" then
+				local who = pl.name
+				rows[#rows + 1] = K.row { K.icon(K.ICON_PERSON, 20), K.gap(6, 1), K.text(line, nil, cls, W - 206),
+					K.btn(T("Exclure", "Kick"), nil, function() U.menuRequest("kick", who) end), K.gap(6, 1),
+					K.btn(T("Bannir", "Ban"), nil, function() U.menuRequest("ban", who) end) }
+			else
+				rows[#rows + 1] = K.row { K.icon(K.ICON_PERSON, 20), K.gap(6, 1), K.text(line, nil, cls, W - 26) }
+			end
+		end
+	end
+	if st and (st.pending or "") ~= "" and U.isHost(st) then
+		for who in st.pending:gmatch("[^,]+") do
+			local id = who
+			rows[#rows + 1] = K.gap(1, 4)
+			rows[#rows + 1] = K.text(C.Tf("%s veut rejoindre la partie", "%s wants to join the game", (id:gsub("#%d+$", ""))), nil, "warning", W)
+			rows[#rows + 1] = K.row { K.btn(T("Accepter", "Accept"), nil, function() U.menuRequest("admit", id .. " 1") end, true), K.gap(6, 1),
+				K.btn(T("Refuser", "Refuse"), nil, function() U.menuRequest("admit", id .. " 0") end) }
 		end
 	end
 	if st and st.invite == "1" and U.isHost(st) then

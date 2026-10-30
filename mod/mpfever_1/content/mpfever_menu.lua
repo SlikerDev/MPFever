@@ -720,6 +720,8 @@ local function setup()
 		local state = react.useState(st0)
 		-- (the host's lobby, one company per player: the game's rules shown, 0.5.14; MPFEVER_MENU_RULES=1: shown at first, tests)
 		local rulesOpen = react.useState(os.getenv("MPFEVER_MENU_RULES") == "1")
+		-- (0.6, the host's public game) its name as the host types it, nil while it shows the name MPFever.exe has
+		local pubEdit = react.useState(nil)
 		local leaving = react.useRef(false)
 		-- (the host's savegame, once received, is loaded by the application script mpfever_auto.lua)
 		react.onStepTimer(function()
@@ -842,6 +844,64 @@ local function setup()
 				right[#right + 1] = gap(1, 10)
 				right[#right + 1] = box(V, addrRows, nil, { padding = { 10, 12, 10, 12 }, background = { 1, 1, 1, 0.07 }, size = { w, -1 } })
 			end
+			-- (0.6, public games) the host's lobby in the public list: its state there, the game's name (the host may change it), a
+			-- warning when the host shows its IP address or everybody plays one company; then the arrivals waiting for the host's
+			-- answer. From MPFever.exe's menu_state (pub, pubName, pubIp, pending; launcher/PublicGames.cs): nothing while the
+			-- game options public and join_approve are off.
+			if isHost and ((st.pub or "") ~= "" and st.pub ~= "ended" or (st.pending or "") ~= "") then
+				local w = PAGE_W - SIDE_W - 60
+				local p = st.pub or ""
+				if p ~= "" and p ~= "ended" then
+					local msg = p == "listed" and T("Votre salon est dans la liste publique.", "Your lobby is in the public list.")
+						or p == "wait" and T("Partie publique : envoi à la liste publique...", "Public game: sending to the public list...")
+						or p == "!old" and T("La liste publique ne prend pas encore les parties de joueurs : vos amis peuvent toujours rejoindre par Steam ou par l'adresse.",
+							"The public list does not take players' games yet: your friends can still join through Steam or by the address.")
+						or p == "!off" and T("Aucune liste publique n'est utilisée ici (serverlist= dans mpfever_settings.txt) : la partie n'y apparaît pas.",
+							"No public list is used here (serverlist= in mpfever_settings.txt): the game does not show in it.")
+						or p == "!steam" and T("Steam n'est pas encore prêt : la partie apparaîtra dans la liste dès qu'il le sera.", "Steam is not ready yet: the game will show in the list as soon as it is.")
+						or (T("La liste publique ne répond pas : vos amis peuvent toujours rejoindre par Steam ou par l'adresse.", "The public list does not answer: your friends can still join through Steam or by the address.")
+							.. (p ~= "!down" and (" (" .. p:sub(2) .. ")") or ""))
+					local rows = {
+						text(msg, p == "listed" and "font-scale-body, success" or (p:sub(1, 1) == "!" and "font-scale-body, warning" or "font-scale-body"), w - 24),
+						gap(1, 6),
+						text(T("Nom de la partie", "Game name"), "font-scale-body"),
+						gap(1, 4),
+						box(H, {
+							input(pubEdit:old() or st.pubName or "", T("Nom de la partie", "Game name"), function(v) pubEdit:set(v) end, w - 190),
+							gap(8, 1),
+							button(T("Renommer", "Rename"), function()
+								request("pubname", (tostring(pubEdit:old() or ""):gsub("[%c]", "")), playerName())
+								pubEdit:set(nil)
+							end, { font = "font-scale-body", enabled = pubEdit:old() ~= nil }),
+						}),
+					}
+					if (st.pubIp or "") ~= "" then
+						rows[#rows + 1] = gap(1, 6)
+						rows[#rows + 1] = text((T("Votre adresse IP (%s) est visible par tous dans la liste publique : n'importe qui peut la voir et s'en servir.",
+							"Your IP address (%s) is shown to everybody in the public list: anyone can see and use it."):gsub("%%s", function() return st.pubIp end)), "font-scale-body, warning", w - 24)
+					end
+					if st.cmode ~= "separate" then
+						rows[#rows + 1] = gap(1, 6)
+						rows[#rows + 1] = text(T("Une entreprise pour tous : un inconnu pourra construire, démolir et dépenser l'argent de l'entreprise.",
+							"One company for everybody: a stranger will be able to build, demolish and spend the company's money."), "font-scale-body, warning", w - 24)
+					end
+					right[#right + 1] = gap(1, 10)
+					right[#right + 1] = box(V, rows, nil, { padding = { 10, 12, 10, 12 }, background = { 1, 1, 1, 0.07 }, size = { w, -1 } })
+				end
+				for who in (st.pending or ""):gmatch("[^,]+") do
+					local id = who
+					right[#right + 1] = gap(1, 10)
+					right[#right + 1] = box(V, {
+						text((T("%s veut rejoindre la partie", "%s wants to join the game"):gsub("%%s", function() return (id:gsub("#%d+$", "")) end)), "font-scale-title-4", w - 24),
+						gap(1, 4),
+						box(H, {
+							button(T("Accepter", "Accept"), function() request("admit", id .. " 1", playerName()) end, { font = "font-scale-body", primary = true }),
+							gap(8, 1),
+							button(T("Refuser", "Refuse"), function() request("admit", id .. " 0", playerName()) end, { font = "font-scale-body" }),
+						}),
+					}, nil, { padding = { 8, 8, 8, 8 }, background = { 0.6, 0.45, 0.1, 0.25 }, size = { w, -1 } })
+				end
+			end
 			-- the download of the host's game: its percentage, from the text MPFever.exe writes
 			if st.phase == "downloading" then
 				local pct = tonumber((st.text or ""):match("(%d+)%s*%%"))
@@ -894,14 +954,41 @@ local function setup()
 					local ix = separate and colorOf[base] or nil
 					local pc = ix and PALETTE[ix] or nil
 					-- (the colour square is the icon's place when the player has one: no hole in the list of children)
-					right[#right + 1] = box(H, {
+					local row = {
 						pc and builtin.Component{ meta = { styleSheet = style{ size = { 22, 22 }, background = { pc[1], pc[2], pc[3], 1 } } } }
 							or icon("::/gui/menu/icons/profile.tga"),
 						gap(10, 1),
 						text(p, "font-scale-title-4"),
 						hfill(),
 						i == 1 and (st.lobby == "host" or st.lobby == "client") and text(T("hôte", "host"), "font-scale-body") or nil,
-					}, nil, { padding = { 4, 10, 4, 10 }, background = { 1, 1, 1, i % 2 == 1 and 0.06 or 0.02 }, size = { PAGE_W - SIDE_W - 60, -1 } })
+					}
+					-- (0.6, the game option join_bans) the host kicks a player (who may come back) or bans one (refused from then on)
+					if i > 1 and isHost and st.pubKick == "1" then
+						local who = base
+						row[#row + 1] = button(T("Exclure", "Kick"), function() request("kick", who, playerName()) end, { font = "font-scale-body" })
+						row[#row + 1] = gap(6, 1)
+						row[#row + 1] = button(T("Bannir", "Ban"), function() request("ban", who, playerName()) end, { font = "font-scale-body" })
+					end
+					right[#right + 1] = box(H, row, nil, { padding = { 4, 10, 4, 10 }, background = { 1, 1, 1, i % 2 == 1 and 0.06 or 0.02 }, size = { PAGE_W - SIDE_W - 60, -1 } })
+				end
+			end
+			-- (0.6, join_bans) the players the host banned (kept on its PC: "name|day;..."), each can be taken back
+			if isHost and st.pubKick == "1" and (st.bans or "") ~= "" then
+				local banned = {}
+				for e in st.bans:gmatch("[^;]+") do
+					local nm, day = e:match("^([^|]*)|?(.*)$")
+					if nm and nm ~= "" then banned[#banned + 1] = { nm = nm, day = day or "" } end
+				end
+				right[#right + 1] = gap(1, 12)
+				right[#right + 1] = text((T("Joueurs bannis (%s)", "Banned players (%s)"):gsub("%%s", tostring(#banned))), "font-scale-title-4")
+				right[#right + 1] = gap(1, 4)
+				for i, b in ipairs(banned) do
+					local nm = b.nm
+					right[#right + 1] = box(H, {
+						text(nm .. (b.day ~= "" and ("   ·   " .. b.day) or ""), "font-scale-body"),
+						hfill(),
+						button(T("Retirer", "Remove"), function() request("unban", nm, playerName()) end, { font = "font-scale-body" }),
+					}, nil, { padding = { 2, 10, 2, 10 }, background = { 1, 1, 1, i % 2 == 1 and 0.06 or 0.02 }, size = { PAGE_W - SIDE_W - 60, -1 } })
 				end
 			end
 			if separate then side[#side + 1] = colorRow(mine, pickColor, nil, true, taken) end
@@ -1439,7 +1526,10 @@ local function setup()
 					for v in (entry .. string.char(31)):gmatch("(.-)" .. string.char(31)) do f[#f + 1] = v end
 					local sName, sAddr, sPlayers, sMax, sPw, sVer, sMode, sWorld, sMotd = f[1] or "", f[2] or "", f[3] or "0", f[4] or "0", f[5], f[6] or "", f[7] or "", f[8] or "", f[9] or ""
 					local sameVersion = sVer == "" or sVer == (st.version or sVer)
-					local info = sPlayers .. " / " .. sMax .. " " .. T("joueurs", "players")
+					-- (0.6) a player's own public game (kind g): its host, its lobby open or its game running (fields 10 to 12)
+					local sGame = f[10] == "g" and (T("Partie d'un joueur", "A player's game") .. ((f[12] or "") ~= "" and (" (" .. f[12] .. ")") or "") .. "   ·   "
+						.. (f[11] == "playing" and T("partie en cours", "game running") or T("salon ouvert", "lobby open")) .. "   ·   ") or ""
+					local info = sGame .. sPlayers .. " / " .. sMax .. " " .. T("joueurs", "players")
 						.. "   ·   " .. (sMode == "separate" and T("une entreprise par joueur", "one company per player") or T("entreprise commune", "shared company"))
 						.. (sPw == "1" and ("   ·   " .. T("mot de passe", "password")) or "")
 						.. (sameVersion and "" or ("   ·   " .. T("autre version de MPFever : ", "other MPFever version: ") .. sVer))

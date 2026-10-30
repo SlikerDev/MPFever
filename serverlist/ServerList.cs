@@ -21,17 +21,25 @@ namespace MPFever.ServerList
     /// service checks that the port answers before listing it (a server reachable only through Steam, with its Steam id,
     /// is listed too). No account, no database. Limits: 8 KiB per request, 4 servers per IP address, 2000 servers.
     ///
+    /// Version 2 (MPFever 0.6) lists the players' own games too, public at their host's choice ("kind":"game", see
+    /// AnnounceGame): GET /api/games gives every entry with its kind, GET /api/servers still gives the dedicated servers alone,
+    /// exactly as before (the MPFever versions before 0.6 read it and never see a player's game), and GET /api/health says
+    /// "v":2 (a launcher announces a game only to a list that says so).
+    ///
     /// MPFeverServerList.exe [port] runs in a console (default port 28100); install-service.bat installs it as a Windows
-    /// service that starts with Windows (MPFeverServerList.exe --service).</summary>
+    /// service that starts with Windows (MPFeverServerList.exe --service). --loopback listens on 127.0.0.1 only (the offline
+    /// test, tests/test_serverlist.py: no firewall question, and X-Forwarded-For names the announcing address).</summary>
     static class Program
     {
         public static int Port = 28100;
         public static string LogPath;
+        public static bool Loopback;
 
         static int Main(string[] args)
         {
             LogPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "serverlist.log");
-            var rest = args.Where(a => a != "--service").ToArray();
+            Loopback = args.Contains("--loopback");
+            var rest = args.Where(a => a != "--service" && a != "--loopback").ToArray();
             if (rest.Length > 0 && !int.TryParse(rest[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out Port)) { Console.WriteLine("usage: MPFeverServerList.exe [port] [--service]"); return 2; }
             var portFile = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "port.txt");
             if (rest.Length == 0 && File.Exists(portFile) && int.TryParse(File.ReadAllText(portFile).Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int fp)) Port = fp;
@@ -80,11 +88,18 @@ namespace MPFever.ServerList
         public int Port, Players, MaxPlayers;
         public bool Password, Reachable, CheckedOnce;
         public DateTime Seen, Checked;
+        // (v2) "server", or "game": a player's own game, found by its key (its host's Steam id, else ip:port), with its state
+        // ("lobby" or "playing"), its host's name and language, whether players may join it while it runs, and whether its
+        // host shows its address
+        public string Kind = "server", Key = "", State = "", Host = "", Lang = "";
+        public bool JoinPlaying, ShowAddress;
     }
 
     sealed class Listing
     {
         const int MaxBody = 8192, MaxPerIp = 4, MaxServers = 2000;
+        // (v2) players' games from one address: several players behind a carrier's shared address (CGNAT) may host at once
+        const int MaxGamesPerIp = 8;
         static readonly TimeSpan Expiry = TimeSpan.FromSeconds(90), Recheck = TimeSpan.FromMinutes(5);
         readonly Dictionary<string, Entry> servers = new Dictionary<string, Entry>();   // by id
         readonly Dictionary<string, DateTime> lastAnnounce = new Dictionary<string, DateTime>();   // by ip:port
@@ -93,8 +108,12 @@ namespace MPFever.ServerList
 
         public void Start()
         {
-            listener = new TcpListener(IPAddress.IPv6Any, Program.Port);
-            listener.Server.SetSocketOption(SocketOptionLevel.IPv6, SocketOptionName.IPv6Only, false);
+            if (Program.Loopback) listener = new TcpListener(IPAddress.Loopback, Program.Port);
+            else
+            {
+                listener = new TcpListener(IPAddress.IPv6Any, Program.Port);
+                listener.Server.SetSocketOption(SocketOptionLevel.IPv6, SocketOptionName.IPv6Only, false);
+            }
             listener.Start();
             running = true;
             new Thread(Accept) { IsBackground = true, Name = "Accept" }.Start();
@@ -168,8 +187,16 @@ namespace MPFever.ServerList
                     Array.Copy(early, body, got);
                     while (got < len) { int n = s.Read(body, got, len - got); if (n <= 0) break; got += n; }
                     var text = Encoding.UTF8.GetString(body, 0, got);
-                    if (method == "GET" && (path == "/api/servers" || path == "/")) { Reply(s, 200, ListJson()); return; }
-                    if (method == "GET" && path == "/api/health") { int n; lock (servers) n = servers.Count; Reply(s, 200, "{\"ok\":true,\"servers\":" + n + "}"); return; }
+                    if (method == "GET" && (path == "/api/servers" || path == "/")) { Reply(s, 200, ListJson(false)); return; }
+                    // (v2: every entry with its kind; /api/servers stays the dedicated servers' alone, for the older MPFever)
+                    if (method == "GET" && path == "/api/games") { Reply(s, 200, ListJson(true)); return; }
+                    if (method == "GET" && path == "/api/health")
+                    {
+                        int n, g;
+                        lock (servers) { g = servers.Values.Count(x => x.Kind == "game"); n = servers.Count - g; }
+                        Reply(s, 200, "{\"ok\":true,\"servers\":" + n + ",\"games\":" + g + ",\"v\":2}");
+                        return;
+                    }
                     if (method == "POST" && path == "/api/announce") { Reply(s, 200, Announce(ip.ToString(), text)); return; }
                     if (method == "POST" && path == "/api/remove") { Reply(s, 200, Remove(text)); return; }
                     Reply(s, 404, "{\"error\":\"not found\"}");
@@ -261,6 +288,8 @@ namespace MPFever.ServerList
             Dictionary<string, object> d;
             try { d = Json.Parse(text) as Dictionary<string, object>; } catch { d = null; }
             if (d == null) return "{\"error\":\"bad json\"}";
+            // (v2) a player's own game: see AnnounceGame (a dedicated server, and every MPFever before 0.6, says no kind)
+            if (Str(d, "kind", 8) == "game") return AnnounceGame(ip, d);
             int port = Int(d, "port", 0);
             if (port < 1 || port > 65535) return "{\"error\":\"bad port\"}";
             var key = ip + ":" + port;
@@ -271,14 +300,15 @@ namespace MPFever.ServerList
                 // (at most one announce per server every 10 s: a loop or a flood changes nothing)
                 if (lastAnnounce.TryGetValue(key, out var last) && now - last < TimeSpan.FromSeconds(10)) return "{\"error\":\"too often\",\"next\":10}";
                 lastAnnounce[key] = now;
-                e = servers.Values.FirstOrDefault(x => x.Ip == ip && x.Port == port);
+                // (the servers only: a player's game from the same address and port is an entry of its own)
+                e = servers.Values.FirstOrDefault(x => x.Kind == "server" && x.Ip == ip && x.Port == port);
                 string token = Str(d, "token", 64);
                 if (e != null && e.Token != token) e = null;   // another server took that port since (a restart): a new entry
                 if (e == null)
                 {
-                    var old = servers.Values.FirstOrDefault(x => x.Ip == ip && x.Port == port);
+                    var old = servers.Values.FirstOrDefault(x => x.Kind == "server" && x.Ip == ip && x.Port == port);
                     if (old != null) servers.Remove(old.Id);
-                    if (servers.Values.Count(x => x.Ip == ip) >= MaxPerIp) return "{\"error\":\"too many servers from this address\"}";
+                    if (servers.Values.Count(x => x.Kind == "server" && x.Ip == ip) >= MaxPerIp) return "{\"error\":\"too many servers from this address\"}";
                     if (servers.Count >= MaxServers) return "{\"error\":\"list full\"}";
                     e = new Entry { Id = NewId(8), Token = NewId(16), Ip = ip, Port = port };
                     servers[e.Id] = e;
@@ -301,6 +331,72 @@ namespace MPFever.ServerList
             }
             // (checked again every 5 minutes, or at every announce while it does not answer: a port just opened shows soon)
             if (now - e.Checked > Recheck || !e.Reachable) { e.Checked = now; ThreadPool.QueueUserWorkItem(_ => Check(e)); }
+            return "{\"ok\":true,\"id\":" + Q(e.Id) + ",\"token\":" + Q(e.Token) + ",\"every\":30}";
+        }
+
+        /// <summary>(v2, MPFever 0.6) A player's own game, public at its host's choice. It is found by its host's Steam id, not
+        /// by its address: two players behind the same shared address (CGNAT) with the game's usual port are two games. Its
+        /// address is neither probed nor listed unless its host chose to show it (then it is probed as a server's); without a
+        /// Steam id it must show it. A Steam id cannot be checked here: a game announced with another host's id fails at the
+        /// connection (the Steam tunnel authenticates the host), and while an entry lives, its id is refused from another
+        /// address. Limits: one announce every 10 s per game and address, 8 games per address.</summary>
+        string AnnounceGame(string ip, Dictionary<string, object> d)
+        {
+            var steam = Str(d, "steam", 20);
+            if (steam.Any(ch => ch < '0' || ch > '9')) steam = "";
+            bool show = Bool(d, "showAddress");
+            int port = Int(d, "port", 0);
+            if (port > 65535) port = 0;
+            if (steam == "" && !show) return "{\"error\":\"a game needs its host's Steam id or its address\"}";
+            if (show && port < 1) return "{\"error\":\"bad port\"}";
+            var key = steam != "" ? "steam:" + steam : ip + ":" + port;
+            var now = DateTime.UtcNow;
+            Entry e;
+            lock (servers)
+            {
+                // (counted per game and address: another address announcing the same id does not hold the host's own back)
+                var rate = "game " + key + " " + ip;
+                if (lastAnnounce.TryGetValue(rate, out var last) && now - last < TimeSpan.FromSeconds(10)) return "{\"error\":\"too often\",\"next\":10}";
+                lastAnnounce[rate] = now;
+                string token = Str(d, "token", 64);
+                e = servers.Values.FirstOrDefault(x => x.Kind == "game" && x.Key == key);
+                if (e != null && e.Token != token)
+                {
+                    // (its host again, its MPFever started again: a new entry; from another address: refused while it lives)
+                    if (e.Ip != ip) return "{\"error\":\"this game is listed from another address\"}";
+                    servers.Remove(e.Id);
+                    e = null;
+                }
+                if (e == null)
+                {
+                    if (servers.Values.Count(x => x.Kind == "game" && x.Ip == ip) >= MaxGamesPerIp) return "{\"error\":\"too many games from this address\"}";
+                    if (servers.Count >= MaxServers) return "{\"error\":\"list full\"}";
+                    e = new Entry { Id = NewId(8), Token = NewId(16), Ip = ip, Kind = "game", Key = key };
+                    servers[e.Id] = e;
+                    Program.Log("new game: " + Str(d, "name", 40) + " (" + (steam != "" ? "steam " + steam + ", " : "") + ip + ")");
+                }
+                e.Port = port;
+                e.Name = Str(d, "name", 40);
+                if (e.Name == "") e.Name = "MPFever game";
+                e.Version = Str(d, "version", 20);
+                e.Build = Str(d, "build", 20);
+                e.Mode = Str(d, "mode", 12);
+                e.World = Str(d, "world", 60);
+                e.Motd = Str(d, "motd", 140);
+                e.Steam = steam;
+                e.ShowAddress = show;
+                e.Address = show ? Str(d, "address", 80) : "";
+                e.Players = Int(d, "players", 0);
+                e.MaxPlayers = Int(d, "max", 0);
+                e.Password = Bool(d, "password");
+                e.State = Str(d, "state", 12) == "playing" ? "playing" : "lobby";
+                e.Host = Str(d, "host", 24);
+                e.Lang = Str(d, "lang", 8);
+                e.JoinPlaying = Bool(d, "joinPlaying");
+                if (!show) e.Reachable = false;
+                e.Seen = now;
+            }
+            if (show && (now - e.Checked > Recheck || !e.Reachable)) { e.Checked = now; ThreadPool.QueueUserWorkItem(_ => Check(e)); }
             return "{\"ok\":true,\"id\":" + Q(e.Id) + ",\"token\":" + Q(e.Token) + ",\"every\":30}";
         }
 
@@ -342,23 +438,28 @@ namespace MPFever.ServerList
             e.CheckedOnce = true;
         }
 
-        string ListJson()
+        /// <summary>The list: the dedicated servers alone, as before 0.6 (GET /api/servers), or every entry with its kind (v2,
+        /// GET /api/games, "games"). A player's game is listed with its address only when its host chose to show it.</summary>
+        string ListJson(bool all)
         {
-            var sb = new StringBuilder("{\"servers\":[");
+            var sb = new StringBuilder(all ? "{\"v\":2,\"games\":[" : "{\"servers\":[");
             lock (servers)
             {
                 bool first = true;
-                // (the fullest first, then by name; a server neither reachable nor joinable through Steam is left out)
-                foreach (var e in servers.Values.Where(x => x.Reachable || x.Steam != "").OrderByDescending(x => x.Players).ThenBy(x => x.Name, StringComparer.OrdinalIgnoreCase))
+                // (the fullest first, then by name; a server neither reachable nor joinable through Steam is left out, a player's
+                // game too)
+                foreach (var e in servers.Values.Where(x => (all || x.Kind == "server") && (x.Reachable || x.Steam != "")).OrderByDescending(x => x.Players).ThenBy(x => x.Name, StringComparer.OrdinalIgnoreCase))
                 {
                     if (!first) sb.Append(',');
                     first = false;
+                    bool game = e.Kind == "game";
                     var host = e.Ip.Contains(':') ? "[" + e.Ip + "]" : e.Ip;
+                    var address = game && !e.ShowAddress ? "" : e.Address != "" ? e.Address : host + ":" + e.Port;
                     sb.Append("{\"id\":").Append(Q(e.Id))
                       .Append(",\"name\":").Append(Q(e.Name))
-                      .Append(",\"address\":").Append(Q(e.Address != "" ? e.Address : host + ":" + e.Port))
+                      .Append(",\"address\":").Append(Q(address))
                       .Append(",\"steam\":").Append(Q(e.Steam))
-                      .Append(",\"reachable\":").Append(e.Reachable ? "true" : "false")
+                      .Append(",\"reachable\":").Append(e.Reachable && (!game || e.ShowAddress) ? "true" : "false")
                       .Append(",\"version\":").Append(Q(e.Version))
                       .Append(",\"build\":").Append(Q(e.Build))
                       .Append(",\"mode\":").Append(Q(e.Mode))
@@ -366,8 +467,14 @@ namespace MPFever.ServerList
                       .Append(",\"motd\":").Append(Q(e.Motd))
                       .Append(",\"players\":").Append(e.Players)
                       .Append(",\"max\":").Append(e.MaxPlayers)
-                      .Append(",\"password\":").Append(e.Password ? "true" : "false")
-                      .Append('}');
+                      .Append(",\"password\":").Append(e.Password ? "true" : "false");
+                    if (all)
+                        sb.Append(",\"kind\":").Append(Q(e.Kind))
+                          .Append(",\"state\":").Append(Q(game ? e.State : ""))
+                          .Append(",\"host\":").Append(Q(e.Host))
+                          .Append(",\"lang\":").Append(Q(e.Lang))
+                          .Append(",\"joinPlaying\":").Append(e.JoinPlaying ? "true" : "false");
+                    sb.Append('}');
                 }
             }
             return sb.Append("]}").ToString();
@@ -387,6 +494,8 @@ namespace MPFever.ServerList
             s = new string(s.Where(ch => !char.IsControl(ch)).ToArray()).Trim();
             return s.Length > max ? s.Substring(0, max) : s;
         }
+
+        static bool Bool(Dictionary<string, object> d, string k) => d.TryGetValue(k, out var v) && v is bool b && b;
 
         static int Int(Dictionary<string, object> d, string k, int def)
         {

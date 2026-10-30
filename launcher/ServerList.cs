@@ -191,7 +191,10 @@ namespace MPFever
 
         /// <summary>Started with the game's menu: the list read every 20 s (at once when the page asks) while no session runs,
         /// for the « Servers » tab (menu_state servers=, one server per \u001e, its fields separated by \u001f: name, address to
-        /// join, players, max, password 1/0, version, mode, world, motd).</summary>
+        /// join, players, max, password 1/0, version, mode, world, motd; 0.6: then kind s/g (a dedicated server, a player's
+        /// game), state (a game's: lobby, playing), host, language, join while playing 1/0). From 0.6 the list is read by
+        /// /api/games (every entry, the players' public games too, see PublicGames.cs), /api/servers when the list has no such
+        /// route (an older list); MPFEVER_PUBLICGAMES=0: /api/servers, as before.</summary>
         void ServerListFetchLoop()
         {
             double last = -1000;
@@ -207,20 +210,36 @@ namespace MPFever
                 string view;
                 try
                 {
-                    var d = Json.Parse(ListRequest(url + "/api/servers", null)) as Dictionary<string, object>;
-                    var list = d != null && d.TryGetValue("servers", out var s) ? s as List<object> : null;
+                    Dictionary<string, object> d = null;
+                    List<object> list = null;
+                    if (!PublicOff)
+                    {
+                        try
+                        {
+                            d = Json.Parse(ListRequest(url + "/api/games", null)) as Dictionary<string, object>;
+                            list = d != null && d.TryGetValue("games", out var g) ? g as List<object> : null;
+                        }
+                        // (an older list has no such route: its servers, as before)
+                        catch (Exception) { list = null; }
+                    }
+                    if (list == null)
+                    {
+                        d = Json.Parse(ListRequest(url + "/api/servers", null)) as Dictionary<string, object>;
+                        list = d != null && d.TryGetValue("servers", out var s) ? s as List<object> : null;
+                    }
                     var rows = new List<string>();
                     foreach (var o in (list ?? new List<object>()).OfType<Dictionary<string, object>>().Take(200))
                     {
                         string S(string k) => o.TryGetValue(k, out var v) && v is string sv ? sv.Replace("\u001e", " ").Replace("\u001f", " ") : "";
                         string N(string k) => o.TryGetValue(k, out var v) && v is double dv ? ((int)dv).ToString(CultureInfo.InvariantCulture) : "0";
+                        bool B(string k) => o.TryGetValue(k, out var v) && v is bool bv && bv;
                         var address = S("address");
                         var steam = S("steam");
                         // (through the server's Steam and its address at once: whichever answers, see Client.Connect)
                         var join = (steam != "" ? "steam:" + steam + (address != "" ? "," : "") : "") + address;
                         if (join == "") continue;
-                        bool pw = o.TryGetValue("password", out var p) && p is bool pb && pb;
-                        rows.Add(string.Join("\u001f", S("name"), join, N("players"), N("max"), pw ? "1" : "0", S("version"), S("mode"), S("world"), S("motd")));
+                        rows.Add(string.Join("\u001f", S("name"), join, N("players"), N("max"), B("password") ? "1" : "0", S("version"), S("mode"), S("world"), S("motd"),
+                            S("kind") == "game" ? "g" : "s", S("state"), S("host"), S("lang"), B("joinPlaying") ? "1" : "0"));
                     }
                     view = rows.Count == 0 ? "-" : string.Join("\u001e", rows);
                 }

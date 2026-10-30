@@ -54,9 +54,11 @@ announces come from and the server's `port`.
 | Request | Body | Answer |
 |---|---|---|
 | `GET /api/servers` | | `{"servers":[{id, name, address, steam, reachable, version, build, mode, world, motd, players, max, password}]}` |
+| `GET /api/games` (v2) | | `{"v":2,"games":[{...the same fields..., kind, state, host, lang, joinPlaying}]}` |
 | `POST /api/announce` | `{name, port, version, build, mode, world, motd, players, max, password, steam, address, token}` | `{"ok":true, id, token, every}` |
+| `POST /api/announce` (v2, a player's game) | `{"kind":"game", name, port, version, build, mode, world, host, lang, state, players, max, password, joinPlaying, showAddress, steam, address, token}` | `{"ok":true, id, token, every}` |
 | `POST /api/remove` | `{id, token}` | `{"ok":true}` |
-| `GET /api/health` | | `{"ok":true, servers}` |
+| `GET /api/health` | | `{"ok":true, servers, games, "v":2}` |
 
 - The first announce gets an `id` and a `token`; later announces send the `token` back, and only it can remove the entry.
 - The service tries a TCP connection to the server's port before listing it (again every 5 minutes, or at every announce while
@@ -65,3 +67,22 @@ announces come from and the server's `port`.
 - Limits: 8 KiB per request, one announce per server every 10 s, 4 servers per IP address, 2000 servers. Text fields lose their
   control characters and are cut (name 40, world 60, motd 140 characters).
 - Plain HTTP: nothing secret goes through it. For HTTPS, put it behind a reverse proxy (see above).
+
+### Version 2: the players' own games (MPFever 0.6)
+
+A player who hosts a game from the game's main menu can make its lobby public (the lobby's game option « Public game », off by
+default). Its MPFever announces it with `"kind":"game"` every 30 s while the lobby is open (and while the game runs, when the
+host lets players join then), and removes it when the game starts or the lobby closes.
+
+- A game is found by its host's **Steam id**, not by its address: two players behind the same shared address (a carrier's CGNAT)
+  with the game's usual port are two games. While a game lives, its Steam id is refused from another address. One announce
+  every 10 s per game and address, **8 games per IP address**.
+- Its address is **neither probed nor listed** unless its host chose to show it (`showAddress`; then it is probed like a server's
+  port). Players join it through Steam. Without a Steam id, a game must show its address.
+- `GET /api/servers` is unchanged: the dedicated servers only, with the same fields, so MPFever 0.5.x never sees a player's
+  game. `GET /api/games` lists everything with `kind` (`server` or `game`), `state` (a game's: `lobby` or `playing`), `host`,
+  `lang` and `joinPlaying`.
+- MPFever 0.6 announces a game only to a list whose `/api/health` says `"v":2`, and reads `/api/games` (`/api/servers` when the
+  list has no such route). **Update the service before publishing MPFever 0.6.**
+- No moderation of the names in v1. `MPFeverServerList.exe <port> --loopback` listens on 127.0.0.1 only (the offline test,
+  `tests/test_serverlist.py`).

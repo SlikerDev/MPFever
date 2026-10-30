@@ -50,6 +50,7 @@ namespace MPFever
             ok &= RunResume();
             ok &= RunServer();
             ok &= RunGameOpts();
+            ok &= RunPublic();
             ok &= RunUpdater();
             ok &= RunPortMap();
             ok &= RunRedact();
@@ -510,6 +511,123 @@ namespace MPFever
 
             foreach (var x in new[] { c1, c2, lena, c4 }) x.Dispose();
             relay.Dispose();
+            return ok;
+        }
+
+        sealed class Joiner
+        {
+            public Client C;
+            public volatile Dictionary<object, object> Denied;
+            public int Waits;
+        }
+
+        /// <summary>(0.6, public games) A player's own game: who its relay lets in when the host's game options ask for it (the
+        /// ban list kept in its file, a public game's places, the host's answer to every arrival, told to the arrival while it
+        /// waits), and that nothing changes while those options are off; the refusals' texts.</summary>
+        static bool RunPublic()
+        {
+            bool ok = true;
+            void Check(bool cond, string what) { Log.W((cond ? "  ok    " : "  FAIL  ") + what); ok &= cond; }
+            bool Wait(Func<bool> f, int ms = 4000) { for (int i = 0; i < ms / 50 && !f(); i++) Thread.Sleep(50); return f(); }
+
+            // 1. the game options' string, as the lobby gives it
+            var o = "public=1;public.max=6; join_bans=0;public.ip=1";
+            Check(MainForm.OptValue(o, "public") == "1" && MainForm.OptValue(o, "public.max") == "6" && MainForm.OptValue(o, "join_bans") == "0"
+                  && MainForm.OptValue(o, "public.ip") == "1" && MainForm.OptValue(o, "join_approve") == null && MainForm.OptValue("", "public") == null, "options: values read");
+
+            // 2. the ban list, kept in its file
+            var dir = Path.Combine(Path.GetTempPath(), "mpfever-selftest-" + Guid.NewGuid().ToString("N").Substring(0, 6));
+            Directory.CreateDirectory(dir);
+            string opts = "";
+            var gate = new PublicGate { BanFile = Path.Combine(dir, "mpfever_bans.txt"), AskSeconds = 30, Options = () => opts };
+            gate.AddBan("Lena", "76561198000000002", "");
+            gate.AddBan("Troll", "", "203.0.113.9");
+            var again = new PublicGate { BanFile = gate.BanFile };
+            Check(again.Bans().Count == 2 && again.BannedAs("lena", "", "") != null && again.BannedAs("Other", "76561198000000002", "") != null
+                  && again.BannedAs("Other", "", "203.0.113.9") != null && again.BannedAs("Other", "1", "203.0.113.10") == null, "bans: kept in the file, by name, Steam id or address");
+
+            // 3. who comes in, over TCP
+            int port = 28193;
+            var relay = new Relay();
+            relay.Admit = (p, m) => MainForm.VersionAdmit(m.Payload) ?? gate.Admit(p, () => MainForm.OthersConnected(relay, p), q => relay.TrySend(q, Msg.Make("admitwait", "MPFever", "{}")));
+            relay.Start(port);
+            var all = new List<Joiner>();
+            Joiner Join(string name)
+            {
+                var j = new Joiner { C = new Client() };
+                j.C.Denied += d => j.Denied = d;
+                j.C.Waiting += () => Interlocked.Increment(ref j.Waits);
+                j.C.Connect("127.0.0.1", port, name);
+                all.Add(j);
+                return j;
+            }
+            string Reason(Joiner j) => j.Denied != null && j.Denied.TryGetValue("reason", out var r) ? r as string : null;
+            bool Leave(Joiner j) { j.C.Dispose(); return Wait(() => relay.AdmittedCount == 0); }
+            try
+            {
+                // options off: a banned player comes in, as in 0.5.14
+                var lena = Join("Lena");
+                Check(Wait(() => relay.AdmittedCount == 1) && lena.Denied == null && lena.Waits == 0, "options off: everybody comes in (the ban list not read)");
+                Leave(lena);
+
+                opts = "join_bans=1";
+                var lena2 = Join("LENA");
+                Check(Wait(() => lena2.Denied != null) && Reason(lena2) == "banned" && lena2.Denied.ContainsKey("game"), "ban list on: a banned name refused (" + Reason(lena2) + ")");
+                var max = Join("Max");
+                Check(Wait(() => relay.AdmittedCount == 1) && max.Denied == null, "ban list on: the others come in");
+
+                // a public game: 2 players at most here, the host counted
+                opts = "join_bans=1;public=1;public.max=2";
+                var zoe = Join("Zoe");
+                Check(Wait(() => zoe.Denied != null) && Reason(zoe) == "full" && Convert.ToString(zoe.Denied["max"]) == "2", "public game: full (" + Reason(zoe) + ")");
+                Leave(max);
+
+                // the host lets every arrival in by hand: the arrival waits, told so, and is not a player before the answer
+                opts = "join_approve=1";
+                var ann = Join("Ann");
+                Check(Wait(() => gate.Waiting().Length == 1 && ann.Waits > 0) && relay.AdmittedCount == 0 && gate.Waiting()[0].StartsWith("Ann#"), "approval: the arrival waits, told so");
+                Check(gate.Answer("Ann", true) && Wait(() => relay.AdmittedCount == 1) && ann.Denied == null && gate.Waiting().Length == 0, "approval: let in");
+                // (the waiting notices are not session messages: the link counts from the admission)
+                Check(ann.C.Link.Rx == 0, "approval: the notices not counted in the session link (" + ann.C.Link.Rx + ")");
+                var bob = Join("Bob");
+                Check(Wait(() => gate.Waiting().Length == 1) && gate.Answer(gate.Waiting()[0], false) && Wait(() => bob.Denied != null) && Reason(bob) == "refused", "approval: refused (" + Reason(bob) + ")");
+                // a player let in that comes back is not asked again
+                Leave(ann);
+                var ann2 = Join("Ann");
+                Check(Wait(() => relay.AdmittedCount == 1) && gate.Waiting().Length == 0 && ann2.Waits == 0, "approval: a player let in comes back without asking");
+                // the places of a public game are checked before asking
+                opts = "join_approve=1;public=1;public.max=2";
+                var dan = Join("Dan");
+                Check(Wait(() => dan.Denied != null) && Reason(dan) == "full" && dan.Waits == 0, "approval: a full game refuses before asking");
+                Leave(ann2);
+                // a player kicked is asked again
+                gate.Forget("ann");
+                var ann3 = Join("Ann");
+                Check(Wait(() => gate.Waiting().Length == 1) && gate.Answer("Ann", false) && Wait(() => ann3.Denied != null), "approval: a kicked player is asked again");
+                // no answer in time: refused; the session's end refuses those still waiting
+                opts = "join_approve=1";
+                gate.AskSeconds = 1;
+                var cid = Join("Cid");
+                Check(Wait(() => cid.Denied != null) && Reason(cid) == "refused", "approval: no answer in time, refused");
+                gate.AskSeconds = 30;
+                var eve = Join("Eve");
+                Check(Wait(() => gate.Waiting().Length == 1), "approval: waiting again");
+                gate.EndSession();
+                Check(Wait(() => eve.Denied != null) && Reason(eve) == "refused" && gate.Waiting().Length == 0, "approval: the session's end refuses those waiting");
+            }
+            finally
+            {
+                foreach (var j in all) try { j.C.Dispose(); } catch { }
+                relay.Dispose();
+            }
+
+            // 4. the ban taken back; the refusals told to the player
+            Check(gate.RemoveBan("lena") && gate.BannedAs("Lena", "", "") == null && gate.Bans().Count == 1, "bans: one taken back");
+            try { Directory.Delete(dir, true); } catch { }
+            string Text(string reason, bool game) => MainForm.DeniedText(new Dictionary<object, object> { ["reason"] = reason, ["max"] = 4.0, ["game"] = game });
+            string fallback = Text("nothing", true);
+            Check(new[] { Text("banned", true), Text("refused", true), Text("kicked", true), Text("full", true) }.All(t => t != fallback && t.Length > 10)
+                  && Text("kicked", true) != Text("kicked", false) && Text("full", true).Contains("4") && Text("full", true) != Text("full", false), "refusals of a player's game told to the player");
             return ok;
         }
     }
