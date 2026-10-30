@@ -540,8 +540,7 @@ print("the texts")
 text = run(G2, "return M.newsText(st, genv, { kind = 'takeover', co = 4, by = 2, total = 625000, premium = 25 })")
 check("(premium 25 %)" in text and "%%" not in text, "a percentage reads 25 %% (%s)" % text)
 check("Takeover premium: 25 %." in run(G2, "return V.optText"), "the options' line of the tab")
-# every text of the module in the 11 other languages (launcher/lang.json, or tests/lang_feat_stock.json until it is merged
-# there), with the same %s: the scan of tests/test_lang.py, on this module only, plus the lobby's texts of M.OPTIONS and M.TAB
+# every text of the module in the 11 other languages (launcher/lang.json), with the same %s: the scan of tests/test_lang.py, on this module only, plus the lobby's texts of M.OPTIONS and M.TAB
 import json
 import re
 sys.path.insert(0, HERE)
@@ -559,9 +558,6 @@ for _, p in ipairs(o.params) do t[#t + 1] = p.label[2] end
 t[#t + 1] = M.TAB.title[2]
 return table.concat(t, "\\n")''').split("\n")
 known = json.loads((test_lang.LANG_FILE).read_text(encoding="utf-8-sig"))["texts"]
-extra_file = os.path.join(HERE, "lang_feat_stock.json")
-if os.path.isfile(extra_file):
-    known = dict(known, **json.load(open(extra_file, encoding="utf-8"))["texts"])
 missing = [t for t in texts + lobby if not all((known.get(t) or {}).get(c) for c in test_lang.LANGUAGES)]
 broken = [t for t in texts + lobby if t in known and any(test_lang.placeholders(known[t].get(c) or t) != test_lang.placeholders(t) for c in test_lang.LANGUAGES)]
 check(len(texts) > 30 and not missing, "%d texts (and %d of the lobby) in the 11 languages%s" % (len(texts), len(lobby), (": missing " + repr(missing)) if missing else ""))
