@@ -4989,6 +4989,13 @@ local function replayNativeConstruction(a)
 			end
 		end
 		if not okk or not cmd then
+			-- (0.6: a computer company's garage that keeps the town buildings, a.keepBuildings: not the two-step replay, which gathers
+			-- the buildings in its way; the host's game is reloaded instead, as when this replay returns false, see replayAction)
+			if a.keepBuildings == true then
+				log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: a computer company's build, no two-step replay (it takes buildings down)")
+				replayFailed(a, "computer company's build not replayed")
+				return
+			end
 			-- (the street part and the construction in two steps, see replayTwoStep)
 			log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: trying the two-step replay")
 			if not replayTwoStep(a) then replayFailed(a, "native command") end
@@ -16506,7 +16513,9 @@ G.featGui = function(st)
 		-- (the canon of the session's text, kept while it is the same)
 		if G.featCanonOf ~= mode .. "|" .. want then G.featCanonOf, G.featCanon = mode .. "|" .. want, F.canon(want, mode) end
 		local s = G.featCanon
-		if s ~= have and G.frames - (G.featOptsAt or -100000) > 600 then
+		-- (also when only the company mode differs: a savegame played in the other mode keeps the same text, and the modules'
+		-- simulation half reads the mode it was sent with, see F.simMode)
+		if (s ~= have or (have ~= "" and st.optsMode ~= nil and st.optsMode ~= mode)) and G.frames - (G.featOptsAt or -100000) > 600 then
 			G.featOptsAt = G.frames
 			log("options: the session's options (" .. (s ~= "" and s or "all off") .. ") into the game (it has " .. (have ~= "" and have or "none") .. ")")
 			G.coEvent("f_opts", { s = s, mode = mode })

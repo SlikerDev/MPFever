@@ -17797,6 +17797,19 @@
       "ko": "최근 소식",
       "zh-CN": "最新消息",
       "zh-TW": "最新消息"
+    },
+    "Game options: %s on": {
+      "de": "Spieloptionen: %s aktiv",
+      "es": "Opciones de partida: %s activadas",
+      "it": "Opzioni di partita: %s attive",
+      "nl": "Spelopties: %s aan",
+      "pl": "Opcje gry: włączone %s",
+      "pt-BR": "Opções de partida: %s ativadas",
+      "ru": "Параметры партии: включено %s",
+      "ja": "ゲームオプション: %s 個オン",
+      "ko": "게임 옵션: %s개 켜짐",
+      "zh-CN": "游戏选项：已开启 %s 项",
+      "zh-TW": "遊戲選項：已開啟 %s 項"
     }
   }
 }

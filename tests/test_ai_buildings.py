@@ -75,7 +75,17 @@ check(run('return G.natCtx[100000 + G.autoBuildSeq]') == 34, "the other games re
 run(WORLD)
 run(pd(""))
 run('MONEY[700] = 170000')
-check(run('return M.f.connectIndustry(E, CO1, IND)') is False and run('return #BUILDS') == 0, "its price (40 000) would take it under its floor: not built")
+check(run('return M.f.connectIndustry(E, CO1, IND)') == "wait" and run('return #BUILDS') == 0, "its price (40 000) would take it under its floor: not built, \"wait\"")
+# (roadProject: refused for its price only, the industry is not given up for the session; tried again a minute later)
+run('MONEY[700] = 1000000; DRYRESULT = function() return { errorState = { messages = {}, critical = false }, costs = 900000, '
+    'collisionInfo = { buildingEntities = {}, collisionEntities = {} } } end')
+run('DRY = {}; G.AI.pathFails = { { from = IND, to = IND, score = 1 } }; G.AI.roadChecked = { [10] = false }')
+check(run('return M.f.roadProject(E, CO1, 1000000)') is False and run('return #BUILDS') == 0, "a street of 900 000 with 1 million: refused for its price")
+check(run('return G.AI.roadDone[10]') is None and run('return #G.AI.pathFails') == 1, "its industry not given up, its route kept")
+dry = run('return #DRY')
+check(run('return M.f.roadProject(E, CO1, 1000000)') is False and run('return #DRY') == dry, "no new dry run within the minute")
+run('MONEY[700] = 3000000; G.frames = G.frames + 3700')
+check(run('return M.f.roadProject(E, CO1, 3000000)') is True and run('return #BUILDS') == 1, "a minute later with the money: the street is built")
 run(WORLD)
 run(pd("77"))
 run('ENV.MPFEVER_AIKEEPBUILDINGS = "0"')
@@ -119,6 +129,13 @@ check(m is not None and "ctx2.gatherBuildings = a.keepBuildings ~= true" in m.gr
       "replayNativeConstruction: no building gathered for a build that keeps them")
 check(re.search(r"if replayNativeConstruction\(a\) then return end\n\s*--[^\n]*\n\s*--[^\n]*\n\s*if a\.keepBuildings == true then\n[^\n]*\n\s*replayFailed\(a,", src) is not None,
       "and no other form for it when that replay fails (they all gather the buildings)")
+# (inside it too: when its native command cannot be made, not the two-step replay, which gathers the buildings)
+inner = m.group(0) if m else ""
+i2 = inner.find("trying the two-step replay")
+branch = inner.rfind("if not okk or not cmd then", 0, i2) if i2 >= 0 else -1
+part = inner[branch:i2] if branch >= 0 else ""
+check("if a.keepBuildings == true then" in part and "replayFailed(a," in part and "return" in part and "replayTwoStep(a)" not in part,
+      "replayNativeConstruction's own fallback: no two-step replay for a build that keeps the buildings")
 
 if failures:
     print(f"FAIL: {len(failures)} check(s)")

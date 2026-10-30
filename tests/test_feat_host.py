@@ -280,6 +280,14 @@ G.featOpts = ""
 G.frames = 9000
 G.featGui({ optsText = "goal=1", opts = F.parse("goal=1") })
 check("bridge: all switched off -> f_opts with nothing", #EVENTS == 3 and EVENTS[3].s == "")
+-- (the same options, a savegame played in the other company mode: sent again with this lobby's mode)
+G.featOpts = "goal=1"
+G.frames = 11000
+G.featGui({ optsText = "goal=1", opts = F.parse("goal=1"), optsMode = "shared" })
+check("bridge: the same options in another company mode -> f_opts again", #EVENTS == 4 and EVENTS[4].s == "goal=1" and EVENTS[4].mode == "separate")
+G.frames = 13000
+G.featGui({ optsText = "goal=1", opts = F.parse("goal=1"), optsMode = "separate" })
+check("bridge: not again once the mode is the game's", #EVENTS == 4)
 
 -- G.featRefuse
 G.featSt = st

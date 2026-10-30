@@ -891,6 +891,17 @@ check(runI('return PROWS["Host"] == nil and PROWS["Bob"] ~= nil and PROWS["Carl"
 check(runI('return PROWS["Bob"].primary == "50 %" and PROWS["Carl"].primary == "150 %"') is True,
       "each shows the player's value, else the parameter's")
 check(runI('return MREQ[1]') == "opt handicap.money_gcgpgc=150", "a click asks MPFever.exe for that player's value (its syntax: [a-z_])")
+# (the box beside the picture has a fixed height: only the number of options on there, their list under the picture or in the panel)
+LI.execute(extract(menu, r"^\tlocal function featCount\(fv\)\n.*?^\tend\n", "the lobby's featCount").replace("local function featCount", "function featCount", 1))
+check(runI(r'''
+T = T or function(fr, en) return en end
+local fv = { mode = "separate", offered = F.offered("separate"), map = F.parse(F.canon(SAVED.optsText, "separate")) }
+local n = #F.summary(fv.map, fv.mode, T)
+local none = { mode = "separate", offered = fv.offered, map = {} }
+return n > 0 and featCount(fv) == (T("Options de partie : %s activée(s)", "Game options: %s on"):gsub("%%s", tostring(n))) and featCount(none) == nil
+''') is True, "the lobby's side box: the number of options on, nothing while none is")
+check(re.search(r"if fc then side\[#side \+ 1\] = text\(fc,", menu) is not None and re.search(r"side\[#side \+ 1\] = text\(fs,", menu) is None
+      and "table.insert(below, 1, text(fs," in menu, "their whole list under the picture (the scroll area), not in the side box")
 
 print("integrated: the computer companies")
 ai = read("mpfever_ai.lua")

@@ -1318,6 +1318,8 @@ local function manageLines(E, co, lines, vehicles, money)
 		-- (a count, never nil: a line had none before its first regular look, and the comparisons below stopped every look in debt)
 		A.emptyRuns[l.e] = A.emptyRuns[l.e] or 0
 		l.use, l.bal = use, bal
+		-- (0.6: for the last way out under its floor, see below)
+		l.nVeh, l.lastVeh, l.young, l.protected = n, last, young, protected
 		-- (0.5.14) what the line earns against what its vehicles cost to run, over the same two months: its income (the balance
 		-- plus the running costs it paid), the running costs of one vehicle, and their ratio (1: it pays its vehicles)
 		if fleet then
@@ -1430,13 +1432,35 @@ local function manageLines(E, co, lines, vehicles, money)
 	-- (0.6) under its floor with no other losing line to sell from and no loan to take (it has one, or the game gave none): its
 	-- long-term line's investment ends there, the floor comes first; its trucks are sold as a losing line's from the next look
 	-- (MPFEVER_AISOLVENT=0: in debt)
-	if money < low and not (loanFree and G.frames - (A.loanAsked or -100000) <= 7200) then
+	-- (a loan asked and still not there two looks later, 40 s: none to take. The game gave none: no loan module, no offer, refused.
+	-- Before, the long-term line waited for a loan asked again every 2 minutes and was never ended for the floor)
+	local loanWait = loanFree and G.frames - (A.loanAsked or -100000) < 2400
+	if money < low and not loanWait then
 		for e, lt in pairs(A.lt or {}) do
 			if lt.state == "invest" then
 				ltEnd(A, lt, "money under its floor", nowG, yearMs)
 				L(E, "long-term line " .. e .. " ended: its money is under its floor (" .. math.floor(money) .. " for " .. math.floor(FLOOR) .. ")")
 				return true
 			end
+		end
+	end
+	-- (0.6) the last way out under its floor: no losing line to sell from, no loan to take, no long-term line to end. One vehicle of
+	-- the line earning the least per vehicle, whatever it earns, at each look until it is back above its floor (a young line's only
+	-- when no other line has one). Its months in debt are never counted (mpfever_eco.lua, E.AI_NO_BANKRUPT): it stayed in debt,
+	-- frozen, for the rest of the game. Nothing is bought again under its reserve (bestBuy, mayExpand), so no sale and purchase in
+	-- turn. MPFEVER_AISTUCK=0: never
+	if solvent and losingOnly and money < low and not loanWait and not emptiest and #vehicles > 0 and os.getenv("MPFEVER_AISTUCK") ~= "0" then
+		local pick
+		for _, l in ipairs(lines) do
+			if (l.nVeh or 0) > 0 and l.lastVeh and not l.protected then
+				local per = (l.bal or 0) / l.nVeh
+				local better = not pick or (pick.young and not l.young) or (pick.young == (l.young or false) and per < pick.per)
+				if better then pick = { line = l, per = per, young = l.young or false } end
+			end
+		end
+		if pick then
+			sellVehicle(E, co, pick.line.lastVeh, "under its floor with no losing line and no loan to take, the line earning the least per vehicle " .. pick.line.e, pick.line.e)
+			return true
 		end
 	end
 	-- (0.5.14) money to spare: its oldest loan repaid, if it has one (the simulation decides on its own balance, the same on every
@@ -2668,6 +2692,9 @@ local function connectIndustry(E, co, ind)
 	local keep = keepBuildings()
 	local bits = keep and withoutBuildings(CTX_ROAD) or CTX_ROAD
 	local ctx = context(E, co.ent, bits)
+	-- (0.6: a street refused for its price only, see spendOk: the next pair is tried, and "wait" when none was built, roadProject
+	-- tries the industry again later. Before, the first refusal gave the industry up for the whole session)
+	local tooDear = false
 	for i = 1, math.min(4, #pairsList) do
 		local pr = pairsList[i]
 		local okp, sp = pcall(roadProposal, E, co, pr.en.node, pr.en.p, pr.node, pr.q, pr.c)
@@ -2683,7 +2710,7 @@ local function connectIndustry(E, co, ind)
 				-- (0.6: never under the floor, see spendOk: the dry run's price)
 				local cost = 0
 				pcall(function() cost = tonumber(pd.costs) or 0 end)
-				if not spendOk(E, co, cost, "road to industry " .. ind.e) then return false end
+				if not spendOk(E, co, cost, "road to industry " .. ind.e) then tooDear = true; goto nextPair end
 				local mid = { x = (pr.en.p.x + pr.q.x) / 2, y = (pr.en.p.y + pr.q.y) / 2, z = (pr.en.p.z + pr.q.z) / 2 }
 				L(E, string.format("road to industry %d: %.0f m from node %d to the town node %d", ind.e, pr.d, pr.en.node, pr.node))
 				build(E, co.id, api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, true, true), "road to industry " .. ind.e, bits,
@@ -2694,7 +2721,9 @@ local function connectIndustry(E, co, ind)
 		elseif not okp then
 			L(E, "road to industry " .. ind.e .. ": " .. tostring(sp):sub(1, 200))
 		end
+		::nextPair::
 	end
+	if tooDear then return "wait" end
 	return false
 end
 
@@ -2704,12 +2733,16 @@ local function roadProject(E, co, money)
 	if os.getenv("MPFEVER_AIROADS") == "0" then return false end
 	local A = E.G.AI
 	if not A.pathFails or #A.pathFails == 0 or money < RESERVE + 400000 then return false end
+	-- (0.6: a street refused for its price waits a minute before its industry is tried again, see below)
+	if A.roadWaitAt and E.G.frames < A.roadWaitAt then return false end
 	A.roadChecked = A.roadChecked or {}
 	A.roadDone = A.roadDone or {}
 	table.sort(A.pathFails, function(a, b) return a.score > b.score end)
+	local waits, tried = false, {}
 	for _, pf in ipairs(A.pathFails) do
 		for _, ind in ipairs({ pf.from, pf.to }) do
-			if not A.roadDone[ind.e] then
+			if not A.roadDone[ind.e] and not tried[ind.e] then
+				tried[ind.e] = true
 				if A.roadChecked[ind.e] == nil then
 					local c = nearestTownCentre(E, ind.pos)
 					A.roadChecked[ind.e] = c == nil or roadPathTo(E, ind, c)
@@ -2718,15 +2751,20 @@ local function roadProject(E, co, money)
 				end
 				if A.roadChecked[ind.e] == false then
 					A.roadDone[ind.e] = true
-					if connectIndustry(E, co, ind) then
+					local r = connectIndustry(E, co, ind)
+					if r == true then
 						A.retryInd, A.retryAt = ind.e, E.G.frames + 1800
 						A.roadChecked[ind.e] = nil
 						return true
 					end
+					-- (0.6: refused for its price only, see connectIndustry: not given up, tried again once it has the money)
+					if r == "wait" then A.roadDone[ind.e] = nil; waits = true end
 				end
 			end
 		end
 	end
+	-- (its routes kept while a street waits for the money: the industry is tried again in a minute)
+	if waits then A.roadWaitAt = E.G.frames + 3600; return false end
 	A.pathFails = {}
 	return false
 end
@@ -2802,6 +2840,7 @@ local function ltSync(E, co, lines, vehicles, money)
 	-- (after a load: its oldest line from a raw producer or an industry it feeds, unless its time is up)
 	if not A.ltInit then
 		A.ltInit = true
+		local derive = os.getenv("MPFEVER_AILTLOAD") ~= "0"
 		local any = A.ltPending ~= nil
 		for _, lt in pairs(A.lt) do if lt.state == "invest" then any = true end end
 		if not any then
@@ -2825,10 +2864,46 @@ local function ltSync(E, co, lines, vehicles, money)
 				pcall(function() spent = -(api.engine.util.finance.calculateBalance({ best.l.e }, bt, now, true) or 0) end)
 				pcall(function() prod0 = api.engine.util.stock.getCargoProducedPerYear(best.f.from.stockList, best.f.cargo) or 0 end)
 				local budget = math.max(LT.min, ltBudget(money - (A.loanCash or 0)) or 0)
-				A.lt[best.l.e] = { key = ltKey(best.f), from = best.f.from.e, stockList = best.f.from.stockList, cargo = best.f.cargo, chain = fed[best.f.from.e] == true,
-					born = bt, budget = budget, spent = spent, prod0 = prod0, proofFrom = now, at = now, samples = {}, state = "invest" }
-				L(E, string.format("long-term line %d taken again after a load: %d day(s) old, %d spent of a budget of %d", best.l.e, math.floor((now - bt) / 4000),
-					math.floor(spent), budget))
+				-- (0.6: what ltEnd remembers, the routes given up and the time the next one waits, is not in the savegame. A line whose
+				-- loss since its first truck already reached the budget it would get was given up before the load: not taken again
+				-- with a fresh budget, counted as given up. MPFEVER_AILTLOAD=0: taken again, as before)
+				if derive and spent >= budget then
+					ltEnd(A, { key = ltKey(best.f) }, "given up before the load", now, Y)
+					A.lt[best.l.e] = { key = ltKey(best.f), from = best.f.from.e, state = "ended", why = "given up before the load" }
+					L(E, string.format("long-term line %d not taken again after a load: %d lost since its first truck, its budget would be %d", best.l.e, math.floor(spent), budget))
+				else
+					A.lt[best.l.e] = { key = ltKey(best.f), from = best.f.from.e, stockList = best.f.from.stockList, cargo = best.f.cargo, chain = fed[best.f.from.e] == true,
+						born = bt, budget = budget, spent = spent, prod0 = prod0, proofFrom = now, at = now, samples = {}, state = "invest" }
+					L(E, string.format("long-term line %d taken again after a load: %d day(s) old, %d spent of a budget of %d", best.l.e, math.floor((now - bt) / 4000),
+						math.floor(spent), budget))
+				end
+			end
+			-- (0.6, the same: none in its investment after the load, and a freight line of the company that lost money since its first
+			-- truck, the line given up before the load perhaps: the next long-term line waits LT.cooldownY from the load, not at once)
+			if derive and not A.ltNextAt then
+				local adopted = false
+				for _, lt in pairs(A.lt) do if lt.state == "invest" then adopted = true end end
+				if not adopted then
+					for _, l in ipairs(lines) do
+						local okf, f = pcall(freightOf, E, l)
+						local first
+						for _, v in ipairs(vehicles) do
+							if okf and f and v.line == l.e then
+								pcall(function()
+									local t = api.engine.getComponent(v.e, api.type.ComponentType.TRANSPORT_VEHICLE).transportVehicleConfig.vehicles[1].purchaseTime
+									if type(t) == "number" and t <= now and (not first or t < first) then first = t end
+								end)
+							end
+						end
+						local lost = 0
+						if first then pcall(function() lost = -(api.engine.util.finance.calculateBalance({ l.e }, first, now, true) or 0) end) end
+						if lost > 0 then
+							A.ltNextAt = now + LT.cooldownY * Y
+							L(E, "after a load: freight line " .. l.e .. " lost " .. math.floor(lost) .. " since its first truck, the next long-term line waits")
+							break
+						end
+					end
+				end
 			end
 		end
 	end
@@ -3239,7 +3314,7 @@ M.f = { aiCompany = aiCompany, myStops = myStops, myDepots = myDepots, myLines =
 	bestTruck = bestTruck, bestFreight = bestFreight, freightOf = freightOf, roadPath = roadPath, cargoName = cargoName,
 	bestTownFreight = bestTownFreight, townWants = townWants, townName = townName,
 	-- (0.6)
-	manageLines = manageLines, mayExpand = mayExpand, spendOk = spendOk, ltSync = ltSync, ltProject = ltProject, connectIndustry = connectIndustry,
+	manageLines = manageLines, mayExpand = mayExpand, spendOk = spendOk, ltSync = ltSync, ltProject = ltProject, connectIndustry = connectIndustry, roadProject = roadProject,
 	townFreightProject = townFreightProject, industryProject = industryProject,
 	buildingsHit = buildingsHit, stockTakes = stockTakes, stopReaches = stopReaches, townDropPoint = townDropPoint, townGood = townGood,
 	step = step }

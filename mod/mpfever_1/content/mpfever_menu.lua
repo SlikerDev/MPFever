@@ -651,6 +651,13 @@ local function setup()
 		if #names == 0 then return nil end
 		return T("Options de partie : ", "Game options: ") .. table.concat(names, "  ·  ")
 	end
+	-- (one company per player) the short line beside the picture: how many options are on (the box there has a fixed height, the
+	-- whole list with their parameters overflowed it); nil when none is
+	local function featCount(fv)
+		local n = #FEAT.summary(fv.map, fv.mode, T)
+		if n == 0 then return nil end
+		return (T("Options de partie : %s activée(s)", "Game options: %s on"):gsub("%%s", tostring(n)))
+	end
 
 	-- the colour of the player's company (one company per player): a palette index, kept between sessions in the folder of every
 	-- session (company_color.txt there) and given to this session (company_color.txt in the session folder, read by the
@@ -1088,10 +1095,16 @@ local function setup()
 				side[#side + 1] = gap(1, 12)
 				side[#side + 1] = text(T("Règles de la partie", "Game rules"), "font-scale-title-4", sw)
 				side[#side + 1] = text(summary, "font-scale-body", sw)
-				-- (0.6) the game options on, for every player of the lobby
+				-- (0.6) the game options on, for every player of the lobby: their number beside the picture, their list with their
+				-- parameters at the top of the scroll area under it (in the host's settings panel while it is open)
 				local fv = featView(st)
 				local fs = fv and featSummary(fv)
-				if fs then side[#side + 1] = text(fs, "font-scale-body", sw) end
+				local fc = fv and featCount(fv)
+				if fc then side[#side + 1] = text(fc, "font-scale-body", sw) end
+				if fs and not (isHost and rulesOpen:old()) then
+					table.insert(below, 1, text(fs, "font-scale-body", SIDE_W - 24))
+					table.insert(below, 2, gap(1, 10))
+				end
 				if isHost then
 					side[#side + 1] = gap(1, 6)
 					side[#side + 1] = button(rulesOpen:old() and T("Fermer les réglages", "Close the settings") or T("Réglages de la partie…", "Game settings…"),
@@ -1137,7 +1150,8 @@ local function setup()
 								function(v) request("aimoney", tostring(n) .. ":" .. tostring(v), playerName()) end)
 						end
 					end
-					-- (0.6) the game options of the separate mode
+					-- (0.6) the game options of the separate mode (the list of those on first, see above)
+					if fs then panel[#panel + 1] = gap(1, 10); panel[#panel + 1] = text(fs, "font-scale-body", w) end
 					if fv then featSection(panel, w, fv, playerName, players) end
 					local list = { box(V, panel, nil, { padding = { 10, 12, 10, 12 }, background = { 1, 1, 1, 0.07 }, size = { w, -1 } }), gap(1, 12) }
 					for _, c in ipairs(below) do list[#list + 1] = c end
