@@ -15,6 +15,9 @@ bridge file. A mocked game gives each line its earnings, seats in use and vehicl
   - bestPair, the pairs of towns spread over the companies: a pair another computer company runs or builds scores as the
     share of passengers left (a third, half on Hard), a pair it failed does not count (review fix), its own pair under way
     keeps its score; MPFEVER_AIPAIRSPREAD=0: as before;
+  - in debt: only a line that loses money has a vehicle sold (MPFEVER_AIDEBTSELL=0: the emptiest line's, as before), else a
+    loan is asked, one at most, the lowest monthly payment (MPFEVER_AILOANPICK=0: the first offer); money to spare repays
+    a loan only when there is one;
   - loanBook: count, still owed, monthly payments; M.listOf: a computer company's start money (0 to 10 billion, -1 or none:
     the players');
   - the bridge's ai_loan: at most param.max loans, with param.pick the offer of the lowest monthly payment (the first one
@@ -149,7 +152,12 @@ function look(n, bal, use, money)
   ACTS, BOUGHT = {}, {}
   T.manageLines(E, CO, { { e = 700, groups = { 1, 2 } } }, veh, money or 3000000)
   local t = {}
-  for _, a in ipairs(ACTS) do t[#t + 1] = a.fn .. (a.fn == "makeVehicleSellCmd" and (" " .. tostring(a.args[1][1])) or "") end
+  for _, a in ipairs(ACTS) do
+    local more = ""
+    if a.fn == "makeVehicleSellCmd" then more = " " .. tostring(a.args[1][1]) end
+    if a.fn == "makeScriptingSendEventCmd" then more = " " .. tostring(a.args[3]) .. (a.args[4].pick == 1 and a.args[4].max == 1 and " pick" or "") end
+    t[#t + 1] = a.fn .. more
+  end
   for _, l in ipairs(BOUGHT) do t[#t + 1] = "buy " .. l end
   return table.concat(t, ",")
 end
@@ -173,6 +181,22 @@ end
     check("within two game months of its last change: no decision", got == "||", got)
     got = run("fresh(2); ENV.MPFEVER_AIFLEET = '0'; return look(1, 20000, 0.9)")
     check("MPFEVER_AIFLEET=0: a busy line that earns gets a bus, as before", got == "buy 700", got)
+
+    print("in debt (manageLines)")
+    got = run("fresh(2); return look(2, -5000, 0.5, -100000)")
+    check("a line that loses money: its vehicle sold", got == "makeVehicleSellCmd 802", got)
+    got = run("fresh(2); return look(2, 30000, 0.5, -100000)")
+    check("only lines that earn: none sold, a loan asked (the lowest monthly payment, one at most)", got == "makeScriptingSendEventCmd ai_loan pick", got)
+    got = run("fresh(2); E.G.AI.loanCount = 1; return look(2, 30000, 0.5, -100000)")
+    check("a loan already: no other one", got == "", got)
+    got = run("fresh(2); ENV.MPFEVER_AILOANPICK = '0'; return look(2, 30000, 0.5, -100000)")
+    check("MPFEVER_AILOANPICK=0: the first offer asked, as before", got == "makeScriptingSendEventCmd ai_loan", got)
+    got = run("fresh(2); ENV.MPFEVER_AIDEBTSELL = '0'; return look(2, 30000, 0.5, -100000)")
+    check("MPFEVER_AIDEBTSELL=0: the emptiest line's vehicle sold whatever it earns, as before", got == "makeVehicleSellCmd 802", got)
+    got = run("fresh(2); E.G.AI.loanCount = 1; return look(1, 50000, 0.5, 2000000)")
+    check("money to spare with a loan: its oldest loan repaid", got == "makeScriptingSendEventCmd ai_repay", got)
+    got = run("fresh(2); return look(1, 50000, 0.5, 2000000)")
+    check("money to spare without a loan: no repayment asked", got == "", got)
 
     print("the growth gate (mayExpand)")
     run(r'''
