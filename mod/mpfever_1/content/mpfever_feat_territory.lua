@@ -34,7 +34,7 @@ M.RADII = { 1, 2, 3, 5 }               -- km
 M.YEARS = { 2, 5, 10, 20, 0 }          -- years of protection after the claim; 0 = for good
 M.MONEY = { 50, 75, 100, 125, 150, 200 } -- % of the game's start money
 M.EVERY = 25                           -- steps between two looks of the simulation at the companies (5 s of game time)
-M.FILE = "feat_territory.txt"          -- the window's file (env.write, in the session folder)
+M.NAME = "board"                       -- the window's file: env.write(M.NAME) = feat_territory_board.txt of the session folder
 M.ALPHA = 0.15                         -- the circles' opacity on the ground
 M.TOWNS_MAX = 12                       -- towns offered in the window's claim list (the biggest)
 
@@ -220,6 +220,8 @@ local function anyForeign(st, co)
 	end
 	return false
 end
+-- (the same for the computer companies' module: nothing to look at while no other company's territory protects)
+function M.anyFor(st, co) return anyForeign(st, co) end
 
 -- (a read that never fails: the tool's Proposal is userdata, its fields and lists read with pcall as G.pvPoints does)
 local function get(o, k)
@@ -378,6 +380,35 @@ function M.proposal(param, st, env)
 	return M.refusal(p, st, env, type(env) == "table" and env.myCo or nil)
 end
 
+-- (a log line of the GUI half, the first ones of a kind and then every 100th: the tool's events come at every mouse move)
+M.logN = {}
+local function logSome(env, kind, text)
+	M.logN[kind] = (M.logN[kind] or 0) + 1
+	local n = M.logN[kind]
+	if (n <= 3 or n % 100 == 0) and type(env) == "table" and type(env.log) == "function" then
+		pcall(env.log, "feat territory: " .. text .. (n > 1 and (" [" .. n .. " so far]") or ""))
+	end
+end
+
+-- The options host's hook of the game's interface events (F.guiVeto, the bridge's guiHandleEvent; MPFEVER_FEATVETO=0: never
+-- called): a tool's proposal (builder.proposalCreate) that puts a station, a stop or a depot in another company's territory gets
+-- the reason in its errorMessages, as the game's permits (company.script): the tool shows it in red and does not build. The
+-- proposal stays drawn (skipRender false). nil for anything else (the game's other scripts keep their say).
+function M.guiVeto(id, name, param, st, env)
+	if name ~= "builder.proposalCreate" and name ~= "builder.proposalApply" then return nil end
+	if not on(env, "territory") then return nil end
+	local why = M.proposal(param, st, env)
+	if not why then return nil end
+	if name == "builder.proposalApply" then
+		-- (the game applies a build our answer to its proposal turned down: our errorMessages did not stop the tool, the in-game
+		-- fact to check; its build then goes on as any build, M.allow lets the tools' builds through, see #91)
+		logSome(env, "applied", "WARNING the " .. tostring(id) .. " tool applied a build turned down here (" .. why .. "): the game did not take our errorMessages")
+		return nil
+	end
+	logSome(env, "veto", "the " .. tostring(id) .. " tool's proposal turned down here: " .. why)
+	return { errorMessages = { [why] = true }, skipRender = false }
+end
+
 -- ---------------------------------------------------------------- simulation half
 local function news(s, t, now)
 	s.newsSeq = (s.newsSeq or 0) + 1
@@ -410,12 +441,14 @@ end
 -- each player's company gets its handicap once (a new company too: a new player, a restart after a bankruptcy), from the start
 -- money its join gave it (c.start, 0.5.14) else the registry's; not the savegame's company (company 1) nor a computer company
 local function handicaps(s, reg, env, now)
+	local changed = s.hc == nil
 	s.hc = s.hc or {}
 	for _, c in ipairs(reg.list or {}) do
 		local k = tostring(c.id)
 		if c.id ~= 1 and not c.gone and not isAi(c) and s.hc[k] == nil then
 			local key = playerOf(c)
 			if key then
+				changed = true
 				local pct = M.moneyPct(env, key)
 				local start = num(c.start) or num(reg.start) or 2000000
 				local amount = math.floor(start * (pct - 100) / 100 + 0.5)
@@ -428,22 +461,26 @@ local function handicaps(s, reg, env, now)
 			end
 		end
 	end
+	return changed
 end
 
+-- Every simulation step while an option is on (a look every M.EVERY steps): whether the state changed (the options host saves the
+-- state only then, else the next step reads it as it was: a handicap would be booked again)
 function M.tick(st, env)
 	if #M.pending > 0 then flushPending(env.co or st.co, env) end
 	local onT, onH = on(env, "territory"), on(env, "handicap")
-	if not (onT or onH) or env.mode ~= "separate" then return end
+	if not (onT or onH) or env.mode ~= "separate" then return false end
 	local reg = env.co or st.co
-	if type(reg) ~= "table" or not env.every(M.EVERY) then return end
+	if type(reg) ~= "table" or not env.every(M.EVERY) then return false end
+	local changed = type(st.feat) ~= "table" or type(st.feat[M.ID]) ~= "table"
 	local s = env.state(st)
 	local now = env.gameTime()
 	if onT then
-		if s.t0 == nil then s.t0 = now end
-		s.seen = s.seen or {}
+		if s.t0 == nil then s.t0 = now; changed = true end
+		if s.seen == nil then s.seen = {}; changed = true end
 		for _, c in ipairs(reg.list or {}) do
 			local k = tostring(c.id)
-			if not c.gone and not isAi(c) and s.seen[k] == nil then s.seen[k] = now end
+			if not c.gone and not isAi(c) and s.seen[k] == nil then s.seen[k] = now; changed = true end
 		end
 		-- the protections that end: their time is up, or their company is gone (bankrupt, merged, left empty)
 		for _, k in ipairs(sortedKeys(s.terr)) do
@@ -454,13 +491,15 @@ function M.tick(st, env)
 				if not c or c.gone then why = "gone" elseif t.untilT and now >= t.untilT then why = "time" end
 				if why then
 					t.ended = why
+					changed = true
 					news(s, { k = "end", co = t.co, name = t.name, why = why }, now)
 					env.log("territory: the territory of company " .. t.co .. " (" .. t.name .. ") ends (" .. why .. ")")
 				end
 			end
 		end
 	end
-	if onH then handicaps(s, reg, env, now) end
+	if onH and handicaps(s, reg, env, now) then changed = true end
+	return changed
 end
 
 -- A claim (any member of a company, from the window: f_territory_claim {x, y, name}) or its withdrawal within the claim year
@@ -558,7 +597,7 @@ function M.unzone(key) pcall(function() api.gui.mission.removeZone(key) end) end
 function M.clearZones()
 	for key in pairs(M.drawn) do M.unzone(key); M.drawn[key] = nil end
 end
-local function drawZones(s, st)
+local function drawZones(s, st, env)
 	local want = {}
 	for _, k in ipairs(sortedKeys(s and s.terr)) do
 		local t = s.terr[k]
@@ -568,13 +607,15 @@ local function drawZones(s, st)
 		end
 	end
 	for key in pairs(M.drawn) do
-		if not want[key] then M.unzone(key); M.drawn[key] = nil end
+		if not want[key] then M.unzone(key); M.drawn[key] = nil; logSome(env, "unzone", "circle " .. key .. " taken away") end
 	end
 	for key, z in pairs(want) do
 		local sig = table.concat(z, ",")
 		if M.drawn[key] ~= sig then
 			M.zone(key, z[1], z[2], z[3], M.rgb(z[4]))
 			M.drawn[key] = sig
+			-- (in game: the circle must show on the ground and on the map of every game, in the company's colour)
+			logSome(env, "zone", "circle " .. key .. " drawn at " .. z[1] .. "," .. z[2] .. ", radius " .. z[3] .. " m, colour " .. tostring(z[4]))
 		end
 	end
 end
@@ -718,7 +759,11 @@ function M.fileLines(st, env, onT, onH)
 			L[#L + 1] = "me\tclaim\t" .. monthsLeft(last, now) .. "\t0"
 			-- (the claim list: the biggest towns, read again every 15 s of real time while this company may claim)
 			local rt = (type(env.realTime) == "function" and env.realTime()) or 0
-			if not M.townList or not M.townsAt or rt - M.townsAt > 15 or rt < M.townsAt then M.townList, M.townsAt = M.towns(), rt end
+			if not M.townList or not M.townsAt or rt - M.townsAt > 15 or rt < M.townsAt then
+				M.townList, M.townsAt = M.towns(), rt
+				logSome(env, "towns", #M.townList .. " town(s) found for the claim list" .. (M.townList[1] and (", the biggest " .. M.townList[1].name .. " at "
+					.. math.floor(M.townList[1].x) .. "," .. math.floor(M.townList[1].y)) or ""))
+			end
 			for i, t in ipairs(M.townList) do
 				if i > M.TOWNS_MAX then break end
 				L[#L + 1] = "town\t" .. field(t.e) .. "\t" .. field(t.name) .. "\t" .. (M.canClaim(st, env, co, t.x, t.y) and 1 or 0)
@@ -749,8 +794,8 @@ function M.gui(st, env)
 	if not ((onT or onH) and sep) then return end
 	local s = stateOf(st)
 	tellNews(s, st, env)
-	if onT then drawZones(s, st) end
-	env.write(M.FILE, M.fileLines(st, env, onT, onH))
+	if onT then drawZones(s, st, env) end
+	env.write(M.NAME, M.fileLines(st, env, onT, onH))
 end
 
 -- The window's requests on this game: "claim" (payload: the town's entity, from the claim list or a town's own window) and
@@ -765,10 +810,11 @@ function M.request(kind, payload, st, env)
 		if not town then
 			for _, t in ipairs(M.towns()) do if t.e == e then town = t end end
 		end
-		if not town then env.chat(T("Ville introuvable.", "Town not found.")); return false end
+		if not town then env.chat(T("Ville introuvable.", "Town not found.")); logSome(env, "notown", "claim: town " .. tostring(payload) .. " not found"); return false end
 		local ok, why = M.canClaim(st, env, env.myCo, town.x, town.y)
-		if not ok then env.chat(why); return false end
+		if not ok then env.chat(why); logSome(env, "noclaim", "claim of " .. town.name .. " not sent: " .. tostring(why)); return false end
 		env.send("f_territory_claim", { x = math.floor(town.x + 0.5), y = math.floor(town.y + 0.5), name = cleanName(town.name) })
+		logSome(env, "claim", "claim of " .. town.name .. " (town " .. tostring(town.e) .. " at " .. math.floor(town.x + 0.5) .. "," .. math.floor(town.y + 0.5) .. ") sent for company " .. tostring(env.myCo))
 		return true
 	elseif kind == "drop" then
 		local s = stateOf(st)
@@ -844,11 +890,12 @@ end
 -- The tab, drawn with the options host's widgets: u.text(s), u.muted(s) (else u.text), u.section(s) (else u.text), u.button(label,
 -- fn), u.row(list) (else the text and the button one under the other). Returns the list of widgets, top to bottom.
 function M.ui(u)
-	local items = M.uiModel(u.read(M.FILE) or {}, u.T)
+	local items = M.uiModel(u.read(M.NAME) or {}, u.T)
 	local out = {}
 	local text = u.text
 	local muted = u.muted or text
-	local section = u.section or text
+	-- (the options host's window gives u.title for a section's title)
+	local section = u.title or u.section or text
 	for _, it in ipairs(items) do
 		if it.kind == "title" then out[#out + 1] = section(it.text)
 		elseif it.kind == "muted" then out[#out + 1] = muted(it.text)

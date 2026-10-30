@@ -125,9 +125,39 @@ function F.encode(map)
 	return table.concat(out, ";")
 end
 
+-- (0.6) A parameter declared perPlayer = true (the territory module's handicaps) has one value per player besides its own: the key
+-- "id.<param>_<player>", the player's key in the companies registry (its name in lower case) written with the letters a to p, two
+-- per byte (the options' syntax takes [a-z_] only, here and in MPFever.exe). A key of more than 30 bytes has no value of its own
+-- (MPFever.exe takes a request of 80 characters at most). A player's value is kept even when it is the default: it differs from
+-- the parameter's own value then.
+F.PLAYER_KEY_MAX = 30
+function F.playerPid(pid, key)
+	key = tostring(key or "")
+	if key == "" or #key > F.PLAYER_KEY_MAX then return nil end
+	return tostring(pid) .. "_" .. key:gsub(".", function(c)
+		local b = c:byte()
+		return string.char(97 + math.floor(b / 16), 97 + b % 16)
+	end)
+end
+-- the parameter and the player's key of a player's parameter id ("money_gcgpgc" -> "money", "bob"), nil when it is none
+function F.playerOf(pid)
+	local base, enc = tostring(pid or ""):match("^([a-z_]-)_([a-p]+)$")
+	if not base or base == "" or #enc % 2 ~= 0 then return nil end
+	local key = enc:gsub("..", function(two) return string.char((two:byte(1) - 97) * 16 + two:byte(2) - 97) end)
+	return base, key
+end
+-- the declared parameter of a player's parameter id of an option (perPlayer), nil when it is none
+local function playerParam(ent, pid)
+	local base, key = F.playerOf(pid)
+	local p = base and ent.params[base]
+	if p and p.perPlayer == true then return p, key end
+	return nil
+end
+
 -- The canonical form of an options string for a company mode (nil: any mode): only the options a module declares, that are on
--- ("1") and allowed in that mode, and their parameters with a declared value other than the default. Every game computes the same
--- from the same text: the host's game compares it with the game's (st.optsText), every game keeps it when f_opts comes.
+-- ("1") and allowed in that mode, and their parameters with a declared value other than the default (a player's value of a
+-- perPlayer parameter: any declared value). Every game computes the same from the same text: the host's game compares it with
+-- the game's (st.optsText), every game keeps it when f_opts comes.
 function F.canon(s, mode)
 	F.load()
 	local map = F.parse(s)
@@ -143,6 +173,9 @@ function F.canon(s, mode)
 				local p = ent.params[pid]
 				if p and v ~= tostring(p.default) then
 					for _, x in ipairs(p.values) do if tostring(x) == v then out[key] = v end end
+				elseif not p then
+					p = playerParam(ent, pid)
+					if p then for _, x in ipairs(p.values) do if tostring(x) == v then out[key] = v end end end
 				end
 			end
 		end
@@ -155,10 +188,22 @@ function F.on(map, id)
 	return type(map) == "table" and map[id] == "1"
 end
 
--- an option's parameter, as the module declares its values (a number stays a number); its default when unset or unknown
+-- an option's parameter, as the module declares its values (a number stays a number); its default when unset or unknown. A
+-- player's value of a perPlayer parameter: pid "<param>.<player's key>", nil when that player has none (the module then takes
+-- the parameter's own value)
 function F.param(map, id, pid)
 	F.load()
 	local ent = F.optIndex[id]
+	if ent and type(pid) == "string" and pid:find(".", 1, true) then
+		local base, key = pid:match("^([a-z_]+)%.(.+)$")
+		local p = base and ent.params[base]
+		local ppid = p and p.perPlayer == true and F.playerPid(base, key)
+		local v = ppid and type(map) == "table" and map[id .. "." .. ppid] or nil
+		if v ~= nil then
+			for _, x in ipairs(p.values) do if tostring(x) == v then return x end end
+		end
+		return nil
+	end
 	local p = ent and ent.params[pid]
 	if not p then return nil end
 	local v = type(map) == "table" and map[id .. "." .. pid] or nil
@@ -237,6 +282,20 @@ function F.summary(map, mode, T)
 			local ps = {}
 			for _, p in ipairs(e.params) do
 				ps[#ps + 1] = F.text(p.label or p.id, T) .. F.text({ " : ", ": " }, T) .. F.showValue(p, F.param(map, e.opt.id, p.id), T)
+				-- (a perPlayer parameter: each player's own value too, "Label (name): value")
+				if p.perPlayer == true then
+					local keys = {}
+					for k in pairs(map or {}) do
+						local pid = k:match("^" .. e.opt.id .. "%.([a-z_]+)$")
+						local base, key = F.playerOf(pid)
+						if base == p.id then keys[#keys + 1] = key end
+					end
+					table.sort(keys)
+					for _, key in ipairs(keys) do
+						ps[#ps + 1] = F.text(p.label or p.id, T) .. " (" .. key .. ")" .. F.text({ " : ", ": " }, T)
+							.. F.showValue(p, F.param(map, e.opt.id, p.id .. "." .. key), T)
+					end
+				end
 			end
 			out[#out + 1] = { title = F.text(e.opt.title or e.opt.id, T), params = ps, id = e.opt.id }
 		end
@@ -292,6 +351,8 @@ local function simEnv(M, st, B)
 	end
 	e._st, e._B = st, B
 	e.STEP, e.R, e.CO = B.STEP, B.R, B.CO
+	-- (0.6) the texts' T(fr, en) of the bridge, when it gives one (a module's logs and messages; never in the state)
+	e.T = B.T
 	e.mode = F.simMode(st)
 	e.co = (type(st.co) == "table" and st.co.mode == "separate") and st.co or nil
 	return e
@@ -436,9 +497,20 @@ local function guiEnv(M, st, B)
 	e._st, e._B = st, B
 	e.isHost, e.me, e.myCo, e.mode = B.isHost, B.me, B.myCo, B.mode
 	e.R, e.CO = B.R, B.CO
+	-- (0.6) the texts in this player's language: the bridge's C.T when it gives it
+	e.T = B.T
 	return e
 end
 F.guiEnv = guiEnv
+
+-- (0.6) A module of this game while one of its options is on, with its env of the interface half: M, env; nil else. For the code
+-- of this game that asks a module (the computer companies ask the territories, see mpfever_ai.lua).
+function F.moduleOn(modId, st, B)
+	F.load(B and B.log)
+	local M = F.byId[tostring(modId)]
+	if not (M and type(st) == "table" and F.modOn(st.opts, M)) then return nil end
+	return M, guiEnv(M, st, B)
+end
 
 -- every module's gui while its options are on, about once a second (now: the caller's clock in seconds)
 function F.gui(st, B, now)
@@ -474,6 +546,26 @@ function F.allow(a, st, B)
 		end
 	end
 	return true
+end
+
+-- (0.6) some module on answers the game's interface events (M.guiVeto)
+function F.wantsVeto(text)
+	for _, M in ipairs(F.active(text)) do if type(M.guiVeto) == "function" then return true end end
+	return false
+end
+
+-- The game's interface events of this player (the bridge's guiHandleEvent: the tools' builder.proposalCreate...), to the modules
+-- on with M.guiVeto(id, name, param, st, env): the first answer that is a table is the bridge's answer to the game, as the game's
+-- own scripts answer (company.script: { errorMessages = { [text] = true }, skipRender }: the tool shows the text in red and does
+-- not build). nil: no module turns it down. A module that fails turns nothing down (logged).
+function F.guiVeto(id, name, param, st, B)
+	for _, M in ipairs(F.active(st.optsText)) do
+		if type(M.guiVeto) == "function" then
+			local ok, r = F.call("guiVeto", M, M.guiVeto, id, name, param, st, guiEnv(M, st, B))
+			if ok and type(r) == "table" then return r, M end
+		end
+	end
+	return nil
 end
 
 -- ---------------------------------------------------------------- the MPFever window
