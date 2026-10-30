@@ -23,6 +23,8 @@ it is stable enough.
   [x] Players on different Windows compute alike: Windows' mathematical
       functions give other last digits from one Windows build to the other; every game now
       computes them with MPFever's own (0.5.1)
+  [x] Players whose games are in different languages: the host's names for new stations, lines and vehicles (0.5.14)
+  [x] Vehicles queuing on a road kept in the same order on every game (0.5.14)
   [ ] The towns' drift between two PCs (a resynchronisation every 5 to 10 minutes): cause still searched
   [ ] Tests and fixes for 3 to 8 players
   [ ] Feedback from the first testers
@@ -33,6 +35,8 @@ it is stable enough.
   [x] Player list and sync state inside the game, from the pause menu (0.3.4)
   [x] Chat inside the game interface (0.3.5)
   [ ] Settings for the host (who may build, bulldoze, spend money)
+  [x] Game rules chosen by the host and kept in the savegame: start money, sharing rules on or off, bankruptcy (0.5.14)
+  [x] Signals on the map ("Here", "Watch out", "Build here") seen by every player (0.5.14)
   [x] Personal mods (interface only) that every player may have or not, missing mods installed from the game's Mod Hub,
       the host's local mods sent from its PC (0.5.0)
   [x] What the others are building shown on the ground before their click (0.5.0)
@@ -61,6 +65,9 @@ it is stable enough.
   [x] Freight by truck between industries and to the towns, rounds (0.5.13)
   [ ] Streets to the industries no truck reaches (tried since 0.5.13, refused by the game so far: they need a real route)
   [x] A level for each one (Easy, Normal, Hard), and what they do shown to every player (0.5.13)
+  [x] They stay solvent and grow: vehicles fitted to what each line earns, careful growth, lines between towns first,
+      one cheap loan at a time, their own start money (0.5.14)
+  [ ] Freight that pays off in the long run (an industry grows when its cargo is carried)
   [ ] Trains (tracks, stations, signals, depots) and warehouses
   [ ] Ships and planes
   [ ] Computer companies on a dedicated server
