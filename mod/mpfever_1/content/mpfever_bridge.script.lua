@@ -15658,6 +15658,74 @@ H.pingtest = function(from, p)
 	end }
 end
 
+-- (0.6) Competition scenario (MPFEVER_SCENARIO=markettest, one company per player with two companies at least): the host asks
+-- its MPFever.exe for the game option "market" (the "opt" request of the window's Game tab), every game applies it (f_opts),
+-- the host's game measures the market shares and sends them (f_market_snap, mpfever_feat_market.lua); each game says what it
+-- applied (the month, its towns, industries and alerts: compare the two games' lines) and how many lines its window file has,
+-- then shows the window's Competition tab (ui_tab_req.txt, as wintabs). 90 s after its part the host asks for the option off
+-- again (the test profile's game options as before). Nothing of it runs without the scenario.
+H.markettest = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local t0 = G.frames
+	local function say(line) AUTO.results[#AUTO.results + 1] = line; log("AUTOTEST markettest: " .. line) end
+	if G.cmode ~= "separate" then say("skipped: one company per player only"); return autoFinish() end
+	local function opt(arg)
+		local f = C.IO.open(C.DIR .. BS .. "menu_req.txt", "wb")
+		if f then f:write(tostring(os.time()) .. ".mkt" .. G.frames .. TAB .. "opt" .. TAB .. arg .. TAB .. tostring(C.NAME or "") .. TAB .. NL); f:close() end
+		log("AUTOTEST markettest: opt " .. arg .. " asked to MPFever.exe")
+	end
+	if C.ROLE == "host" then opt("market=1") end
+	local stage, tabSeq = "option", nil
+	local function poll()
+		local st = G.featSt or {}
+		local S = type(st.feat) == "table" and st.feat.market or nil
+		local secs = math.floor((G.frames - t0) / 60)
+		if stage == "option" then
+			if type(st.opts) == "table" and st.opts.market == "1" then
+				say("option on in the game after " .. secs .. " s (" .. tostring(st.optsText) .. ")")
+				stage = "measure"
+			elseif secs > 60 then
+				say("option NOT on after 60 s (the game has " .. tostring(st.optsText) .. ")")
+				return autoFinish()
+			end
+		end
+		if stage == "measure" then
+			if type(S) == "table" and S.month ~= nil then
+				local nco = 0
+				for _, t in ipairs(type(S.towns) == "table" and S.towns or {}) do nco = nco + #(t.cos or {}) end
+				say("measure of month " .. tostring(S.month) .. " applied after " .. secs .. " s: " .. #(S.towns or {}) .. " town(s), " .. nco
+					.. " company share(s), " .. #(S.ind or {}) .. " industry(ies), alert number " .. tostring(S.seq))
+				local n = 0
+				local f = C.IO.open(C.DIR .. BS .. "feat_market_shares.txt", "rb")
+				if f then for _ in (f:read("*a") or ""):gmatch("[^" .. NL .. "]+") do n = n + 1 end; f:close() end
+				say("window file feat_market_shares.txt: " .. n .. " line(s)")
+				tabSeq = tostring(900 + (G.frames % 90))
+				local q = C.IO.open(C.DIR .. BS .. "ui_tab_req.txt", "wb")
+				if q then q:write("f_market" .. TAB .. tabSeq .. NL); q:close() end
+				stage, t0 = "tab", G.frames
+			elseif secs > 120 then
+				say("NO measure applied after 120 s (two companies at least? see 'feat market:' in mod.log)")
+				return autoFinish()
+			end
+		elseif stage == "tab" then
+			if G.frames - t0 < 240 then G.waits[#G.waits + 1] = { at = G.frames + 60, fn = poll }; return end
+			local s = ""
+			local fr = C.IO.open(C.DIR .. BS .. "ui_tab_shown.txt", "rb")
+			if fr then s = fr:read("*a") or ""; fr:close() end
+			local seq, asked, shown, result, rows = s:match("^(%d+)" .. TAB .. "([^" .. TAB .. "]*)" .. TAB .. "([^" .. TAB .. "]*)" .. TAB .. "([^" .. TAB .. "]*)" .. TAB .. "(%d+)")
+			if seq ~= tabSeq then say("Competition tab NOT DRAWN (no answer from the interface)")
+			else say("Competition tab drawn as " .. tostring(shown) .. ", " .. tostring(result) .. ", " .. tostring(rows) .. " rows") end
+			if C.ROLE == "host" then G.waits[#G.waits + 1] = { at = G.frames + 90 * 60, fn = function() opt("market=0") end } end
+			return autoFinish()
+		end
+		G.waits[#G.waits + 1] = { at = G.frames + 60, fn = poll }
+	end
+	G.waits[#G.waits + 1] = { at = G.frames + 60, fn = poll }
+end
+
 G.pingTick = function()
 	for key, s in pairs(G.pings) do
 		if G.frames > s.till or G.frames < s.till - 2000 then
