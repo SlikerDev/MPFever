@@ -20,21 +20,27 @@
 -- goal from them alone (M.event): the winner is the same everywhere. Nothing here moves money or changes the world.
 --
 -- Events (stamped by the options host, applied by every game at the same step; refused unless the host sent them):
---   f_stats_sample {mi, rows}   the figures of game month mi: "id:b,d,vv;..." (money, loans, the vehicles' resale value)
+--   f_stats_sample {mi, rows, y, mo}  the figures of game month mi: "id:b,d,vv;..." (money, loans, the vehicles' resale value),
+--                               and the calendar's year and month at that month's start as the host's game reads them (the
+--                               calendar may run slower than the game months: the host's word, the same on every game)
 --   f_stats_cancel {seq}        the host cancels goal number seq
 --
 -- State (st.feat.stats, saved with the game, plain data only: the whole state is copied at every state:get(), issue #82, so one
 -- month of figures is ONE string):
 --   v        the format (1)
---   due      the game month (env.month()) whose figures are wanted, set at the start of every game month
+--   due      the game month (env.month(): the game time over a month's duration) whose figures are wanted, set at the start
+--            of every game month; dueAt its game time (the host reads the calendar's date of it)
 --   last     the last game month measured
 --   m        the last M.RING months' figures, "mi|year|month|rows", oldest first (the graph over 2 years)
 --   y        one entry per game year, its first figures (the 1st of January, or the start of the statistics): "year|mi|rows"
---   goal     { seq, crit, want, target, years, ai, key, startM, endM, state = "run" | "won" | "ended" | "cancelled", how,
---              winner, endAt, endKey, final = "id:score[:ai];...", names = "id=name|..." } (target: dollars, or tenders)
+--   goal     { seq, crit, want, target, years, ai, key, startM, endM, endYM, state = "run" | "won" | "ended" | "cancelled",
+--              how, winner, endAt, endKey, final = "id:score[:ai];...", names = "id=name|..." } (target: dollars, or tenders;
+--              endYM: the calendar's year * 12 + month - 1 the goal ends at, from its first figures with the host's date; endM,
+--              in game months, when no date came)
 --   goalOff  set when the goal option is switched off after a goal: the next goal starts when it is on again
 --
--- The window's file (M.FILE, written on every game by M.gui with env.write, read by M.ui): see M.fileLines.
+-- The window's file (feat_stats_<M.FILE>.txt of the session folder, written on every game by M.gui with env.write, read by
+-- M.ui with u.read): see M.fileLines.
 
 local M = {}
 M.ID = "stats"
@@ -44,7 +50,7 @@ M.TARGETS = { 0, 10, 25, 50, 100, 250, 500 }   -- millions of the value or the m
 M.WINS = { 0, 3, 5, 10, 20 }                     -- tenders won (0: none, the most at the end wins)
 M.YEARS = { 5, 10, 20, 30, 50 }                  -- the goal's length in game years (A1)
 M.RING = 24                                      -- months of figures kept for the graph over 2 years
-M.FILE = "feat_stats.txt"
+M.FILE = "main"
 M.SETTLE = 5        -- seconds a company's player entity must be known before the host reads its account (see M.measure)
 M.WAIT_MAX = 20     -- seconds the host waits for the companies not settled yet before it sends the month without them
 M.RESEND = 10       -- seconds before the host sends a month again that no game applied (refused during a resynchronisation)
@@ -215,21 +221,36 @@ function M.rules(env)
 end
 
 -- ---------------------------------------------------------------- what the integration may replace
--- The calendar of a game month index. The contract's env.month() is year * 12 + month with the month 1..12; the year and month
--- are computed here, in the simulation, from the index alone (the same on every game). Replace it if env.month() changes.
-function M.calendar(mi)
+-- The calendar's year and month of game month `mi`: those the host's figures came with (param.y, param.mo: the host's game read
+-- the calendar's date at the month's start, see M.hostDate), else counted from the index alone (env.month() is the game time
+-- over a month's duration, from 0: "year" mi // 12, month mi % 12 + 1). The third value: whether the date is the host's.
+-- Either way the same on every game (the event's figures, or the index).
+function M.calendar(mi, param)
 	mi = math.floor(tonumber(mi) or 0)
-	return math.floor((mi - 1) / 12), (mi - 1) % 12 + 1
+	local y = type(param) == "table" and tonumber(param.y) or nil
+	local mo = type(param) == "table" and tonumber(param.mo) or nil
+	if y and mo and y == math.floor(y) and mo == math.floor(mo) and mo >= 1 and mo <= 12 and y > -100000 and y < 100000 then
+		return y, mo, true
+	end
+	return math.floor(mi / 12), mi % 12 + 1, false
 end
 
--- whether the tenders can count (B7): their option on, or their state present (st.feat.tenders, note 02)
+-- whether the tenders count (B7): their option on (the same on every game, st.opts)
 function M.tendersOn(st, env)
-	return on(env, "tenders") or (type(st) == "table" and type(st.feat) == "table" and type(st.feat.tenders) == "table")
+	return on(env, "tenders")
 end
 
--- the tenders company `id` won, read from the tenders module's state on every game (simulation data, the same everywhere):
--- its `wins` table ({ ["<id>"] = n }, the shape to prefer), else its `done` list ({ status = "won", winner = id }...)
-function M.tenderWins(st, id)
+-- the tenders company `id` won: the tenders module's own count (mpfever_feat_tenders.lua's M.wins, reached through the options
+-- host, env.module) while both are on; else read from its state (simulation data, the same everywhere): its `wins` table
+-- ({ ["<id>"] = n }), else its `done` list ({ status = "won", winner = id }...)
+function M.tenderWins(st, id, env)
+	if type(env) == "table" and type(env.module) == "function" and on(env, "tenders") then
+		local okM, TM = pcall(env.module, "tenders")
+		if okM and type(TM) == "table" and type(TM.wins) == "function" then
+			local ok, n = pcall(TM.wins, st, id)
+			if ok and tonumber(n) then return math.max(0, math.floor(tonumber(n))) end
+		end
+	end
 	local t = type(st) == "table" and type(st.feat) == "table" and st.feat.tenders or nil
 	if type(t) ~= "table" then return 0 end
 	if type(t.wins) == "table" then
@@ -343,7 +364,7 @@ function M.standings(st, s, env, crit)
 	for _, c in ipairs(M.simCompanies(st, env)) do
 		if not c.gone then
 			local score = nil
-			if crit == "tenders" then score = M.tenderWins(st, c.id)
+			if crit == "tenders" then score = M.tenderWins(st, c.id, env)
 			else
 				local r = M.latestRow(s, c.id)
 				if r then score = crit == "money" and M.money(r) or M.value(r) end
@@ -366,7 +387,7 @@ local function fromHost(param, env)
 	return type(origin) == "string" and origin ~= "" and not origin:find("#", 1, true)
 end
 
-local function log(env, text) if type(env) == "table" and type(env.log) == "function" then pcall(env.log, "stats: " .. text) end end
+local function log(env, text) if type(env) == "table" and type(env.log) == "function" then pcall(env.log, "feat stats: " .. text) end end
 
 -- The goal's end: its state, the winner (nil: none), how, and the final ranking frozen with the companies' names of the moment.
 -- endKey: the options' rules at the end; the next goal starts only when the host changes them AFTER the end (a change refused
@@ -416,9 +437,16 @@ end
 
 -- the goal's check after the figures of month `mi`: the first company that reaches the target wins (the best one when several
 -- do, then the smaller number); when the length is over, the best one wins. Computer companies win only when the rules let them.
-function M.check(st, s, env, mi)
+-- ym: the calendar's year * 12 + month - 1 of the figures when the host's date came with them (nil else). The length is counted in
+-- the calendar's years (A1) once the goal's first figures came with a date (endYM), else in game months (endM).
+function M.check(st, s, env, mi, ym)
 	local g = s.goal
 	if not (g and g.state == "run") or not M.goalOn(st, env) then return end
+	if ym and not g.endYM and mi >= (g.startM or mi) then
+		g.endYM = ym + math.max(0, (g.endM or mi) - mi)
+		log(env, "goal " .. g.seq .. " ends at the calendar's " .. math.floor(g.endYM / 12) .. "/" .. (g.endYM % 12 + 1)
+			.. " (figures of month " .. mi .. " dated " .. math.floor(ym / 12) .. "/" .. (ym % 12 + 1) .. ")")
+	end
 	local list = M.standings(st, s, env, g.crit)
 	local function eligible(c) return g.ai or not c.ai end
 	if (g.target or 0) > 0 then
@@ -430,7 +458,10 @@ function M.check(st, s, env, mi)
 			end
 		end
 	end
-	if mi >= g.endM then
+	local over
+	-- (a goal dated by the calendar ends by the calendar only: figures that came without a date do not end it)
+	if g.endYM then over = ym ~= nil and ym >= g.endYM else over = mi >= (g.endM or mi) end
+	if over then
 		for _, c in ipairs(list) do
 			if eligible(c) then
 				endGoal(g, "won", "time", c.id, mi, list, env)
@@ -456,7 +487,21 @@ function M.month(st, env)
 	s.m = s.m or {}
 	s.y = s.y or {}
 	local mi = tonumber(type(env.month) == "function" and env.month() or nil)
-	if mi and (not s.due or mi > s.due) then s.due = math.floor(mi) end
+	if mi then
+		mi = math.floor(mi)
+		-- (months skipped: this module was off meanwhile, its three options off, so the options host called nothing here: a goal
+		-- that ran then was switched off with them, as if this had seen it)
+		local g = s.goal
+		if s.due and mi > s.due + 1 and type(g) == "table" and g.state == "run" then
+			endGoal(g, "cancelled", "off", nil, s.last or s.due, nil, nil)
+			s.goalOff = true
+			log(env, "goal " .. g.seq .. " cancelled: the options were off from month " .. (s.due + 1) .. " to " .. (mi - 1))
+		end
+		if not s.due or mi > s.due then
+			s.due = mi
+			s.dueAt = tonumber(type(env.gameTime) == "function" and env.gameTime() or nil)
+		end
+	end
 	M.goalTurn(st, s, env)
 end
 
@@ -476,13 +521,15 @@ function M.event(st, name, param, env)
 		local rows = M.parseRows(param.rows)
 		if not rows then return refuse("figures") end
 		local text = M.rowsText(rows)
-		local year, month = M.calendar(mi)
+		local year, month, dated = M.calendar(mi, param)
 		s.last = mi
 		s.m[#s.m + 1] = num(mi) .. "|" .. num(year) .. "|" .. num(month) .. "|" .. text
 		while #s.m > M.RING do table.remove(s.m, 1) end
 		local lastYear = #s.y > 0 and splitYear(s.y[#s.y]) or nil
 		if not lastYear or year > lastYear then s.y[#s.y + 1] = num(year) .. "|" .. num(mi) .. "|" .. text end
-		M.check(st, s, env, mi)
+		-- (once a game month on every game: what the in-game test compares between the games' mod.log)
+		log(env, "month " .. mi .. " (" .. year .. "/" .. month .. (dated and "" or ", no date from the host") .. ") taken: " .. text)
+		M.check(st, s, env, mi, dated and (year * 12 + month - 1) or nil)
 	elseif name == "f_stats_cancel" then
 		local g = s.goal
 		if not (g and g.state == "run") then return refuse("no goal running") end
@@ -572,9 +619,11 @@ end
 -- entity is read only once it has been known for M.SETTLE seconds and still exists (as the window's U.companyList: the engine
 -- asserts, and the game closes, when the interface reads the account of a player entity the simulation is still adding, or of
 -- one gone with the previous game). Money: the bank balance; loans: the account's loan (what is left to repay of the loans
--- taken: the game books a loan and its repayments in that counter, loan_util). Replace it if a probe tells otherwise.
+-- taken: the game's loan script books a loan and its repayments as LOAN entries of the company's journal, loan_util.makeLoan,
+-- and the bridge books those of the other companies the same way; its sign is not known for sure: its size is taken). Each
+-- company's first reading of a session is logged with the registry's own count of its loans to compare (st: the GUI's state).
 -- With companies not settled yet, nothing is read (nil) unless `force`: the month then goes without them.
-function M.measure(cos, env, now, force)
+function M.measure(cos, env, now, force, st)
 	M.g.seen = M.g.seen or {}
 	local ready, unsettled = {}, 0
 	for _, c in ipairs(cos) do
@@ -599,15 +648,51 @@ function M.measure(cos, env, now, force)
 			local acc = api.engine.getComponent(c.ent, api.type.ComponentType.ACCOUNT)
 			if acc then
 				if not tonumber(b) then b = acc.balance end
-				d = math.max(0, tonumber(acc.loan) or 0)
+				d = math.abs(tonumber(acc.loan) or 0)
 			end
 		end)
 		if tonumber(b) then
 			vv = vv or M.vehicleValues()
 			rows[#rows + 1] = { id = c.id, b = clamp(tonumber(b)), d = clamp(d), vv = clamp(vv[c.ent] or 0) }
+			M.g.logged = M.g.logged or {}
+			if not M.g.logged[c.ent] then
+				M.g.logged[c.ent] = true
+				local left = M.registryLoanLeft(st, c.id)
+				log(env, "company " .. c.id .. " (player entity " .. c.ent .. ") read: balance " .. num(b) .. ", ACCOUNT.loan " .. num(d)
+					.. (left and (", loans left in the registry " .. num(left)) or "") .. ", vehicles' resale value " .. num(vv[c.ent] or 0))
+			end
 		end
 	end
 	return rows, unsettled
+end
+
+-- What the companies registry (the bridge's loans of the companies other than the savegame's, st.co.loan) says is left to repay
+-- of a company's loans, as the computer companies count it (mpfever_ai.lua's loanBook); nil when the registry has none for it.
+-- For the log only: the figures sent are the account's.
+function M.registryLoanLeft(st, id)
+	local lt = type(st) == "table" and type(st.co) == "table" and type(st.co.loan) == "table" and st.co.loan[id] or nil
+	if type(lt) ~= "table" then return nil end
+	local month = nil
+	pcall(function() month = api.util.getDefaultMonthDuration() end)
+	month = tonumber(month)
+	if not (month and month > 0) then return nil end
+	local owe = 0
+	for _, l in ipairs(type(lt.obtainedLoans) == "table" and lt.obtainedLoans or {}) do
+		local months = math.max(1, math.floor((tonumber(l.duration) or 0) / month + 0.5))
+		owe = owe + math.max(0, (tonumber(l.amount) or 0) - (tonumber(l.timesPaid) or 0) * (tonumber(l.amount) or 0) / months)
+	end
+	return owe
+end
+
+-- The calendar's date at the start of the month wanted (its game time, s.dueAt, set by the simulation): y, mo as the host's
+-- game reads them (env.date, the engine's calendar), nil when it cannot be read (the games then count the month's index alone)
+function M.hostDate(s, env)
+	if not (type(env) == "table" and type(env.date) == "function") then return nil end
+	local ok, d = pcall(env.date, tonumber(s.dueAt))
+	if not (ok and type(d) == "table") then return nil end
+	local y, mo = tonumber(d.year), tonumber(d.month)
+	if not (y and mo) then return nil end
+	return math.floor(y), math.floor(mo)
 end
 
 -- the host's figures of the month wanted (s.due), sent once and again after M.RESEND seconds until a game applied them
@@ -616,10 +701,14 @@ function M.hostSample(st, s, env, now)
 	if not (s and s.due) or (s.last and s.last >= s.due) then G.waitFor = nil; return end
 	if G.sentFor == s.due and now - (G.sentAt or 0) < M.RESEND then return end
 	if G.waitFor ~= s.due then G.waitFor, G.waitSince = s.due, now end
-	local rows = M.measure(M.guiCompanies(st, env), env, now, now - G.waitSince >= M.WAIT_MAX)
+	local rows, unsettled = M.measure(M.guiCompanies(st, env), env, now, now - G.waitSince >= M.WAIT_MAX, st)
 	if not rows then return end
 	if type(env.send) ~= "function" then return end
-	env.send("f_stats_sample", { mi = s.due, rows = M.rowsText(rows) })
+	local p = { mi = s.due, rows = M.rowsText(rows) }
+	p.y, p.mo = M.hostDate(s, env)
+	env.send("f_stats_sample", p)
+	log(env, "month " .. s.due .. " measured and sent (" .. #rows .. " companies" .. ((unsettled or 0) > 0 and (", " .. unsettled .. " not readable yet") or "")
+		.. (G.sentFor == s.due and ", again" or "") .. ", calendar " .. tostring(p.y) .. "/" .. tostring(p.mo) .. " at game time " .. tostring(s.dueAt) .. ")")
 	G.sentFor, G.sentAt = s.due, now
 end
 
@@ -654,7 +743,7 @@ end
 M.targetText = targetText
 
 -- the lines of the year in review of entry k of s.y (k >= 2): the year that ended, every company of its figures (A6) by value
-function M.reviewLines(st, s, k, T, cos)
+function M.reviewLines(st, s, k, T, cos, env)
 	local y, _, text = splitYear(s.y[k])
 	local _, _, before = splitYear(s.y[k - 1])
 	local rows = M.parseRows(text) or {}
@@ -665,7 +754,7 @@ function M.reviewLines(st, s, k, T, cos)
 		if va ~= vb then return va > vb end
 		return a.id < b.id
 	end)
-	local tenders = M.tendersOn(st, nil)
+	local tenders = M.tendersOn(st, env)
 	local out = { tr(T, TX.review, (y or 0) - 1) }
 	for i, r in ipairs(rows) do
 		local co = nil
@@ -673,7 +762,7 @@ function M.reviewLines(st, s, k, T, cos)
 		local delta = prev[r.id] and M.fmt(M.value(r) - M.value(prev[r.id]), true) or tr(T, TX.newCo)
 		local line = tr(T, TX.reviewLine, i, nameOf(cos, r.id, T) .. ((co and co.ai) and (" " .. tr(T, TX.aiTag)) or ""),
 			M.fmt(M.value(r)), delta, M.fmt(M.money(r)), M.fmt(r.vv))
-		if tenders then line = line .. tr(T, TX.reviewTenders, M.tenderWins(st, r.id)) end
+		if tenders then line = line .. tr(T, TX.reviewTenders, M.tenderWins(st, r.id, env)) end
 		out[#out + 1] = line
 	end
 	return out
@@ -717,7 +806,7 @@ function M.notices(st, s, env, T)
 			for k = 2, #s.y do
 				local y = splitYear(s.y[k])
 				if y and y > G.yearSeen then
-					for _, line in ipairs(M.reviewLines(st, s, k, T, cos)) do chat(line) end
+					for _, line in ipairs(M.reviewLines(st, s, k, T, cos, env)) do chat(line) end
 				end
 			end
 			G.yearSeen = lastYear
@@ -728,7 +817,7 @@ end
 -- The window's file: every game writes it from the state (the same on every game but `host` and `me`). Tab-separated lines:
 --   host 0|1, me <company>, mode separate|shared, opts <goal> <stats> <yearly> <tenders> (0|1 each)
 --   co <id> <r,g,b> <ai 0|1> <gone 0|1> <name>
---   goal <seq> <crit> <want> <target> <years> <ai 0|1> <startM> <endM> <state> <how> <winner|0> <endAt|0>
+--   goal <seq> <crit> <want> <target> <years> <ai 0|1> <startM> <endM> <state> <how> <winner|0> <endAt|0> <endYM|0>
 --   final <id:score[:ai];...>, fname <id=name|...> (an ended goal's frozen ranking)
 --   last <mi>, m <mi> <year> <month> <rows> (oldest first), y <year> <mi> <rows>, tw <id:wins;...>
 function M.fileLines(st, s, env)
@@ -750,7 +839,7 @@ function M.fileLines(st, s, env)
 	local g = s.goal
 	if type(g) == "table" and M.goalOn(st, env) then
 		L[#L + 1] = table.concat({ "goal", g.seq, g.crit, g.want or g.crit, num(g.target), g.years, b(g.ai),
-			g.startM or 0, g.endM or 0, g.state, g.how or "", g.winner or 0, g.endAt or 0 }, "\t")
+			g.startM or 0, g.endM or 0, g.state, g.how or "", g.winner or 0, g.endAt or 0, g.endYM or 0 }, "\t")
 		if g.final then L[#L + 1] = "final\t" .. g.final end
 		if g.names then L[#L + 1] = "fname\t" .. g.names end
 	end
@@ -765,7 +854,7 @@ function M.fileLines(st, s, env)
 	end
 	if tenders then
 		local t = {}
-		for _, c in ipairs(cos) do t[#t + 1] = c.id .. ":" .. M.tenderWins(st, c.id) end
+		for _, c in ipairs(cos) do t[#t + 1] = c.id .. ":" .. M.tenderWins(st, c.id, env) end
 		L[#L + 1] = "tw\t" .. table.concat(t, ";")
 	end
 	return L
@@ -811,8 +900,9 @@ function M.model(lines)
 		elseif k == "goal" then
 			md.goal = { seq = tonumber(p[2]), crit = p[3], want = p[4], target = tonumber(p[5]) or 0, years = tonumber(p[6]) or 0,
 				ai = p[7] == "1", startM = tonumber(p[8]) or 0, endM = tonumber(p[9]) or 0, state = p[10], how = p[11],
-				winner = tonumber(p[12]), endAt = tonumber(p[13]) }
+				winner = tonumber(p[12]), endAt = tonumber(p[13]), endYM = tonumber(p[14]) }
 			if md.goal.winner == 0 then md.goal.winner = nil end
+			if md.goal.endYM == 0 then md.goal.endYM = nil end
 		elseif k == "final" then
 			md.final = {}
 			for id, score, ai in ((p[2] or "") .. ";"):gmatch("(%d+):(%-?%d+):?(%a*);") do
@@ -867,7 +957,9 @@ function M.view(md, T, sel)
 		add("muted", tr(T, (g.target or 0) > 0 and TX.rulesTarget or TX.rulesBest))
 		add("muted", tr(T, g.ai and TX.aiYes or TX.aiNo))
 		if g.state == "run" then
+			-- (in the calendar's months once the goal's end is dated, else in game months)
 			local left = math.max(0, (g.endM or 0) - (md.last or g.startM or 0))
+			if g.endYM and latest and latest.year and latest.month then left = math.max(0, g.endYM - (latest.year * 12 + latest.month - 1)) end
 			add("text", tr(T, TX.left, math.floor(left / 12), left % 12))
 			-- (the leader by the goal's criterion, among the companies that may win)
 			local best = nil
@@ -1002,12 +1094,32 @@ function M.view(md, T, sel)
 	return out
 end
 
--- The tab's widgets, made with the window's helpers (mpfever_feat.lua): u.text(text, kind) (kind nil, "title", "muted" or
--- "good"), u.button(label, fn, on), u.row(nodes), u.table(head, rows), and u.chart(spec) when the window has one (else the
--- graph's figures as a table). Returns the list of the tab's nodes.
+-- the columns' widths of a table in the window's text width W: "#" narrow, the company's name wider, the figures sharing the rest
+function M.widths(head, W)
+	local n = #head
+	if n == 0 then return nil end
+	local first = head[1] == "#" and 30 or 0
+	local nameCol = first > 0 and 2 or 1
+	local rest = n - nameCol
+	local name = rest > 0 and math.floor((W - first) * (rest >= 3 and 0.34 or 0.5)) or (W - first)
+	local each = rest > 0 and math.floor((W - first - name) / rest) or 0
+	local out = {}
+	for i = 1, n do
+		if first > 0 and i == 1 then out[i] = first
+		elseif i == nameCol then out[i] = name
+		else out[i] = each end
+	end
+	return out
+end
+
+-- The tab's widgets, made with the window's helpers (U.featU in mpfever_ui.script.lua, docs/FEATURES-0.6.md): u.title(t),
+-- u.text(t, cls) (cls "success" for an end), u.muted(t), u.button(label, fn, primary) (the choice shown selected as primary),
+-- u.row(nodes), u.table(lines, widths, header) (the first line as titles), and u.chart(spec) if a window has one one day (else
+-- the graph's figures as a table). A helper missing: its text instead. Returns the list of the tab's nodes.
 function M.ui(u)
 	local T = u.T
 	local md = M.model(type(u.read) == "function" and u.read(M.FILE) or nil)
+	local W = tonumber(u.W) or 556
 	local nodes = {}
 	local function call(name, ...)
 		if type(u[name]) ~= "function" then return nil end
@@ -1015,12 +1127,21 @@ function M.ui(u)
 		return ok and n or nil
 	end
 	local function add(n) if n ~= nil then nodes[#nodes + 1] = n end end
+	local function textNode(kind, text)
+		local n = nil
+		if kind == "title" then n = call("title", text)
+		elseif kind == "muted" then n = call("muted", text)
+		elseif kind == "good" then n = call("text", text, "success") end
+		return n or call("text", text)
+	end
 	local function tableNode(t)
-		local n = call("table", t.head, t.rows)
+		local lines = { t.head }
+		for _, r in ipairs(t.rows) do lines[#lines + 1] = r end
+		local n = call("table", lines, M.widths(t.head, W), true)
 		if n then return n end
 		-- (no table in the window: one text a row)
-		add(call("text", table.concat(t.head, "   "), "muted"))
-		for _, r in ipairs(t.rows) do add(call("text", table.concat(r, "   "))) end
+		add(textNode("muted", table.concat(t.head, "   ")))
+		for _, r in ipairs(t.rows) do add(textNode("text", table.concat(r, "   "))) end
 		return nil
 	end
 	local ok, items = pcall(M.view, md, T, M.sel)
@@ -1044,7 +1165,7 @@ function M.ui(u)
 			if #it.series > 0 then n = call("chart", it) end
 			if n then add(n) else add(tableNode(it.table)) end
 		else
-			add(call("text", it.text, it.kind ~= "text" and it.kind or nil))
+			add(textNode(it.kind, it.text))
 		end
 	end
 	return nodes
