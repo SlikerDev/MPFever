@@ -3587,6 +3587,130 @@ static void PatchSaveCleanup()
     Buf b; b.str(ok ? "saves: no change to the world (the tile clean-up of the GameSave command left out)" : "saves: the tile clean-up NOT found (a save changes the world of the game that saves)"); LogLine(b);
 }
 
+// ---------------------------------------------------------------- one industry-demand history (0.6, ported from TPF3-MP, MIT)
+// Ported from TPF3-MP's "Shared industry-demand history" (pull request #192 of Juliansgith/Transport-Fever-3-Multiplayer-Mod,
+// "Stabilize industry spawning and reloads", 2026-10-29: docs/HOOKS.md, crates/tpf3mp-hook/src/industry_shared.rs, signature
+// of profiles/tf3_build40425_steam_windows/hooks.toml "industry schedule"). The engine keeps two game states and runs each
+// batch of steps on the other one: CGame::Sync hands the state just simulated to the interface and flips them, and the
+// simulation loop copies the world into the next one (GameState::Replicate) before its batch. The industries' demand
+// scheduler, a lambda that the setup of each game state's industries subscribes to the game time's interval step (every 12 s
+// of game time, 60 steps), compares the towns' and the world's demand with what it saw last and gives five spawn attempts to
+// every change; one attempt is spent at each interval while some are due. What it saw and the attempts due are its
+// IndustryChainSpawnState, one per game state and not part of the world (never copied): a change was counted once in each
+// state, and the attempts came out of the state whose batch the interval fell in. Which one that is follows how a game's
+// batches were cut (a stop point's stands, pauses, saves, the speed: 60 steps make 15 batches at 4x), different on every game
+// of a session: new industries came at other steps, or on one game only (TPF3-MP's two games read 3 and 4 attempts due at
+// one interval, then resynchronised). Every active call is now given one history for the world (industry_demand.h): the
+// first active call's own, kept by one more reference until the next world. The game's code still compares the demand,
+// spends the attempts and places the industries. The histories of a world are known from its setup (right after their
+// make_shared), so a history made for anything else is left alone, and the one kept is let go as the game's shared_ptr would.
+// With one history a demand change gives five attempts, as on a game whose intervals all fall on one state (the game alone
+// gives five to ten, by how its batches fell). The layout is read in the code before anything is patched: the captures'
+// history at +0x20 and its control block at +0x28, the attempts at +0x68, the engine's flag at +0x1f8, the make_shared of
+// 0x80 bytes with its vtable, the std::function that calls the scheduler with the captures at +8. Another game build: off,
+// as in 0.5.14. MPFEVER_INDUSTRYDEMAND=0 on every game: as before. MPFEVER_INDUSTRYLOG=1 (diagnostic): each active call in
+// native.log, "industry demand: t=<game time> due <before> -> <after>", the same lines on every game when in step.
+static bool IdReadable(const void* p, u64 n) { return Readable(p, n); }
+#include "industry_demand.h"
+static IndDemand g_ind;
+typedef u64 (*IndSchedF)(u64, u64);
+static IndSchedF g_indSchedOrig = 0;
+static bool g_indLog = false;
+
+// the setup of a game state's industries, right after the history's make_shared: rcx is its control block (0 if none)
+static void IndMade(SavedRegs* r) { IdMade(&g_ind, r->rcx); }
+
+// the scheduler (the lambda's operator(): rcx its captures, rdx the interval's game time)
+static u64 IndSchedule(u64 cap, u64 time)
+{
+    u64 copy[6];
+    int active = 0;
+    long kept = g_ind.kept_n, refused = g_ind.refused;
+    u64 use = IdPick(&g_ind, cap, copy, &active);
+    if (g_ind.kept_n != kept && g_ind.kept_n <= 20) {
+        Buf b; b.str("industry demand: the world's history kept (control block ").hex(g_ind.kept).str(", ").dec(g_ind.madeN)
+            .str(" made since the start, ").dec(g_ind.released).str(" let go), game time ").dec((i64)time);
+        LogLine(b);
+    }
+    if (g_ind.refused != refused && refused == 0) {
+        Buf b; b.str("industry demand: REFUSED (").str(g_ind.why ? g_ind.why : "?").str("), the game's two histories from now on"); LogLine(b);
+    }
+    if (!g_indLog) return g_indSchedOrig(use, time);
+    if (!active && !g_ind.on) { const char* why = ""; active = IdFlag(cap, &why) == 1; }
+    u64 st = active ? ((const u64*)use)[4] : 0;
+    bool rd = st && Readable((void*)(st + 0x68), 4);
+    long before = rd ? *(volatile long*)(st + 0x68) : -1;
+    u64 r = g_indSchedOrig(use, time);
+    if (active) {
+        long after = rd ? *(volatile long*)(st + 0x68) : -1;
+        Buf b; b.str("industry demand: t=").dec((i64)time).str(" due ").dec(before).str(" -> ").dec(after); LogLine(b);
+    }
+    return r;
+}
+
+static void InstallIndustryDemand()
+{
+    char v[4] = {};
+    bool off = GetEnvironmentVariableA("MPFEVER_INDUSTRYDEMAND", v, 3) > 0 && v[0] == '0';
+    v[0] = 0;
+    g_indLog = GetEnvironmentVariableA("MPFEVER_INDUSTRYLOG", v, 3) > 0 && v[0] == '1';
+    if (off && !g_indLog) { Buf b; b.str("industry demand: the game's two histories (MPFEVER_INDUSTRYDEMAND=0)"); LogLine(b); return; }
+    // (TPF3-MP's signature of the scheduler, build 40425; the setup's from its prologue and first loads)
+    u32 sched = FindSigRva("48 89 5C 24 10 55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 10 FE FF FF 48 81 EC F0 02 00 00 4C 8B F9 4C 8B 41 08 49 8B 40 18 80 B8 F8 01 00 00 00");
+    u32 setup = FindSigRva("40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 98 FD FF FF 48 81 EC 68 03 00 00 49 8B F9 4D 8B F0 48 8B F2 4C 8B E9 4C 8B 61 10");
+    const char* miss = !sched ? "the scheduler not found" : (!setup && !off ? "the industries' setup not found" : 0);
+    u64 vt = 0, ivt = 0;
+    if (!miss) {
+        // the scheduler: the history's address from the captures' +0x20 (lea rsi,[r15+20h]), its attempts at +0x68 (cmp, dec, add 5)
+        const u8* s = (const u8*)(g_base + sched);
+        static const u8 hist[] = { 0x49, 0x8D, 0x77, 0x20 };
+        static const u8 cmp68[] = { 0x44, 0x39, 0x60, 0x68 };
+        static const u8 dec68[] = { 0x48, 0x8B, 0x06, 0xFF, 0x48, 0x68 };
+        static const u8 add5[] = { 0x48, 0x8B, 0x06, 0x83, 0x40, 0x68, 0x05 };
+        if (memcmp(s + 0xc1, hist, 4) || memcmp(s + 0xdc, cmp68, 4) || memcmp(s + 0x1f1, dec68, 6) || memcmp(s + 0x44d, add5, 7)) miss = "the scheduler's layout differs";
+    }
+    if (!miss && !off) {
+        // the setup: make_shared of 0x80 bytes (counts 1 and 1, then the control block's vtable), the history at the block's
+        // +0x10 and the block stored as the captures' last two words, the lambda's std::function vtable, the six captures
+        // copied to its +8 (four, then the history and its block at +0x28)
+        const u8* m = (const u8*)(g_base + setup);
+        static const u8 alloc80[] = { 0xB9, 0x80, 0x00, 0x00, 0x00, 0xE8 };
+        static const u8 counts[] = { 0xC7, 0x40, 0x08, 0x01, 0x00, 0x00, 0x00, 0xC7, 0x40, 0x0C, 0x01, 0x00, 0x00, 0x00, 0x48, 0x8D, 0x05 };
+        static const u8 store[] = { 0x48, 0x8D, 0x41, 0x10, 0x48, 0x89, 0x45, 0x88, 0x48, 0x89, 0x4D, 0x90, 0x48, 0x8D, 0x05 };
+        static const u8 impl[] = { 0x48, 0x89, 0x45, 0x58, 0xC5, 0xFC, 0x10, 0x44, 0x24, 0x68, 0xC5, 0xFC, 0x11, 0x45, 0x60, 0xC5, 0xFA, 0x6F, 0x45, 0x88,
+            0xC5, 0xFA, 0x7F, 0x85, 0x80, 0x00, 0x00, 0x00 };
+        if (memcmp(m + 0x7aa, alloc80, 6) || memcmp(m + 0x7cb, counts, 17) || memcmp(m + 0x81e, store, 15) || memcmp(m + 0x831, impl, 28)) miss = "the setup's layout differs";
+        else {
+            vt = (u64)(m + 0x7d9 + 7 + *(const i32*)(m + 0x7dc));
+            ivt = (u64)(m + 0x82a + 7 + *(const i32*)(m + 0x82d));
+            // (the vtables read only inside the game's image, their functions inside its code: the block's _Destroy and
+            // _Delete_this, and the std::function's call, "mov rdx,[rdx] / add rcx,8 / jmp scheduler")
+            bool in = vt > g_textEnd && vt - g_base < 0x8000000 && ivt > g_textEnd && ivt - g_base < 0x8000000 && Readable((void*)vt, 16) && Readable((void*)ivt, 24);
+            u64 d0 = in ? ((u64*)vt)[0] : 0, d1 = in ? ((u64*)vt)[1] : 0, call = in ? ((u64*)ivt)[2] : 0;
+            static const u8 thunk[] = { 0x48, 0x8B, 0x12, 0x48, 0x83, 0xC1, 0x08, 0xE9 };
+            in = in && d0 >= g_textStart && d0 < g_textEnd && d1 >= g_textStart && d1 < g_textEnd && call >= g_textStart && call + 12 <= g_textEnd
+                && memcmp((void*)call, thunk, 8) == 0 && call + 12 + *(const i32*)(call + 8) == g_base + sched;
+            if (!in) miss = "the history's vtable or the scheduler's std::function differs";
+            else { g_ind.vtable = vt; g_ind.destroy = d0; g_ind.del = d1; }
+        }
+    }
+    u8* mem = miss ? 0 : AllocNear(0x400);
+    if (!miss && !mem) miss = "no memory near the game's code";
+    // (the setup first: a scheduler hooked without it would find no history of the world and change nothing)
+    if (!miss && !off && !Splice(mem, setup + 0x822, 8, IndMade)) miss = "the setup not hooked";
+    static const u8 pro[] = { 0x48, 0x89, 0x5C, 0x24, 0x10, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57 };
+    void* t = miss ? 0 : DetourWhole(mem, sched, pro, (int)sizeof(pro), (void*)IndSchedule);
+    if (!miss && !t) miss = "the scheduler not hooked";
+    Buf b;
+    if (miss) { b.str("industry demand: OFF (").str(miss).str("), the game's two histories"); LogLine(b); return; }
+    g_indSchedOrig = (IndSchedF)t;
+    g_ind.on = off ? 0 : 1;
+    if (off) b.str("industry demand: the game's two histories (MPFEVER_INDUSTRYDEMAND=0), each active call logged (MPFEVER_INDUSTRYLOG)");
+    else b.str("industry demand (from TPF3-MP): one history for the two game states, scheduler at ").hex(sched).str(", histories made at ").hex(setup + 0x822)
+        .str(g_indLog ? ", each active call logged (MPFEVER_INDUSTRYLOG)" : "");
+    LogLine(b);
+}
+
 // ---------------------------------------------------------------- the tools' company (ported from TPF3-MP, MIT)
 // Ported from TPF3-MP's "The tools' player" (docs/HOOKS.md, crates/tpf3mp-hook/src/toolplayer.rs, signatures of
 // profiles/tf3_build40420_steam_windows/hooks.toml). UI::CGameUI's constructor reads the save's player once and hands each
@@ -3750,6 +3874,10 @@ static void LogOrderCounts()
     for (int i = 0; i < ORDER_N; i++) b.str(" ").str(ORDER_FIXES[i].name).str(" ").dec(g_orderSorts[i]).str("/").dec(g_orderReorders[i]).str("/").dec(g_orderRefused[i]);
     b.str(" road entries ").dec(g_orderSorts[ROAD_W]).str("/").dec(g_orderReorders[ROAD_W]).str("/").dec(g_orderRefused[ROAD_W]);
     b.str("; tools' company written ").dec(g_toolWrites).str(" time(s); shared station icons let through ").dec(g_hudShareLet).str("; stop tool snaps on any owner ").dec(g_stopSnapLet).str("; open tracks let through ").dec(g_openLet);
+    // (the industries' demand scheduler: calls given the kept history / on the kept one's own state / of a history not of the
+    // world (left alone) / refused; histories kept and let go)
+    b.str("; industry demand ").dec(g_ind.shared).str("/").dec(g_ind.own).str("/").dec(g_ind.other).str("/").dec(g_ind.refused)
+        .str(", kept ").dec(g_ind.kept_n).str(", let go ").dec(g_ind.released);
     LogLine(b);
 }
 
@@ -4373,6 +4501,7 @@ static DWORD WINAPI Init(void*)
     HookWordReads();
     // (found by their own signatures, on any build where those match exactly once)
     InstallOrderFixes();
+    InstallIndustryDemand();
     PatchSaveCleanup();
     if (g_layout) InstallToolCompany();
     if (g_layout) InstallHudShare();
