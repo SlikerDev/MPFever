@@ -223,8 +223,18 @@ local function garagesNear(E, ent, p, maxD)
 	-- look. MPFEVER_AICACHE=0: as before)
 	local eco = os.getenv("MPFEVER_AICACHE") ~= "0" and E.C.eco and E.C.eco() or nil
 	local myId = eco and E.G.co and E.CO.idOfEntity(E.G.co, ent) or nil
+	local T = E.G.AIT or {}
 	for _, g in ipairs(roadGarages(E)) do
 		local d = dist(g.pos, p)
+		-- (a garage near enough read again: its depot id may name another depot since, freed by a bulldozer and taken by a new one)
+		if d < maxD and os.getenv("MPFEVER_AICACHE") ~= "0" then
+			local still = false
+			pcall(function()
+				local vd = E.api.engine.getComponent(g.depot, E.api.type.ComponentType.VEHICLE_DEPOT)
+				still = vd ~= nil and #vd.outNodes > 0 and E.api.engine.system.streetConnectorSystem.getConstructionEntityForDepot(g.depot) == g.con
+			end)
+			if not still then d = maxD; T.garagesAt = nil end
+		end
 		local own = g.owner == ent
 		local open = true
 		if d < maxD and not own and eco and myId and g.owner then
@@ -461,8 +471,20 @@ local function streetSegmentsNear(E, p, radius, avoid)
 			local ok = d < radius
 			if ok then for _, q in ipairs(avoid or {}) do if dist(s.m, q) < 120 then ok = false; break end end end
 			if ok then
-				local c = api.engine.getComponent(s.e, api.type.ComponentType.BASE_EDGE)
-				if c and #c.objects == 0 then list[#list + 1] = { e = s.e, d = d, a = s.a, b = s.b, m = s.m } else T.segsAt = nil end
+				-- (read again as the uncached path reads it: an id freed by a build may name another segment now, the half of a
+				-- segment cut by another company's garage. The ends taken from now; anything that differs drops the cache)
+				local good = false
+				pcall(function()
+					local c = api.engine.getComponent(s.e, api.type.ComponentType.BASE_EDGE)
+					if not (c and c.type == 0 and #c.objects == 0 and api.engine.getComponent(s.e, api.type.ComponentType.BASE_EDGE_STREET)
+						and tostring(c.roadTemplate):find("/town/", 1, true)) then return end
+					local con = api.engine.system.streetConnectorSystem.getConstructionEntityForEdge(s.e)
+					if type(con) == "number" and con >= 0 then return end
+					local a, b = E.nodePosition(c.node0), E.nodePosition(c.node1)
+					if not (a and b) or dist(a, s.a) > 0.5 or dist(b, s.b) > 0.5 then return end
+					good = true
+				end)
+				if good then list[#list + 1] = { e = s.e, d = d, a = s.a, b = s.b, m = s.m } else T.segsAt = nil end
 			end
 		end
 		table.sort(list, function(x, y) if x.d ~= y.d then return x.d < y.d end return x.e < y.e end)
