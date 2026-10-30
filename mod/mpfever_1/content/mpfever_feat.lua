@@ -288,6 +288,12 @@ local function simEnv(M, st, B)
 		end
 		e.month = function() return e._B.month() end
 		e.date = function() return e._B.date() end
+		-- (company fromId goes into company intoId at this step, as the merge of companies does (mpfever_eco.lua, E.coMerge; opts:
+		-- members = "release", gone = "taken"): true, or false and why. Only from an event: the same step on every game)
+		e.coMerge = function(fromId, intoId, opts)
+			if type(e._B.coMerge) ~= "function" then return false, "no merge here" end
+			return e._B.coMerge(e._st, fromId, intoId, opts)
+		end
 		F.envs.sim[M.ID] = e
 	end
 	e._st, e._B = st, B
@@ -436,6 +442,8 @@ local function guiEnv(M, st, B)
 	e._st, e._B = st, B
 	e.isHost, e.me, e.myCo, e.mode = B.isHost, B.me, B.myCo, B.mode
 	e.R, e.CO = B.R, B.CO
+	-- (this game's language, T(fr, en), and a company's name as the players see it, coName(id); nil when the bridge has none)
+	e.T, e.coName = B.T, B.coName
 	return e
 end
 F.guiEnv = guiEnv

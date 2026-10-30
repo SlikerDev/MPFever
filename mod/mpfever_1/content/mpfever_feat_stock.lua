@@ -19,7 +19,8 @@
 --    money, as after a bankruptcy (D2). A computer company can be taken over when the host allows it (D3): it is then retired;
 --  * a new company is protected for 24 months (D4): nobody else may buy its shares. The companies there when the stock market
 --    opens are protected only up to the game's 24th month (a stock market switched on in an old game opens at once);
---  * the ranking goes by value while the stock market is on (D7): the value of every company is in stock.txt.
+--  * the ranking goes by value while the stock market is on (D7): the value of every company is in the window's file
+--    (feat_stock_stock.txt, see M.fileLines).
 -- A company gone (bankrupt, empty) takes its shares with it: they are cancelled; one merged into another has its shares paid back
 -- by the company it went into; the shares a gone company held follow it into the company it went into, or go back to the market.
 --
@@ -61,6 +62,12 @@ M.FLOOR_MIN = 1000   -- the lowest price of a share, whatever the start money
 M.NEWS = 20          -- what happened, the last 20 (told in every game's chat)
 M.RESEND = 15        -- seconds (real time, on the host) before a price not applied yet is sent again
 M.SETTLE = 5         -- seconds a company's entity is known before the host reads its account (the engine asserts before)
+-- (autotests only, MPFEVER_SCENARIO set: MPFEVER_STOCKPROTECT=<months> another protection, 0 for the scenario "stocktest" on a young
+-- savegame. Read once; every game of the test is started with the same value)
+pcall(function()
+	local p = os.getenv("MPFEVER_SCENARIO") and tonumber(os.getenv("MPFEVER_STOCKPROTECT") or "")
+	if p then M.PROTECT = math.max(0, math.floor(p)) end
+end)
 
 -- ---------------------------------------------------------------- small helpers (both halves)
 local function num(x) return tonumber(x) end
@@ -471,7 +478,7 @@ function M.month(st, env)
 end
 
 -- ---------------------------------------------------------------- the host's measure (GUI half, host only)
--- The integration may replace these with the statistics' figures (M.fromStats) or another source; each returns plain numbers.
+-- Each returns plain numbers (the tests replace them); the statistics' value and money are taken when they have the month (M.fromStats).
 
 -- (the game's time and month length, for the result of the month and the game's age in months)
 M.clock = function()
@@ -503,8 +510,8 @@ M.scan = function()
 	return out
 end
 
--- a company's figures: { v = value, r = result of its lines over the last month, c = money }, nil when its money cannot be
--- read (infinite money: the stock market has nothing to price)
+-- a company's figures: { v = value, r = result of its lines over the last month, c = money } (and, for the log: loan, veh, lines),
+-- nil when its money cannot be read (infinite money: the stock market has nothing to price)
 M.measure = function(c, scan, now, monthDur)
 	local cash, loan, r = nil, 0, 0
 	pcall(function() cash = api.engine.util.finance.getPlayersBalance(c.ent) end)
@@ -515,24 +522,24 @@ M.measure = function(c, scan, now, monthDur)
 		local ok, b = pcall(api.engine.util.finance.calculateBalance, s.lines, now - monthDur, now, true)
 		if ok and type(b) == "number" then r = b end
 	end
-	return { v = math.floor(cash - (tonumber(loan) or 0) + s.veh), r = math.floor(r), c = math.floor(cash) }
+	return { v = math.floor(cash - (tonumber(loan) or 0) + s.veh), r = math.floor(r), c = math.floor(cash), loan = tonumber(loan) or 0, veh = s.veh, lines = #s.lines }
 end
 
--- the statistics' measure of the month (mpfever_feat_stats.lua), when it has one for that month: { [id] = { v, r, c } }. It
--- reads the format of release/recherche-0.6/01-objectifs-stats.md ("m|Y|id:b,d,vv,pax,cg,pr,nl,nv;..."), with the month in
--- env.month()'s numbering; anything else gives nil (the host then measures by itself)
+-- the statistics' measure of the month (the option "stats", mpfever_feat_stats.lua), when it has one for that month: { [id] = { v, c } }
+-- (the last entry of its ring st.feat.stats.m, "mi|year|month|id:b,d,vv;...", mi in env.month()'s numbering: money, loans, the
+-- vehicles' resale value; anything else gives nil). The same value as M.measure's, so the two rankings agree; the statistics have
+-- no result of the lines, the host measures it by itself.
 M.fromStats = function(st, month)
 	local s = st and st.feat and st.feat.stats
 	local ring = type(s) == "table" and type(s.m) == "table" and s.m or nil
 	local last = ring and ring[#ring]
 	if type(last) ~= "string" then return nil end
-	local m, rows = last:match("^(%-?%d+)|%-?%d+|(.*)$")
+	local m, rows = last:match("^(%-?%d+)|%-?%d+|%d+|(.*)$")
 	if not m or tonumber(m) ~= month then return nil end
 	local out, any = {}, false
-	for id, b, d, vv, rest in rows:gmatch("(%d+):(%-?[%d%.]+),(%-?[%d%.]+),(%-?[%d%.]+),([^;]*)") do
-		local f = {}
-		for x in rest:gmatch("[^,]+") do f[#f + 1] = tonumber(x) end
-		out[tonumber(id)] = { v = math.floor(tonumber(b) - tonumber(d) + tonumber(vv)), r = math.floor(f[3] or 0), c = math.floor(tonumber(b)) }
+	for id, b, d, vv in rows:gmatch("(%d+):(%-?%d+),(%-?%d+),(%-?%d+)") do
+		b, d, vv = tonumber(b), math.max(0, tonumber(d)), math.max(0, tonumber(vv))
+		out[tonumber(id)] = { v = math.floor(b - d + vv), c = math.floor(b) }
 		any = true
 	end
 	return any and out or nil
@@ -553,16 +560,27 @@ M.rowsFor = function(st, env, month)
 			local settled = now - M.seenAt[c.ent] >= M.SETTLE
 			if settled and M.exists then settled = M.exists(c.ent) end
 			if settled then
-				local f = stats and stats[c.id]
-				if not f then
-					if not scan then scan = M.scan(); gnow, monthDur = M.clock() end
-					f = M.measure(c, scan, gnow, monthDur)
+				if not scan then scan = M.scan(); gnow, monthDur = M.clock() end
+				local f = M.measure(c, scan, gnow, monthDur)
+				-- (the statistics' value and money when they have this month: the same figures as their ranking)
+				local sf = f and stats and stats[c.id]
+				if sf then f = { v = sf.v, r = f.r, c = sf.c, loan = f.loan, veh = f.veh, lines = f.lines } end
+				if f then
+					out[#out + 1] = string.format("%d,%.0f,%.0f,%.0f", c.id, f.v, f.r, f.c)
+					-- (once a month, what the host read: in-game checks of the account's loan, which may not count the MPFever loans
+					-- of a company other than the savegame's (their count is told), and of the lines' result)
+					if M.loggedFor ~= month and env.log then
+						local lt = reg.loan and (reg.loan[c.id] or reg.loan[tostring(c.id)])
+						env.log(string.format("feat stock: month %s company %d: value %.0f = money %.0f - account loan %.0f + vehicles %.0f%s; MPFever loans %d; %d line(s), result %.0f",
+							tostring(month), c.id, f.v, f.c, f.loan or 0, f.veh or 0, sf and " (statistics' figures)" or "",
+							type(lt) == "table" and type(lt.obtainedLoans) == "table" and #lt.obtainedLoans or 0, f.lines or 0, f.r))
+					end
 				end
-				if f then out[#out + 1] = string.format("%d,%.0f,%.0f,%.0f", c.id, f.v, f.r, f.c) end
 			end
 		end
 	end
 	if #out == 0 then return nil end
+	M.loggedFor = month
 	return table.concat(out, ";")
 end
 M.exists = function(ent)
@@ -577,7 +595,7 @@ M.age = function()
 end
 
 -- ---------------------------------------------------------------- GUI half (every game, about once a second)
--- this game's language: the options host's env.T when it gives one, else M.T (English; the integration may set M.T = C.T).
+-- this game's language: the options host's env.T (the bridge's C.T), else M.T (English: the offline tests).
 -- Every text is written T("français", "English") where it is used, so that tests/test_lang.py finds it.
 M.T = function(fr, en) return en end
 local function lang(env)
@@ -621,7 +639,7 @@ M.newsText = function(st, env, t)
 	return nil
 end
 
--- the lines of stock.txt for the window (this game's view: "me" names its company and its entity here)
+-- the lines of the window's file (env.write "stock": feat_stock_stock.txt of the session folder) for the window (this game's view: "me" names its company and its entity here)
 M.fileLines = function(st, env)
 	local S = st.feat and st.feat.stock
 	local o = M.opts(env)
@@ -659,7 +677,7 @@ M.fileLines = function(st, env)
 	return L
 end
 
--- the contract's M.gui: the host's prices of a new month, the news in this game's chat, stock.txt for the window
+-- the contract's M.gui: the host's prices of a new month, the news in this game's chat, the window's file
 function M.gui(st, env)
 	if not (env and env.on and env.on("stock")) or not separate(st, nil) or type(st.co) ~= "table" then return end
 	local S = st.feat and st.feat.stock
@@ -687,7 +705,7 @@ function M.gui(st, env)
 			end
 		end
 	end
-	if env.write then env.write("stock.txt", M.fileLines(st, env)) end
+	if env.write then env.write("stock", M.fileLines(st, env)) end
 end
 
 -- the contract's M.request: the window's buttons on this game ("buy", "sell", "takeover"; payload { co, n, max })
@@ -741,7 +759,7 @@ function M.request(kind, payload, st, env)
 end
 
 -- ---------------------------------------------------------------- the MPFever window's tab
--- M.view: stock.txt's lines -> what the tab shows (plain data, tested offline). M.ui draws it with the options host's helpers.
+-- M.view: the window file's lines -> what the tab shows (plain data, tested offline). M.ui draws it with the options host's helpers.
 M.view = function(lines, T, myBal)
 	T = T or M.T
 	local v = { companies = {}, hold = {}, bought = {}, divs = {}, opt = nil, me = 0, myEnt = -1 }
@@ -823,12 +841,13 @@ end
 -- the takeover's second click: armed by the first one for 10 s (this window only)
 M.armed = nil
 
--- M.ui(u): the tab. Uses u.T, u.read, u.request and the widgets u.text(s), u.muted(s), u.button(label, fn, enabled),
--- u.row(children), u.section(title) when there is one; returns the tab's rows (and adds each one with u.add when there is one)
+-- M.ui(u): the tab, with the window's helpers (U.featU of mpfever_ui.script.lua): u.T, u.read, u.request and the widgets
+-- u.title(t), u.text(s), u.muted(s), u.button(label, fn, primary, enabled), u.row(children). Each row goes in with u.add; without
+-- u.add (an older window), the rows are returned instead (never both: the window would draw them twice)
 function M.ui(u)
 	local T = u.T or M.T
 	local now = os.clock()
-	local lines = u.read and u.read("stock.txt") or {}
+	local lines = u.read and u.read("stock") or {}
 	local myBal = nil
 	for _, line in ipairs(lines) do
 		local ent = line:match("^me\t%d+\t(%-?%d+)")
@@ -838,7 +857,7 @@ function M.ui(u)
 	local money = u.money or M.money
 	local out = {}
 	local function add(w) if w ~= nil then out[#out + 1] = w; if u.add then u.add(w) end end end
-	local function title(s) add(u.section and u.section(s) or u.text(s)) end
+	local function title(s) add((u.title and u.title(s)) or (u.section and u.section(s)) or u.text(s)) end
 	title(T("Bourse", "Stock market"))
 	add(u.muted(T("Chaque entreprise a 10 actions. Prix = valeur / 10 ; valeur = argent - prêts + revente des véhicules, mesurée par l'hôte chaque mois. L'argent d'un achat va à l'entreprise ; au-delà de 50 %, on rachète toute l'entreprise.",
 		"Every company has 10 shares. Price = value / 10; value = money - loans + resale value of the vehicles, measured by the host every month. The money of a purchase goes to the company; beyond 50 %, you take the whole company over.")))
@@ -859,7 +878,7 @@ function M.ui(u)
 		local buttons = {}
 		if r.buy then
 			buttons[#buttons + 1] = u.button(r.mine and fmt(T("Racheter 1 action (%s)", "Buy 1 back (%s)"), money(r.buy.cost)) or fmt(T("Acheter 1 (%s)", "Buy 1 (%s)"), money(r.buy.cost)),
-				function() u.request("buy", { co = r.id, n = 1 }) end, r.buy.allowed)
+				function() u.request("buy", { co = r.id, n = 1 }) end, false, r.buy.allowed)
 		end
 		if r.takeover then
 			local armed = M.armed and M.armed.co == r.id and now - M.armed.at < 10
@@ -872,16 +891,17 @@ function M.ui(u)
 				else
 					M.armed = { co = r.id, at = os.clock() }
 				end
-			end, r.takeover.allowed and (myBal == nil or myBal >= r.takeover.total))
+			end, armed, r.takeover.allowed and (myBal == nil or myBal >= r.takeover.total))
 		end
 		if r.sell then
-			buttons[#buttons + 1] = u.button(T("Vendre 1", "Sell 1"), function() u.request("sell", { co = r.id, n = 1 }) end, true)
+			buttons[#buttons + 1] = u.button(T("Vendre 1", "Sell 1"), function() u.request("sell", { co = r.id, n = 1 }) end, false, true)
 		end
 		add(u.muted(info))
 		if r.status then add(u.muted(r.status)) end
 		if r.note then add(u.muted(r.note)) end
 		if #buttons > 0 then add(u.row(buttons)) end
 	end
+	if u.add then return {} end
 	return out
 end
 

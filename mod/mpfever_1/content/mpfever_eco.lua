@@ -395,8 +395,8 @@ local function closeLot(st, env)
 	local lot = au.lots[au.idx]
 	if c and c.ent and lot then
 		local w = au.bidder and env.CO.find(reg, au.bidder) or nil
-		-- (the best bidder merged meanwhile: the company it went into keeps its bid)
-		if w and w.gone == "merged" and w.mergedInto then w = env.CO.find(reg, w.mergedInto) end
+		-- (the best bidder merged meanwhile: the company it went into keeps its bid; 0.6: or taken over, see E.coMerge)
+		if w and (w.gone == "merged" or w.gone == "taken") and w.mergedInto then w = env.CO.find(reg, w.mergedInto) end
 		if w and live(w) and w.ent then
 			sell(env, c, lot, w, au.best)
 			news(reg, { kind = "lot_sold", co = au.co, lot = au.idx, label = lot.label, to = w.id, amount = au.best })
@@ -761,11 +761,27 @@ function E.depotUse(reg, env, depot, co, ownerCo)
 end
 
 -- ---------------------------------------------------------------- merging
-function E.merge(st, a, b, env)
+-- Company a goes into company b: everything a owns, its money, its MPFever loans and its players become b's (co_merge_answer).
+-- (0.6) opts, for a game option's merge (E.coMerge; nil: exactly the merge above):
+--   members = "release": a's players do not go into b, they get a new company with the start money, as after a bankruptcy
+--                        (a.formerMembers keeps their keys);
+--   gone = "taken":      a.gone (else "merged"), a.takenBy = b; the news says "taken" (the bridge's chat tells nothing of it: the
+--                        option tells it itself);
+--   a the savegame's company: its game loans stay with it (the game's own, it cannot hand them over), and so does the money to
+--   pay them back: b gets a's money less what a still owes the game (as the option's price counts a's value: money - loans).
+function E.merge(st, a, b, env, opts)
 	local reg = st.co
 	local list = E.ownedBy(env, a.ent)
 	local n = setOwner(list, a.ent, b.ent)
 	local bal = balanceOf(a.ent) or 0
+	if opts and a.ent == reg.canon and bal > 0 then
+		local owed = 0
+		pcall(function() owed = math.floor(tonumber(api.engine.getComponent(a.ent, api.type.ComponentType.ACCOUNT).loan) or 0) end)
+		if owed > 0 then
+			env.log("companies: company " .. a.id .. " (the savegame's) keeps " .. math.min(owed, bal) .. " for its game loans (" .. owed .. " owed)")
+			bal = bal - math.min(owed, bal)
+		end
+	end
 	if bal ~= 0 then
 		book(a.ent, -bal)
 		book(b.ent, bal)
@@ -788,11 +804,17 @@ function E.merge(st, a, b, env)
 		end
 		la.obtainedLoans = {}
 	end
-	for _, m in ipairs(env.CO.ensureMembers(a)) do env.CO.addMember(b, m.key, m.sid) end
+	local release = opts and opts.members == "release"
+	local names = {}
+	for _, m in ipairs(env.CO.ensureMembers(a)) do
+		if release then names[#names + 1] = m.key else env.CO.addMember(b, m.key, m.sid) end
+	end
+	if release then a.formerMembers = names end
 	a.members = {}
 	a.chief = nil
-	a.gone = "merged"
+	a.gone = (opts and opts.gone == "taken") and "taken" or "merged"
 	a.mergedInto = b.id
+	if a.gone == "taken" then a.takenBy = b.id end
 	if reg.track then reg.track[tostring(a.id)] = nil end
 	-- (its rules for its stations and depots go with it: they follow b's from now on. The settings of its own stations and depots
 	-- are kept, they are now b's (its window shows them, its "every station" choice clears them). MPFEVER_LOTRULES=0: as before,
@@ -803,8 +825,31 @@ function E.merge(st, a, b, env)
 		for _, o in pairs(reg.stationRule or {}) do if type(o) == "table" and o.co == a.id then o.co = b.id end end
 		for _, d in pairs(reg.depots or {}) do if type(d) == "table" and d.co == a.id then d.co = b.id end end
 	end
-	news(reg, { kind = "merged", co = a.id, into = b.id })
-	env.log("companies: company " .. a.id .. " merged into company " .. b.id .. ": " .. n .. " entities and " .. bal .. " money change hands")
+	news(reg, { kind = a.gone == "taken" and "taken" or "merged", co = a.id, into = b.id })
+	env.log("companies: company " .. a.id .. " " .. (a.gone == "taken" and "taken over by" or "merged into") .. " company " .. b.id .. ": " .. n
+		.. " entities and " .. bal .. " money change hands" .. (release and (", its " .. #names .. " player(s) get a new company") or ""))
+end
+
+-- (0.6) The merge a game option asks for (env.coMerge of mpfever_feat.lua: the stock market's takeover, mpfever_feat_stock.lua),
+-- in the simulation, at the step of the option's event, on every game: company fromId goes into company intoId as E.merge does,
+-- with opts (see E.merge). Returns true, or false and why (nothing done). MPFEVER_STOCKMERGE=0: always refused (no takeover, as
+-- in 0.5.14).
+E.OPTION_MERGE = os.getenv("MPFEVER_STOCKMERGE") ~= "0"
+function E.coMerge(st, fromId, intoId, env, opts)
+	E.env = env
+	if not E.OPTION_MERGE then return false, "MPFEVER_STOCKMERGE=0" end
+	local reg = st.co
+	if not (reg and reg.mode == "separate") then return false, "not one company per player" end
+	local a, b = env.CO.find(reg, tonumber(fromId)), env.CO.find(reg, tonumber(intoId))
+	if not (live(a) and live(b) and a.ent and b.ent) or a.id == b.id then return false, "no such companies" end
+	-- (the offers to merge from it or into it go with it)
+	if reg.mergeOffers then
+		local keep = {}
+		for _, o in ipairs(reg.mergeOffers) do if o.from ~= a.id and o.to ~= a.id then keep[#keep + 1] = o end end
+		reg.mergeOffers = keep
+	end
+	E.merge(st, a, b, env, type(opts) == "table" and opts or {})
+	return true
 end
 
 -- ---------------------------------------------------------------- the players' events

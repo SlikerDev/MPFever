@@ -11,7 +11,12 @@ paid, less 2 %, within the company's money); takeovers (premium, holders paid, t
 the members released, a computer company retired, refused when the host does not allow it); companies gone (bankrupt:
 shares cancelled; merged: holders paid back; holdings follow the company it went into); determinism (the same events on two
 games with other entity numbers and another table order give the same state and the same money); a savegame reload in the
-middle (plain data, no function, no cycle); the interface's half (requests, stock.txt, the tab).
+middle (plain data, no function, no cycle); the interface's half (requests, the window's file, the tab).
+Integration, with the real files and the game's API mocked: mpfever_eco.lua's merge (E.merge unchanged without opts, E.coMerge
+with the members released and "taken", the savegame's company keeping the money of its game loans, MPFEVER_STOCKMERGE=0), then
+the real options host, the bridge's real helpers (SIM.featBridge and its coMerge, SIM.featTick, SIM.featEvent, G.featBridge,
+G.featChat, G.featRequest, G.coNewsText) and mpfever_ai.lua's retired check: f_opts, the host's monthly prices, purchases from
+the window's requests, a computer company taken over and retired; and the window's real tab code (U.featU, U.featTabRows).
 Run: python tests/test_feat_stock.py
 """
 import os
@@ -453,8 +458,8 @@ check(run(G2, "return #SENT == 1 and SENT[1].name == 'f_stock_sell'"), "a sale: 
 
 print("the interface: stock.txt and the tab")
 run(G2, "WRITES = {}; genv.isHost = false; REAL = 1000; M.gui(st, genv)")
-txt = run(G2, "return WRITES[#WRITES] and WRITES[#WRITES].file == 'stock.txt' and WRITES[#WRITES].text")
-check(bool(txt) and "\nme\t2\t200" in txt and "co\t4\t1\t100000" in txt and "hold\t4\t2\t5\t" in txt, "stock.txt: options, this game's company, the companies, the holdings")
+txt = run(G2, "return WRITES[#WRITES] and WRITES[#WRITES].file == 'stock' and WRITES[#WRITES].text")
+check(bool(txt) and "\nme\t2\t200" in txt and "co\t4\t1\t100000" in txt and "hold\t4\t2\t5\t" in txt, "the window's file 'stock': options, this game's company, the companies, the holdings")
 view = run(G2, '''local lines = {} for l in (WRITES[#WRITES].text .. "\\n"):gmatch("([^\\n]*)\\n") do lines[#lines + 1] = l end
 V = M.view(lines, function(fr, en) return en end, 1e9) return V''')
 check(run(G2, "return V.rows[1].id") == 1 and run(G2, "return V.rows[1].rank") == 1, "the ranking by value (D7)")
@@ -464,7 +469,7 @@ check(run(G2, "for _, r in ipairs(V.rows) do if r.id == 3 then return r.status =
 run(G2, '''REQS = {}
 U = { T = function(fr, en) return en end, read = function() return lines_ end,
   text = function(s) return { t = "text", s = s } end, muted = function(s) return { t = "muted", s = s } end,
-  button = function(label, fn, enabled) return { t = "button", s = label, fn = fn, enabled = enabled } end,
+  button = function(label, fn, primary, enabled) return { t = "button", s = label, fn = fn, enabled = enabled } end,
   row = function(ch) return { t = "row", ch = ch } end, request = function(kind, p) REQS[#REQS + 1] = { kind = kind, p = p } end }
 lines_ = {} for l in (WRITES[#WRITES].text .. "\\n"):gmatch("([^\\n]*)\\n") do lines_[#lines_ + 1] = l end
 OUT = M.ui(U)
@@ -487,10 +492,19 @@ run(G2, "M.gui(st, genv)")
 check(run(G2, "return #CHATS") == 1 and "holds 3 of the 10 shares" in run(G2, "return CHATS[1]"), "crossing 3 shares told in the chat")
 
 print("the statistics' measure, when there is one")
-run(G2, '''st.feat.stats = { m = { "103|1925|1:3000000,500000,700000,10,5,123456,2,3;2:1000000,0,0,0,0,-5,0,0" } }
+# (the format of mpfever_feat_stats.lua: "mi|year|month|id:b,d,vv;...")
+run(G2, '''st.feat.stats = { m = { "102|1925|3|1:1,0,0", "103|1925|4|1:3000000,500000,700000;2:1000000,0,0" } }
 F = M.fromStats(st, 103)''')
-check(run(G2, "return F[1].v == 3200000 and F[1].r == 123456 and F[1].c == 3000000 and F[2].r == -5"), "money - loans + vehicles, the month's result")
+check(run(G2, "return F[1].v == 3200000 and F[1].c == 3000000 and F[2].v == 1000000 and F[2].c == 1000000"), "money - loans + vehicles, from the statistics' last month")
 check(run(G2, "return M.fromStats(st, 104) == nil"), "another month: not used")
+rows = run(G2, '''FIG = { [1] = { v = 1, r = 77, c = 2 }, [2] = { v = 3, r = 5, c = 4 } }
+M.seenAt = { [100] = -100, [200] = -100, [300] = -100, [400] = -100 }
+M.loggedFor = nil
+return M.rowsFor(st, genv, 103)''')
+check(rows == "1,3200000,77,3000000;2,1000000,5,1000000", "the rows: the statistics' value and money, the host's result of the lines (%s)" % rows)
+check("feat stock: month 103 company 1: value 3200000" in run(G2, "return table.concat(LOGS, ' | ')") and "(statistics' figures)" in run(G2, "return table.concat(LOGS, ' | ')"),
+      "the host's figures logged once a month (feat stock: ...)")
+run(G2, "st.feat.stats = nil; FIG = {} return true")
 
 print("the host's own measure (the game's API mocked)")
 D = new_game(0)
@@ -552,6 +566,304 @@ missing = [t for t in texts + lobby if not all((known.get(t) or {}).get(c) for c
 broken = [t for t in texts + lobby if t in known and any(test_lang.placeholders(known[t].get(c) or t) != test_lang.placeholders(t) for c in test_lang.LANGUAGES)]
 check(len(texts) > 30 and not missing, "%d texts (and %d of the lobby) in the 11 languages%s" % (len(texts), len(lobby), (": missing " + repr(missing)) if missing else ""))
 check(not broken, "the translations keep their %s" + ((": " + repr(broken)) if broken else ""))
+
+# ------------------------------------------------------------------------------------------- integration (the real files)
+# The real options host (mpfever_feat.lua), the real merge of companies (mpfever_eco.lua E.merge / E.coMerge, mpfever_co.lua),
+# the bridge's real helpers (SIM.featBridge with its coMerge, SIM.featTick, SIM.featEvent, G.featBridge, G.featChat,
+# G.featRequest, G.coNewsText) and the window's real tab code (U.featU, U.featTabRows), with the game's API mocked: the market
+# opens, a company buys a computer company's shares month after month and takes it over through env.coMerge; the AI module's
+# real check then keeps that computer company from announcing itself again.
+import re as _re
+
+CONTENT = os.path.join(HERE, "..", "mod", "mpfever_1", "content")
+
+
+def _read(name):
+    with open(os.path.join(CONTENT, name), encoding="utf-8") as f:
+        return f.read()
+
+
+def _extract(src, pattern, what):
+    m = _re.search(pattern, src, _re.S | _re.M)
+    if not m:
+        check(False, what + " found in the file")
+        return ""
+    return m.group(0)
+
+
+print("integration: the merge of companies (mpfever_eco.lua)")
+ECO_MOCK = r'''
+OWNER, BAL, LOAN, CMDS, LOGS = {}, {}, {}, {}, {}
+ENTS = {}
+api = {
+  type = { ComponentType = { PLAYER_OWNED = "po", ACCOUNT = "acc", NAME = "name" },
+    JournalEntry = { new = function() return { category = {} } end, Type = { OTHER = "other", LOAN = "loan" } },
+    Vec3f = { new = function() return {} end } },
+  engine = {
+    util = { finance = { getPlayersBalance = function(e) return BAL[e] end } },
+    system = { lineSystem = { getLinesForPlayer = function() return {} end } },
+    forEachEntityWithComponent = function(fn, ct) for _, e in ipairs(ENTS) do fn(e) end end,
+    getComponent = function(e, ct)
+      if ct == "po" then return OWNER[e] and { player = OWNER[e] } or nil end
+      if ct == "acc" then return { loan = LOAN[e] or 0, balance = BAL[e] } end
+      return nil
+    end,
+  },
+  cmd = {
+    makeEntitySetPlayerCmd = function(e, to) return { "owner", e, to } end,
+    makeJournalBookAssetCmd = function(ent, je) return { "book", ent, je.amount } end,
+    sendCommand = function(c)
+      CMDS[#CMDS + 1] = c[1] .. " " .. tostring(c[2]) .. " " .. tostring(c[3])
+      if c[1] == "owner" then OWNER[c[2]] = c[3] end
+      if c[1] == "book" then BAL[c[2]] = (BAL[c[2]] or 0) + c[3] end
+    end,
+  },
+}
+ENV = { log = function(s) LOGS[#LOGS + 1] = s end, CO = CO, R = {}, STEP = 200, gameTime = function() return 1000 end }
+function registry()
+  return { mode = "separate", canon = 1001, start = 2000000, list = {
+    { id = 1, key = "host", name = "", color = 1, ent = 1001, members = { { key = "host" } }, chief = "host" },
+    { id = 2, key = "bob", name = "Bob Co", color = 2, ent = 1002, members = { { key = "bob" }, { key = "eve" } }, chief = "bob" },
+    { id = 4, key = "ai:1", name = "Robot Co", color = 4, ent = 1004, members = { { key = "ai:1" } }, chief = "ai:1" } },
+    mergeOffers = { { from = 4, to = 1 }, { from = 2, to = 1 } }, requests = {}, news = {} }
+end
+function world()
+  OWNER, BAL, LOAN, CMDS = { [5001] = 1004, [5002] = 1004, [5003] = 1002, [5004] = 1001 }, { [1001] = 1000000, [1002] = 500000, [1004] = 300000 }, { [1001] = 300000 }, {}
+  ENTS = { 5001, 5002, 5003, 5004 }
+end
+function find(reg, id) for _, c in ipairs(reg.list) do if c.id == id then return c end end end
+function keys(c) local t = {} for _, m in ipairs(c.members or {}) do t[#t + 1] = m.key end return table.concat(t, ",") end
+'''
+
+
+def eco_runtime(env_merge=None):
+    R = lua52.LuaRuntime(unpack_returned_tuples=True)
+    if env_merge is not None:
+        R.execute("local real = os.getenv; os.getenv = function(k) if k == 'MPFEVER_STOCKMERGE' then return %r end return real(k) end" % env_merge)
+    R.globals().CO = R.execute(_read("mpfever_co.lua"))
+    R.globals().E = R.execute(_read("mpfever_eco.lua"))
+    R.execute(ECO_MOCK)
+    return R
+
+
+R = eco_runtime()
+# the merge of 0.5.14 (co_merge_answer): unchanged
+r = run(R, '''world(); st = { co = registry() }
+local a, b = find(st.co, 2), find(st.co, 1)
+E.env = ENV
+E.merge(st, a, b, ENV)
+return table.concat({ a.gone, tostring(a.mergedInto), tostring(a.takenBy), tostring(a.formerMembers), keys(a), keys(b), tostring(b.chief),
+  st.co.news[#st.co.news].kind, tostring(OWNER[5003]), tostring(BAL[1002]), tostring(BAL[1001]) }, "|")''')
+check(r == "merged|1|nil|nil||host,bob,eve|host|merged|1001|0|1500000", "E.merge without opts: as in 0.5.14 (players, entities and money go into the company, 'merged') (%s)" % r)
+# the merge a game option asks for: the stock market's takeover of a computer company
+r = run(R, '''world(); st = { co = registry() }
+local ok, why = E.coMerge(st, 4, 2, ENV, { members = "release", gone = "taken" })
+local a, b = find(st.co, 4), find(st.co, 2)
+return table.concat({ tostring(ok), a.gone, tostring(a.mergedInto), tostring(a.takenBy), table.concat(a.formerMembers, ","), keys(a), tostring(a.chief), keys(b),
+  st.co.news[#st.co.news].kind, tostring(OWNER[5001]), tostring(OWNER[5002]), tostring(BAL[1004]), tostring(BAL[1002]), tostring(#st.co.mergeOffers), tostring(st.co.mergeOffers[1].from) }, "|")''')
+check(r == "true|taken|2|2|ai:1||nil|bob,eve|taken|1002|1002|0|800000|1|2",
+      "E.coMerge (release, taken): its entities and money to the buyer, its players released (formerMembers), not put into the buyer, its offers gone (%s)" % r)
+# the savegame's company taken over: its game loans stay with it, with the money to pay them back
+r = run(R, '''world(); st = { co = registry() }
+local ok = E.coMerge(st, 1, 2, ENV, { members = "release", gone = "taken" })
+return table.concat({ tostring(ok), tostring(BAL[1001]), tostring(BAL[1002]), table.concat(find(st.co, 1).formerMembers, ",") }, "|")''')
+check(r == "true|300000|1200000|host", "the savegame's company taken over: it keeps the money of its game loans (300000), the rest to the buyer (%s)" % r)
+r = run(R, '''world(); st = { co = registry() }
+local a = { E.coMerge(st, 4, 4, ENV, {}) }
+local b = { E.coMerge(st, 9, 2, ENV, {}) }
+find(st.co, 2).gone = "bankrupt"
+local c = { E.coMerge(st, 4, 2, ENV, {}) }
+local st2 = { co = registry() }; st2.co.mode = "shared"
+local d = { E.coMerge(st2, 4, 2, ENV, {}) }
+return tostring(a[1]) .. tostring(b[1]) .. tostring(c[1]) .. tostring(d[1]) .. "|" .. tostring(find(st.co, 4).gone) .. "|" .. #CMDS''')
+check(r == "falsefalsefalsefalse|nil|0", "E.coMerge refuses itself, an unknown or gone company and the co-op, and does nothing then (%s)" % r)
+R0 = eco_runtime("0")
+r = run(R0, '''world(); st = { co = registry() }
+local ok, why = E.coMerge(st, 4, 2, ENV, { members = "release", gone = "taken" })
+return tostring(ok) .. "|" .. tostring(why) .. "|" .. tostring(find(st.co, 4).gone) .. "|" .. #CMDS''')
+check(r == "false|MPFEVER_STOCKMERGE=0|nil|0", "MPFEVER_STOCKMERGE=0: no merge for an option (%s)" % r)
+r = run(R0, '''world(); st = { co = registry() }
+E.env = ENV
+E.merge(st, find(st.co, 2), find(st.co, 1), ENV)
+return find(st.co, 2).gone .. "|" .. keys(find(st.co, 1))''')
+check(r == "merged|host,bob,eve", "MPFEVER_STOCKMERGE=0: the players' merge unchanged")
+
+print("integration: the options host, the bridge's helpers and the stock market, end to end")
+bridge_src = _read("mpfever_bridge.script.lua")
+parts = [
+    _extract(bridge_src, r"^SIM\.featBridge = function\(\)\n.*?^end\n", "SIM.featBridge"),
+    _extract(bridge_src, r"^SIM\.featTick = function\(state\)\n.*?^end\n", "SIM.featTick"),
+    _extract(bridge_src, r"^SIM\.featEvent = function\(st, name, param\)\n.*?^end\n", "SIM.featEvent"),
+    _extract(bridge_src, r"^G\.featBridge = function\(\)\n.*?^end\n", "G.featBridge"),
+    _extract(bridge_src, r"^G\.featChat = function\(text\)\n.*?^end\n", "G.featChat"),
+    _extract(bridge_src, r"^G\.featRequest = function\(p\)\n.*?^end\n", "G.featRequest"),
+    _extract(bridge_src, r"^G\.coNewsText = function\(reg, n\)\n.*?^end\n", "G.coNewsText"),
+]
+ai_retired = _extract(_read("mpfever_ai.lua"), r"^function M\.retiredBy\(st, key\)\n.*?^end\n", "mpfever_ai.lua's M.retiredBy")
+X = eco_runtime()
+X.globals().F = X.execute(_read("mpfever_feat.lua"))
+X.globals().STOCK_SRC = SRC
+X.execute(r'''
+FAKECLOCK = 100
+os.clock = function() return FAKECLOCK end
+os.time = function() return 0 end
+F.loader = function(id) if id == "stock" then return assert(load(STOCK_SRC, "=mpfever_feat_stock.lua"))() end return nil end
+-- the game: its time, the month's length, the vehicles and lines (none), the existence of entities
+NOW, MONTHMS = 30 * 60000, 60000
+api.util = { getDefaultMonthDuration = function() return MONTHMS end }
+api.type.ComponentType.GAME_TIME, api.type.ComponentType.TRANSPORT_VEHICLE, api.type.ComponentType.LINE = "gt", "tv", "line"
+api.engine.util.getWorld = function() return 1 end
+api.engine.entityExists = function() return true end
+local get = api.engine.getComponent
+api.engine.getComponent = function(e, ct) if ct == "gt" then return { gameTime = NOW } end return get(e, ct) end
+local each = api.engine.forEachEntityWithComponent
+api.engine.forEachEntityWithComponent = function(fn, ct) if ct == "tv" or ct == "line" then return end return each(fn, ct) end
+-- the bridge's globals the helpers use
+log = function(s) LOGS[#LOGS + 1] = s end
+function gameTime() return NOW end
+STEP, R, TAB, NL, BS = 200, {}, "\t", "\n", "/"
+BOOKED = {}
+function coBook(ent, e) BOOKED[#BOOKED + 1] = ent .. ":" .. e.amount; BAL[ent] = (BAL[ent] or 0) + e.amount end
+FILES, CHATFILE, SENT = {}, {}, {}
+C = { ROLE = "host", DIR = "D", T = function(fr, en) return en end, Tf = function(fr, en, ...) local v, i = { ... }, 0 return (en:gsub("%%s", function() i = i + 1 return tostring(v[i]) end)) end,
+  feat = function() return F end, eco = function() return E end,
+  IO = { open = function(path) return { write = function(_, t) FILES[path] = t end, close = function() end } end },
+  appendFile = function(path, t) CHATFILE[#CHATFILE + 1] = t return true end }
+SIM = { ecoEnv = function() return ENV end }
+G = { me = "host", myCo = 1, cmode = "separate", co = nil }
+-- (an event sent: the lockstep delivers it to every game's simulation with the sender's name and company, as executeActionOnce)
+G.coEvent = function(name, param) SENT[#SENT + 1] = { name = name, param = param, from = G.me, co = G.myCo } end
+G.coName = function(reg, id) local c = reg and find(reg, id) return c and c.name ~= "" and c.name or ("#" .. tostring(id)) end
+''')
+for p in parts:
+    X.execute(p)
+X.execute("AIM = {}\n" + ai_retired.replace("function M.retiredBy", "function AIM.retiredBy"))
+r = run(X, r'''
+world()
+BAL[1004] = 3000000; BAL[1002] = 50000000
+st = { co = registry() }
+G.co, G.featSt = st.co, st
+STATE = { get = function() return st end, set = function() end }
+-- (every event sent, applied in order by the simulation, as the bridge's handleEvent does)
+function deliver()
+  local list = SENT
+  SENT = {}
+  for _, e in ipairs(list) do
+    local p = {}
+    for k, v in pairs(e.param) do p[k] = v end
+    p.mpfFrom = e.from == "host" and "host" or (e.from .. "#1")
+    p.mpfCo = e.co
+    SIM.featEvent(st, e.name, p)
+  end
+end
+function as(who, co) G.me, G.myCo = who, co; C.ROLE = who == "host" and "host" or "client" end
+-- the host's gui, about once a second (the real clock of the module mocked)
+function gui() FAKECLOCK = FAKECLOCK + 3; F.gui(st, G.featBridge(), FAKECLOCK) end
+-- (a company is read once its entity has been known for 5 s: three looks, 3 s apart)
+function nextMonth() NOW = NOW + MONTHMS; SIM.featTick(STATE); as("host", 1); gui(); gui(); gui(); deliver() end
+-- the option on, as the host's f_opts
+SIM.featEvent(st, "f_opts", { s = "stock=1;stock.premium=50", mode = "separate", mpfFrom = "host" })
+SIM.featTick(STATE)
+return tostring(st.optsText) .. "|" .. tostring(st.featMonth)''')
+check(r == "stock=1;stock.premium=50|30", "the options on (f_opts), the first month not counted (%s)" % r)
+r = run(X, r'''
+local S0 = st.feat and st.feat.stock
+nextMonth()
+local S = st.feat.stock
+local text = FILES["D/feat_stock_stock.txt"] or ""
+return tostring(S0) .. "|" .. tostring(S.month) .. "|" .. tostring(S.price["4"]) .. "|" .. tostring(S.price["1"]) .. "|" .. tostring(S["until"]["4"]) .. "|"
+  .. tostring(text:find("co\t4\t1\t", 1, true) ~= nil) .. "|" .. #CHATFILE .. "|" .. tostring(CHATFILE[1] and CHATFILE[1]:find("The stock market opens: 3 companies", 1, true) ~= nil)''')
+check(r == "nil|31|300000|70000|31|true|0|nil",
+      "the next month: the host measures and sends the prices, every game prices (value / 10), the window's file written (%s)" % r)
+r = run(X, r'''gui() return #CHATFILE .. "|" .. tostring(CHATFILE[1]:find("The stock market opens: 3 companies", 1, true) ~= nil)''')
+check(r == "1|true", "the opening told in this game's chat (G.featChat)")
+r = run(X, r'''
+-- Bob (company 2) buys the computer company's shares through the window's request, 2 a month, up to 5
+as("bob", 2); G.featRequest({ m = "stock", kind = "buy", payload = { co = 4, n = 2 } }); deliver()
+as("bob", 2); G.featRequest({ m = "stock", kind = "buy", payload = { co = 4, n = 1 } }); deliver()
+local h1 = st.feat.stock.hold["4"]["2"]
+nextMonth()
+as("bob", 2); G.featRequest({ m = "stock", kind = "buy", payload = { co = 4, n = 2 } }); deliver()
+nextMonth()
+as("bob", 2); G.featRequest({ m = "stock", kind = "buy", payload = { co = 4, n = 1 } }); deliver()
+as("bob", 2); G.featRequest({ m = "stock", kind = "buy", payload = { co = 4, n = 1 } }); deliver()
+return h1 .. "|" .. st.feat.stock.hold["4"]["2"] .. "|" .. #BOOKED .. "|" .. BOOKED[1] .. "|" .. BOOKED[2]''')
+check(r == "2|5|6|1002:-600000|1004:600000",
+      "purchases through the window (G.featRequest -> M.request -> f_stock_buy): the monthly limit, the money to the company bought, through coBook (%s)" % r)
+r = run(X, r'''
+nextMonth()
+local P = st.feat.stock.price["4"]
+local total = math.floor(P * 150 / 100) * 5
+local before = BAL[1002]
+local robot = BAL[1004]
+as("bob", 2); G.featRequest({ m = "stock", kind = "takeover", payload = { co = 4, n = 1, max = total } }); deliver()
+local c4 = find(st.co, 4)
+return table.concat({ tostring(c4.gone), tostring(c4.takenBy), table.concat(c4.formerMembers or {}, ","), tostring(OWNER[5001]), tostring(OWNER[5002]),
+  tostring(BAL[1004]), tostring(BAL[1002] == before - total + robot), tostring(st.feat.stock.retired["ai:1"]), tostring(st.feat.stock.price["4"]),
+  tostring(AIM.retiredBy(st, "ai:1")), tostring(AIM.retiredBy(st, "ai:2")), st.co.news[#st.co.news].kind, tostring(G.coNewsText(st.co, st.co.news[#st.co.news])) }, "|")''')
+check(r == "taken|2|ai:1|1002|1002|0|true|true|nil|true|false|taken|nil",
+      "the takeover (premium 50 %%): env.coMerge -> E.coMerge, its entities and money to the buyer, the computer company retired (mpfever_ai.lua), "
+      "the bridge's chat says nothing of the merge (%s)" % r)
+r = run(X, r'''CHATFILE = {}; as("host", 1); gui()
+local said = table.concat(CHATFILE, " ")
+return tostring(said:find("Bob Co takes over Robot Co", 1, true) ~= nil) .. "|" .. #CHATFILE''')
+check(r == "true|1", "the takeover told once, by the stock market, in this game's chat (%s)" % r)
+r = run(X, r'''local n = #BOOKED
+as("bob", 2); G.featRequest({ m = "stock", kind = "buy", payload = { co = 4, n = 1 } }); deliver()
+return #BOOKED - n .. "|" .. #SENT''')
+check(r == "0|0", "a company taken over: nothing more to buy, refused on the buyer's game, nothing sent (%s)" % r)
+TABTEXT = run(X, 'as("bob", 2); gui(); return FILES["D/feat_stock_stock.txt"]')
+
+print("integration: the window's tab (mpfever_ui.script.lua)")
+ui_src = _read("mpfever_ui.script.lua")
+win = _extract(ui_src, r"^U\.featOff = .*?^U\.featTabRows = function\(K, st, key\)\n.*?^end\n", "the window's game options")
+W = lua52.LuaRuntime(unpack_returned_tuples=True)
+W.globals().FEAT_SRC = _read("mpfever_feat.lua")
+W.globals().STOCK_SRC = SRC
+W.globals().TABTEXT = TABTEXT or ""
+W.execute(r'''
+F = assert(load(FEAT_SRC, "=mpfever_feat.lua"))()
+F.loader = function(id) if id == "stock" then return assert(load(STOCK_SRC, "=mpfever_feat_stock.lua"))() end return nil end
+CLOCK = 10
+os.clock = function() return CLOCK end
+U = { isHost = function() return false end, winChanged = function() end, menuRequest = function() return true end }
+LINES = {}
+function sendLine(kind, p) LINES[#LINES + 1] = kind .. " " .. tostring(p.m) .. " " .. tostring(p.kind) .. " " .. tostring(p.payload and p.payload.co) end
+function money(n) return "$" .. tostring(n) end
+function T(fr, en) return en end
+function log() end
+FILEDATA = { ["D/feat_stock_stock.txt"] = TABTEXT }
+C = { feat = function() return F end, DIR = "D", BS = "/", NL = "\n", CR = "\r", Tf = function(fr, en) return en end,
+  IO = { open = function(path) local s = FILEDATA[path] if not s then return nil end
+    return { read = function() return s end, close = function() end } end } }
+api = {}
+K = { TEXT_W = 556, ICON_SETTINGS = "i" }
+function K.text(t) return { kind = "text", t = tostring(t) } end
+function K.muted(t) return { kind = "muted", t = tostring(t) } end
+function K.section(icon, t) return { kind = "section", t = t } end
+function K.gap() return { kind = "gap" } end
+function K.row(c) return { kind = "row", c = c } end
+function K.col(c) return { kind = "col", c = c } end
+function K.btn(label, tip, fn, primary, enabled) return { kind = "btn", t = label, fn = fn, primary = primary, enabled = enabled } end
+''')
+W.execute(win)
+r = run(W, r'''
+local stW = { mode = "separate", opts = "stock=1;stock.premium=50", me = "bob" }
+local tabs = U.featTabs(stW)
+ROWS = U.featTabRows(K, stW, "f_stock")
+local sections, buys, texts = 0, {}, {}
+for _, n in ipairs(ROWS) do
+  if n.kind == "section" then sections = sections + 1 end
+  if n.kind == "text" then texts[#texts + 1] = n.t end
+  if n.kind == "row" then for _, b in ipairs(n.c) do if b.kind == "btn" then buys[#buys + 1] = b end end end
+end
+BUY1 = nil
+for _, b in ipairs(buys) do if b.t:find("Buy 1 (", 1, true) and not BUY1 then BUY1 = b end end
+return table.concat({ #tabs, tabs[1] and tabs[1].key or "-", sections, tostring(texts[1] and texts[1]:find("Your portfolio", 1, true) ~= nil), #buys > 0 and "buttons" or "none",
+  tostring(BUY1 and BUY1.enabled), tostring(BUY1 and BUY1.primary) }, "|")''')
+check(r == "1|f_stock|2|true|buttons|true|false", "the Stocks tab: drawn once (2 titles, no row twice), the portfolio, Buy buttons enabled (%s)" % r)
+r = run(W, r'''BUY1.fn() return LINES[1]''')
+check(r == "feat_req stock buy 1", "a button: the request to this game's module (ui.log feat_req) (%s)" % r)
 
 print("PASS" if not failures else "FAIL: %d check(s): %s" % (len(failures), "; ".join(failures)))
 sys.exit(1 if failures else 0)

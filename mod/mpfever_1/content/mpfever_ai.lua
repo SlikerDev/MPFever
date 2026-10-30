@@ -3196,6 +3196,13 @@ M.p = { floorOf = floorOf, ltBudget = ltBudget, ltJudge = ltJudge, ltScore = ltS
 	set = function(level, reserve, floor) LV = LEVELS[level or 2] or LEVELS[2]; RESERVE = reserve or LV.reserve; FLOOR = floor or FLOOR_MIN end,
 	get = function() return { reserve = RESERVE, floor = FLOOR, level = LV.name } end }
 
+-- (0.6) whether the computer company of that key ("ai:n") was taken over on the stock market (see M.tick)
+function M.retiredBy(st, key)
+	if os.getenv("MPFEVER_STOCKRETIRE") == "0" then return false end
+	local S = type(st) == "table" and type(st.feat) == "table" and st.feat.stock or nil
+	return type(S) == "table" and type(S.retired) == "table" and S.retired[tostring(key)] == true
+end
+
 function M.tick(E, st)
 	local G, C = E.G, E.C
 	if C.ROLE ~= "host" or G.cmode ~= "separate" then return end
@@ -3239,6 +3246,14 @@ function M.tick(E, st)
 	G.AI.lookAt = G.frames + LV.tick
 	if G.AI.levelSaid ~= LV.name then G.AI.levelSaid = LV.name; E.log("AI" .. cur.n .. " level " .. LV.name) end
 	AINUM, AIKEY = cur.n, "ai:" .. cur.n
+	-- (0.6) a computer company taken over on the stock market (the game option "stock", mpfever_feat_stock.lua: its key in
+	-- st.feat.stock.retired, the same on every game) stays retired: it is not announced again as a new company of that key.
+	-- Nothing of it while the option was never used. MPFEVER_STOCKRETIRE=0: announced again, as without the check
+	if M.retiredBy(st, AIKEY) then
+		if not G.AI.retiredSaid then G.AI.retiredSaid = true; L(E, "taken over on the stock market: retired, not announced again") end
+		G.AI.lookAt = G.frames + 3600
+		return
+	end
 	AICOLOR = (cur.color and cur.color >= 1 and cur.color <= #E.CO.PALETTE) and cur.color or nil
 	-- (its start money, the host's choice for it; else the players')
 	AIMONEY = cur.money
