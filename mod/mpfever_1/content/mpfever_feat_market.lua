@@ -34,6 +34,10 @@
 --   seq    = the number of the last alert
 -- Town and industry entities come from the savegame: their ids are the same on every game (not those of stations and lines,
 -- which are never sent).
+--
+-- In game: every line of this module in mod.log starts with "feat market:" (the host's measure, its cost and, the first time,
+-- what the game gave; each game's measure applied; the camera moved). The autotest MPFEVER_SCENARIO=markettest (the bridge's
+-- H.markettest) switches the option on through the host's MPFever.exe and checks the measure, the file and the tab on both games.
 
 local M = {}
 M.ID = "market"
@@ -51,6 +55,7 @@ M.TEXT = {
 	explain = { "Voyageurs : les gens transportés vers, depuis et dans la ville (moyenne sur 6 mois, celle du rang). Fret : les marchandises livrées à la ville sur 6 mois. Mesuré par l'hôte chaque mois de jeu.",
 		"Passengers: people carried to, from and within the town (6-month average, the one of the rank). Cargo: goods delivered to the town over 6 months. Measured by the host every game month." },
 	noMeasure = { "Pas encore de mesure : la première vient au début du prochain mois de jeu.", "No measure yet: the first one comes at the start of the next game month." },
+	alone = { "Une seule entreprise joue : pas de concurrent, rien à mesurer.", "Only one company plays: no competitor, nothing to measure." },
 	totals = { "Totaux des entreprises", "Companies' totals" },
 	company = { "Entreprise", "Company" },
 	passengers = { "Voyageurs", "Passengers" },
@@ -97,7 +102,7 @@ M.OPTIONS = {
 M.EVENTS = { f_market_snap = true }
 M.TAB = { id = "market", title = M.TEXT.tab }
 
-M.FILE = "market.txt"        -- the window's file (session folder), written by env.write
+M.FILE = "shares"            -- the window's file, feat_market_shares.txt of the session folder (env.write, u.read)
 M.LEAD_MARGIN = 0.02         -- another company takes first place only when its share passes the first's by this much
 M.MAX_TOWNS = 300            -- towns sent in one measure at most (the most populated)
 M.MAX_INDUSTRIES = 400
@@ -338,6 +343,12 @@ end
 -- again after a loss) or older is left out
 function M.event(st, name, param, env)
 	if name ~= "f_market_snap" or type(param) ~= "table" or not M.active(st, env) then return end
+	-- (only the host's game measures: a measure from a player who joined, whose name has "#n" after it, is left out. The
+	-- sender is in the event itself, the same on every game)
+	if type(param.mpfFrom) == "string" and param.mpfFrom:find("#", 1, true) then
+		if env.log then env.log("feat market: a measure from " .. param.mpfFrom .. " left out (only the host's game measures)") end
+		return
+	end
 	local month = tonumber(param.month)
 	-- (a game month is year x 12 + month, -1 the first measure: a wild number would leave every later measure out)
 	if month == nil or month ~= math.floor(month) or month < -1 or month > 1e6 then return end
@@ -347,7 +358,7 @@ function M.event(st, name, param, env)
 	local towns = M.decodeTowns(param.t, live)
 	local inds = M.decodeIndustries(param.i, live)
 	local n = M.apply(S, month, towns, inds, live, M.alertsOn(env))
-	if env.log then env.log("market: measure of month " .. month .. " applied: " .. #towns .. " town(s), " .. #inds .. " industry(ies), " .. n .. " alert(s)") end
+	if env.log then env.log("feat market: measure of month " .. month .. " applied: " .. #towns .. " town(s), " .. #inds .. " industry(ies), " .. n .. " alert(s), alert number " .. tostring(S.seq)) end
 end
 
 -- ---------------------------------------------------------------------------------------------------- the engine (host's GUI)
@@ -437,8 +448,14 @@ end
 -- the cargo a line delivered (one line's entry of getTownDeliveriesStats: { cargo type: { late, total } }, the type -1 for
 -- all of them when asked so), as PG.measure counts it
 function M.delivered(byCargo)
-	if type(byCargo) ~= "table" then return 0 end
+	-- (how the game gives it, counted for the first measure's log line: see M.diagnose)
+	local shape = M.mem.shape
+	if type(byCargo) ~= "table" then
+		if shape then shape.other = shape.other + 1 end
+		return 0
+	end
 	local all = byCargo[-1]
+	if shape then if type(all) == "table" then shape.all = shape.all + 1 else shape.cargo = shape.cargo + 1 end end
 	if type(all) == "table" then return tonumber(all[2]) or 0 end
 	local n = 0
 	for _, pair in pairs(byCargo) do
@@ -531,6 +548,8 @@ end
 function E.focusTown(town)
 	local ok = pcall(function()
 		local p = api.engine.util.town.getTownDistrictCenter(town, api.type.enum.LandUseType.RESIDENTIAL)
+		-- (a town without a residential district: the game may give the map's origin, not the town)
+		if not p or (p.x == 0 and p.y == 0) then error("no residential centre") end
 		api.gui.camera.focusPosition(p, 1000)
 	end)
 	if not ok then ok = pcall(function() api.gui.camera.focusEntity(town) end) end
@@ -550,7 +569,10 @@ function M.newPass(month, st)
 		local x = type(c) == "table" and live[c.id]
 		if x then byEnt[x.ent] = x.id end
 	end
-	return { month = month, phase = "lines", i = 0, live = live, byEnt = byEnt, owner = {}, groups = {}, towns = {} }
+	-- (the first measure of this game counts what the game gave, for its log line: see M.diagnose)
+	if not M.mem.diagDone and not M.mem.shape then M.mem.shape = { all = 0, cargo = 0, other = 0 } end
+	return { month = month, phase = "lines", i = 0, live = live, byEnt = byEnt, owner = {}, groups = {}, towns = {},
+		calls = 0, ms = 0, coLines = 0, withStations = 0, withCargo = 0 }
 end
 
 -- the company owning an entity, in this measure (owners read once each)
@@ -578,6 +600,7 @@ function M.step(pass, env)
 			local line = pass.list[pass.i]
 			local co = companyOf(pass, line)
 			if co then
+				pass.coLines = pass.coLines + 1
 				for _, sg in ipairs(E.lineGroups(line)) do
 					pass.groups[sg] = pass.groups[sg] or {}
 					pass.groups[sg][co] = true
@@ -606,6 +629,8 @@ function M.step(pass, env)
 				for co in pairs(sg and pass.groups[sg] or {}) do here[co] = true end
 				for co in pairs(here) do rec.st[co] = (rec.st[co] or 0) + 1 end
 			end
+			if next(rec.st) ~= nil then pass.withStations = pass.withStations + 1 end
+			if next(rec.fr) ~= nil then pass.withCargo = pass.withCargo + 1 end
 			pass.towns[#pass.towns + 1] = rec
 		end
 		if pass.i >= #pass.list then pass.phase, pass.i, pass.list = "industries", 0, nil end
@@ -630,8 +655,11 @@ function M.step(pass, env)
 		end
 		if pass.i >= #pass.list then
 			pass.inds = {}
+			pass.nGroups, pass.nStock, pass.nInd = #pass.list, 0, 0
+			for _ in pairs(pass.sl) do pass.nStock = pass.nStock + 1 end
 			-- (no station of a company takes anything: the industries are not listed)
 			for _, it in ipairs(next(pass.sl) ~= nil and E.industries() or {}) do
+				pass.nInd = pass.nInd + 1
 				local x = pass.sl[it.stockList]
 				if x then
 					local cos = {}
@@ -705,22 +733,57 @@ function M.hostTick(st, S, env)
 	local n = 0
 	for _, c in ipairs(type(st.co) == "table" and st.co.list or {}) do if type(c) == "table" and live[c.id] then n = n + 1 end end
 	-- (one company: no competitor, nothing to measure)
-	if n < 2 then mem.pass = nil; return end
+	if n < 2 then
+		mem.pass = nil
+		if not mem.aloneSaid and env.log then env.log("feat market: one company plays: nothing measured until another one comes") end
+		mem.aloneSaid = true
+		return
+	end
+	mem.aloneSaid = nil
 	if mem.sent and mem.sent.month == want and not mem.pass then
 		if now - mem.sent.at < M.RESEND_S then return end
 		mem.sent.at = now
 		env.send("f_market_snap", mem.sent.param)
-		if env.log then env.log("market: the measure of month " .. want .. " sent again") end
+		if env.log then env.log("feat market: the measure of month " .. want .. " sent again (not applied after " .. M.RESEND_S .. " s)") end
 		return
 	end
 	if not mem.pass then mem.pass = M.newPass(want, st) end
-	if M.step(mem.pass, env) then
-		local p = M.encode(mem.pass, st)
-		mem.sent = { month = mem.pass.month, at = now, param = p }
+	local pass = mem.pass
+	local done = M.step(pass, env)
+	pass.calls = pass.calls + 1
+	pass.ms = pass.ms + math.max(0, ((env.realTime and env.realTime() or now) - now) * 1000)
+	if done then
+		local p = M.encode(pass, st)
+		mem.sent = { month = pass.month, at = now, param = p }
 		mem.pass = nil
 		env.send("f_market_snap", p)
-		if env.log then env.log("market: measure of month " .. p.month .. " sent (" .. #p.t + #p.i .. " characters)") end
+		M.diagnose(pass, p, st, env)
 	end
+end
+
+-- The host's log lines of a measure (what the in-game test checks): every measure its size and cost; the first one of this
+-- game also what the game gave (lines of companies, towns with their stations and cargo, the deliveries' form per line,
+-- station groups and the stock lists their catchments take, the industries those match, the rank's passenger entries)
+function M.diagnose(pass, p, st, env)
+	if not env.log then return end
+	local nTowns, nInds = 0, 0
+	if p.t ~= "" then nTowns = select(2, p.t:gsub(";", ";")) + 1 end
+	if p.i ~= "" then nInds = select(2, p.i:gsub(";", ";")) + 1 end
+	env.log(string.format("feat market: measure of month %s sent: %d town(s), %d industry(ies), %d characters, %d call(s), %d ms",
+		tostring(p.month), nTowns, nInds, #p.t + #p.i, pass.calls, math.floor(pass.ms + 0.5)))
+	local mem = M.mem
+	if mem.diagDone then return end
+	mem.diagDone = true
+	local shape = mem.shape or { all = 0, cargo = 0, other = 0 }
+	mem.shape = nil
+	local nPa = 0
+	local prog = type(st.prog) == "table" and st.prog or {}
+	for _ in ipairs(type(prog.passengers) == "table" and prog.passengers or {}) do nPa = nPa + 1 end
+	env.log(string.format("feat market: first measure: %d line(s) of the companies, %d town(s) (%d with a company's station, %d with its cargo delivered), "
+		.. "deliveries per line %d with the total (-1), %d per cargo, %d of another form; %d station group(s) of the lines take %d stock list(s), "
+		.. "%d industry(ies) looked at, %d served; %d passenger entries of the rank",
+		pass.coLines, #pass.towns, pass.withStations, pass.withCargo, shape.all, shape.cargo, shape.other,
+		pass.nGroups or 0, pass.nStock or 0, pass.nInd or 0, #(pass.inds or {}), nPa))
 end
 
 -- ---------------------------------------------------------------------------------------------------- every game's GUI
@@ -780,6 +843,9 @@ function M.fileLines(st, S, env)
 	local cn = M.companyNames(st)
 	local name = M.names(env)
 	local L = { "v\t1", "me\t" .. tostring(me), "alerts\t" .. (M.alertsOn(env) and "1" or "0") }
+	local nLive = 0
+	for _ in pairs(live) do nLive = nLive + 1 end
+	if nLive < 2 then L[#L + 1] = "alone\t1" end
 	if not (S and S.month ~= nil) then return L end
 	L[#L + 1] = "month\t" .. tostring(S.month)
 	local ids = {}
@@ -842,7 +908,7 @@ function M.gui(st, env)
 			-- (the measure starts again; said once a minute at most)
 			local mem, now = M.mem, env.realTime and env.realTime() or 0
 			mem.pass = nil
-			if env.log and now - (mem.errAt or -1e9) >= 60 then mem.errAt = now; env.log("market: the host's measure failed: " .. tostring(err)) end
+			if env.log and now - (mem.errAt or -1e9) >= 60 then mem.errAt = now; env.log("feat market: the host's measure failed: " .. tostring(err)) end
 		end
 	end
 	M.tell(st, S, env)
@@ -865,7 +931,11 @@ end
 function M.request(kind, payload, st, env)
 	if kind == "show" then
 		local town = tonumber(payload)
-		if town then return E.focusTown(town) end
+		if town then
+			local ok = E.focusTown(town)
+			if env and env.log then env.log("feat market: camera to town " .. tostring(town) .. (ok and "" or ": NOT moved (the game refused)")) end
+			return ok
+		end
 	end
 	return false
 end
@@ -887,6 +957,7 @@ function M.parseFile(lines)
 		local k = f[1]
 		if k == "me" then d.me = tonumber(f[2]) or 0
 		elseif k == "alerts" then d.alerts = f[2] ~= "0"
+		elseif k == "alone" then d.alone = f[2] == "1"
 		elseif k == "month" then d.month = tonumber(f[2])
 		elseif k == "co" and tonumber(f[2]) then d.cos[tonumber(f[2])] = { id = tonumber(f[2]), ai = f[3] == "1", name = f[4] or "" }
 		elseif k == "tot" and tonumber(f[2]) then
@@ -918,7 +989,11 @@ function M.view(d, T, showAll)
 	local function tr(key, ...) return M.say(T, key, ...) end
 	add({ kind = "title", text = tr("title") })
 	add({ kind = "muted", text = tr("explain") })
-	if d.month == nil then add({ kind = "text", text = tr("noMeasure") }); return B end
+	if d.alone then add({ kind = "text", text = tr("alone") }) end
+	if d.month == nil then
+		if not d.alone then add({ kind = "text", text = tr("noMeasure") }) end
+		return B
+	end
 	local function coName(id)
 		local c = d.cos[id]
 		local n = (c and c.name ~= "" and c.name) or ("#" .. tostring(id))
@@ -980,13 +1055,17 @@ function M.view(d, T, showAll)
 	return B
 end
 
--- the window's tab: its file, the content above, the window's widgets (u.text, u.row, u.button, u.table as mpfever_feat.lua
--- gives them; each returns a node, the list of nodes is the tab's content). A widget the window does not give falls back to
--- a text
+-- The window's tab: its file, the content above, the window's widgets as the window gives them (U.featU of
+-- mpfever_ui.script.lua: u.title, u.text, u.muted, u.button(label, fn), u.row(nodes), u.table(lines, widths, header); each
+-- returns a node, the list of nodes is the tab's content; the window draws again after a button's function). A widget the
+-- window does not give falls back to a text.
+M.SHOW_W = 90                 -- the room a line keeps for its "Show" button (pixels)
+M.NUM_W = 92                  -- the width of a number column of the totals
 function M.ui(u)
 	local out = {}
 	if type(u) ~= "table" or not u.text then return out end
 	local T = u.T or M.T
+	local W = tonumber(u.W) or 556
 	local d = M.parseFile(u.read and u.read(M.FILE) or {})
 	local function text(s, style)
 		if style == "title" and u.title then return u.title(s) end
@@ -999,17 +1078,30 @@ function M.ui(u)
 		if b.kind == "title" or b.kind == "muted" or b.kind == "text" then
 			node = text(b.text, b.kind)
 		elseif b.kind == "table" then
-			if u.table then node = u.table(b.headers, b.rows)
+			if u.table then
+				-- (the company's name takes what the four number columns leave)
+				local lines = { b.headers }
+				for _, r in ipairs(b.rows) do lines[#lines + 1] = r end
+				local widths = { math.max(120, W - 4 * M.NUM_W) }
+				for k = 2, #b.headers do widths[k] = M.NUM_W end
+				node = u.table(lines, widths, true)
 			else
 				out[#out + 1] = text(table.concat(b.headers, " | "), "muted")
 				for _, r in ipairs(b.rows) do out[#out + 1] = text(table.concat(r, " | ")) end
 			end
 		elseif b.kind == "item" then
 			local town = b.town
+			-- (the camera moved by the bridge's interface, which logs it, see M.request; without it, from here)
 			local btn = town and button(M.say(T, "show"), function()
-				if not E.focusTown(town) and u.request then u.request("show", tostring(town)) end
+				if u.request then u.request("show", tostring(town)) else E.focusTown(town) end
 			end)
-			if btn and u.row then node = u.row({ text(b.text), btn }) else node = text(b.text) end
+			if btn and u.row then
+				-- (the line's text keeps the room of its button: one cell of u.table with a width)
+				local label = u.table and u.table({ { b.text } }, { W - M.SHOW_W }) or text(b.text)
+				node = u.row({ label, btn })
+			else
+				node = text(b.text)
+			end
 		elseif b.kind == "toggle" then
 			node = button(b.text, function() M.showAll = not M.showAll; if u.refresh then u.refresh() end end)
 		end

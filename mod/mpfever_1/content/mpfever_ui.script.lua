@@ -2078,7 +2078,8 @@ U.pollTabReq = function()
 	if not f then return end
 	local s = f:read("*a") or ""
 	f:close()
-	local tab, seq = s:match("^(%w+)" .. C.TAB .. "(%d+)")
+	-- (a game option's tab too: "f_<id>", 0.6)
+	local tab, seq = s:match("^([%w_]+)" .. C.TAB .. "(%d+)")
 	if not tab or seq == U.tabReqSeq or not U.SessionWindow then return end
 	U.compact = false
 	if U.openWindow(tab) then
