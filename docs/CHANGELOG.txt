@@ -1,6 +1,87 @@
 MPFever - Changelog
 ===================
 
+0.5.14 - the game's rules chosen in the lobby and kept in the savegame, computer companies that pay their way, signals on the map, fixes
+  - NEW (one company per player): the game's rules, chosen by the host and kept in the savegame. In the lobby, "Game
+    settings..." under the savegame's picture opens them (the players of the lobby see them on one line): the start money of a
+    new company (0 to 20 million, 2 million by default), the sharing rules between companies on or off, the months in debt
+    before a bankruptcy, and the start money of each computer company (as the players' by default). In the game, a new "Game"
+    tab of the MPFever window shows them to everybody and lets the host change them (the bankruptcy rule moved there from the
+    Settings tab). A lobby opened on a savegame starts with that savegame's rules. MPFEVER_SHARESWITCH=0: as before.
+  - NEW: the start money now applies to the host's company too at the start of a new game (it had the game's own, often 0,
+    while every other company had 2 million): once, when the companies are first set up, and only if that company runs no
+    vehicle and no line yet. A game already under way keeps everybody's money.
+  - NEW: sharing rules off: every track, station, stop and depot is open and free for every company, whatever a company or one
+    of its stations had set (those settings are kept and count again when the host switches the rules back on). The station
+    and depot windows then say so instead of offering their settings. Dedicated server: sharing-rules=true/false in
+    mpfever_server.properties.
+  - FIX (issue #97, resyncs "names"): players whose games are in different languages. The game names a new station, line or
+    vehicle by itself in its own language ("Fishing Grounds West" on an English game, "Fischzucht" on a German one), so the
+    games differed in their names and reloaded every few minutes. The host's game now sends the names it gives, and the other
+    games take them (a name changes nothing in the game itself). MPFEVER_NAMESYNC=0: as before.
+  - FIX (issue #97, "build not reproduced: conversion built"): the edit of a modular street station that took its last own
+    tracks away (a module fewer, no new segment). The replay's dry run, two copies of the station meant to be refused, was
+    built instead (two constructions of one proposal are not checked against each other, only their tracks are, and it had
+    none left): two stations on the other games, then a resync. Such an edit is now rebuilt with the game's own replacement of
+    the station, built only when it takes away exactly what the builder's tool took away (else the host's game is reloaded at
+    once, nothing built twice). MPFEVER_EDITREPLACE=0: as before.
+  - FIX (vehicles drifting apart in long sessions, friends' 4-hour session of 2026-10-29): the order of the vehicles and persons
+    on each road edge. The game keeps them in the order they arrived, and the vehicles queued at a stop take their places from
+    it: on two games the same trucks of one line waited 0.2 m apart, the "vehicles" check differed and the games reloaded
+    (twice in 4 hours). Each edge's list is now kept in entity order (ported from TPF3-MP's road-entry-order, MIT).
+    MPFEVER_NOROADORDER=1 on every game: as before.
+  - FIX: removing trees of the game no longer goes through a factory call that always failed there: each time it stopped the
+    game a moment and wrote a crash dump (4 times in that 4-hour session), before the removal that works. MPFEVER_ASSETFACTORYFIRST=1: as before.
+  - FIX (issue #96, a crash with the Real Track Cant mod): another game's build that came too late is no longer built when
+    this game built something at a later step since: the two landed in the other order than on their builders' games, and a
+    late street replacement made the engine assert and the game crash (the mod's script builds on the host's game are not held
+    back as a tool's builds are, and came 15 steps late on a game ahead). The host's game is reloaded instead. A late build
+    with nothing built since is built as before. MPFEVER_LATERESYNC=0: as before. Mods whose scripts build by themselves are
+    still not supported.
+  - FIX (one company per player): a company that joins while the session runs holds the games until it is created everywhere
+    (the host created it a few steps late: other entity ids, then drifts). MPFEVER_JOINHOLD=0: as before.
+  - AI (computer companies), to stay solvent and grow (the companies of the tests of 2026-10-29 opened 6 to 10 lines in
+    minutes with their 2 million, ran into debt, sold every vehicle and ended at -1.6 million; the game pays a fare by the
+    distance flown, and a vehicle costs about 160 000 a year in 1972 whatever it carries):
+    * a fleet fitted to each line: a line starts with one vehicle and gets one more only while the next one still pays for
+      itself (the level's margin: Easy 1.3, Normal 1.15, Hard 1.05 times its running costs); a full line that does not pay its
+      vehicles loses one, a line under the level's share of its costs once filled is given up, and a line given up is not
+      bought back at the next look (MPFEVER_AIFLEET=0: as before);
+    * growth: after its first lines (1 Easy, 2 Normal, 3 Hard), a new line only once the last one had time to fill (4, 3
+      and 2 game months), while fewer than the level's number of lines are still filling or about to be given up, and while its
+      lines earn together; or with plenty of money besides its reserve and its loans (3, 2, 1.2 million). No garage of a new
+      town is built while growth waits (MPFEVER_AIGOVERN=0: as before);
+    * the money it keeps back grows with its fleet and its loans: 6, 4 or 3 months of its vehicles' running costs and of its
+      loans' payments (MPFEVER_AIRESERVE=0, MPFEVER_AILOANBOOK=0);
+    * Normal and Hard open the lines between towns before the towns' own lines: a fare grows with the distance flown, the short
+      town lines earn the least (MPFEVER_AIORDER=0);
+    * the next vehicle goes to the full line that earns the most per vehicle, never to a full line losing money on Normal and
+      Hard (MPFEVER_AIREINVEST=0); a line losing money for six months with more than two vehicles loses one (MPFEVER_AIPRUNE=0);
+    * loans: at most one, the offer of the lowest monthly payment (the first offer was taken before: 5 to 70 million, a short
+      one cost more a month than the company earned; MPFEVER_AILOANPICK=0), and repaid once it has money to spare (new event
+      ai_repay, decided by the simulation on every game at the same step; MPFEVER_AIREPAY=0);
+    * no freight to town stops: a full truck unloading at a town stop earned nothing, the town took none of the cargo
+      (MPFEVER_AITOWNFREIGHT=1: as before); one freight line per producer and cargo, the producers at work first;
+    * a garage open to it within 5 km is used, another company's or the town's, instead of building its own (650 000 each, a
+      company of the tests built three in its first minutes; MPFEVER_AIOWNGARAGE=1: its own first);
+    * the computer companies spread over the map's towns instead of all building in the same three (MPFEVER_AISPREAD=0);
+    * fixes: town stops looked for within 200 m (they were built up to 300 m away and never found again: stop after stop in
+      the same place), freight routes and town garages tried again later instead of being left for the session, a line
+      between two towns given up no longer leaves both towns, a new line no longer judged empty before its first vehicles,
+      the memory of a line dropped with it (a new line could inherit an old line's id and its history), a new company after a
+      bankruptcy starts with a clean memory (MPFEVER_AIRETRY=0); the road garages and free town segments read once every 10 s
+      for all computer companies (a second of the host's frame in the first minutes; MPFEVER_AICACHE=0);
+    * every 30 s its log line says what it keeps back, its lines' result over two months and its fleet's running costs.
+  - NEW: signals on the map: "Here", "Watch out" and "Build here" in the Session tab of the MPFever window, then a click on
+    the map shows a coloured circle (with the company's colour in its middle) for 12 s on every player's game, three per
+    player at most. Nothing is built, the games' simulations are not touched. MPFEVER_PINGS=0: none.
+  - FIX: a list of vehicles in an action (a sale of several vehicles, the computer companies' sales) travels as references, as
+    single vehicles do: the raw ids named other vehicles on a game whose ids differ; such a sale is checked by the owner guard
+    like a single one (one company could not sell another's vehicles). MPFEVER_REFLISTS=0: as before.
+  - NEW: the MPFever Discord (discord.gg/qhhKfUMSJx): a "Discord" link in the launcher's status bar, a "Discord" button in
+    the window shown once the game is closed and in the Settings tab of the in-game MPFever window (MPFever.exe opens it in
+    the browser), and a line in the launcher's log at the end of a session.
+
 0.5.13 - computer companies carry freight and get a level, players see what they do, a safer mod exchange, fixes
   - NEW (experimental, computer companies): freight by truck. Every industry has its own street station: a computer company
     finds a producer that makes its cargo now (or a primary one: a mine, a farm, a forest) and an industry 0.9 to 5 km away
