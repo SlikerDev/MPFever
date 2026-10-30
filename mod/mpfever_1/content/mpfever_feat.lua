@@ -436,6 +436,9 @@ local function guiEnv(M, st, B)
 	e._st, e._B = st, B
 	e.isHost, e.me, e.myCo, e.mode = B.isHost, B.me, B.myCo, B.mode
 	e.R, e.CO = B.R, B.CO
+	-- (0.6: the player's language T(fr, en), the points of a tool's route (the bridge's G.pvPoints), the session's other players'
+	-- names, a dedicated server's owner (its game only); each nil when the bridge does not give it)
+	e.T, e.pvPoints, e.players, e.owner = B.T, B.pvPoints, B.players, B.owner
 	return e
 end
 F.guiEnv = guiEnv
@@ -474,6 +477,26 @@ function F.allow(a, st, B)
 		end
 	end
 	return true
+end
+
+-- some module on answers the game's interface events (M.guiVeto)
+function F.wantsVeto(text)
+	for _, M in ipairs(F.active(text)) do if type(M.guiVeto) == "function" then return true end end
+	return false
+end
+
+-- The game's interface events on THIS player's game (the bridge's guiHandleEvent: a tool's proposal, the vehicle store's buy
+-- button, the line window's delete...): the first answer a module on gives (not nil), which the bridge returns as the event's
+-- answer, as the game's own scripts veto a build (company.script's permits). nil: no module has a say. A failing module says
+-- nothing (logged).
+function F.guiVeto(id, name, param, st, B)
+	for _, M in ipairs(F.active(st.optsText)) do
+		if type(M.guiVeto) == "function" then
+			local ok, r = F.call("guiVeto", M, M.guiVeto, id, name, param, st, guiEnv(M, st, B))
+			if ok and r ~= nil then return r, M end
+		end
+	end
+	return nil
 end
 
 -- ---------------------------------------------------------------- the MPFever window

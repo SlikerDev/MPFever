@@ -26,7 +26,7 @@ SRC = open(os.path.join(HERE, "..", "mod", "mpfever_1", "content", "mpfever_feat
 
 HARNESS = r'''
 OPTS = {}
-MON = 1950 * 12 + 3          -- March 1950 (env.month(): year * 12 + month)
+MON = 1950 * 12 + 3          -- a game month (env.month()); the test's calendar (env.date()) reads it as year * 12 + month: March 1950
 CLOCK = 0
 LOG, SENT, CHAT, FILES, BOOKED, ZONES = {}, {}, {}, {}, {}, {}
 FOCUS = nil
@@ -112,6 +112,7 @@ function simEnv(from)
     end,
     money = function() return 0 end, book = function(ent, amount) BOOKED[#BOOKED + 1] = amount end, R = {},
     every = function() return false end, month = function() return MON end, from = from,
+    date = function() if NODATE then return nil end return { year = math.floor((MON - 1) / 12), month = (MON - 1) % 12 + 1, day = 1 } end,
   }
 end
 
@@ -217,7 +218,7 @@ class Game:
         return self.g().stateSrc()
 
     def file(self):
-        return self.g().fileText("feat_perms.txt")
+        return self.g().fileText("team")
 
     def chat(self):
         return self.g().takeChat()
@@ -722,16 +723,16 @@ def test_ui():
     mk = r'''function(lines, lang)
       local u = { REQ = {}, BTN = {}, TXT = {} }
       u.T = function(fr, en) if lang == "fr" then return fr end return en end
-      u.read = function(f) if f == "feat_perms.txt" then return lines end return nil end
+      u.read = function(f) if f == "team" then return lines end return nil end
       u.request = function(k, p) u.REQ[#u.REQ + 1] = k .. "|" .. tostring(p) end
       u.text = function(t) u.TXT[#u.TXT + 1] = t; return { text = t } end
-      u.button = function(label, fn, enabled) local b = { label = label, fn = fn, enabled = enabled }; u.BTN[#u.BTN + 1] = b; return b end
+      u.button = function(label, fn, primary, enabled) local b = { label = label, fn = fn, enabled = enabled }; u.BTN[#u.BTN + 1] = b; return b end
       u.row = function(list) return { row = list } end
       return u
     end'''
     for gm in games:
         gm.g().mkU = gm.L.eval(mk)
-    hu = host.g().mkU(host.g().FILES["feat_perms.txt"], "en")
+    hu = host.g().mkU(host.g().FILES["team"], "en")
     rows = host.M.ui(hu)
     texts = "\n".join(hu.TXT.values())
     labels = [b.label for b in hu.BTN.values()]
@@ -742,10 +743,10 @@ def test_ui():
     for b in hu.BTN.values():
         if b.label == "Accept":
             b.fn()
-    n = host.M.model(host.g().FILES["feat_perms.txt"]).asks[1].n
+    n = host.M.model(host.g().FILES["team"]).asks[1].n
     check(list(hu.REQ.values()) == ["answer|%d\t1" % n], "Accept asks for the answer to Bob's request (%d)" % n)
     check(host.request("answer", "%d\t1" % n) is True and deliver(games) == [("f_perms_answer", True)], "which every game applies")
-    bu = bob.g().mkU(bob.g().FILES["feat_perms.txt"], "fr")
+    bu = bob.g().mkU(bob.g().FILES["team"], "fr")
     bob.M.ui(bu)
     texts = "\n".join(bu.TXT.values())
     labels = [b.label for b in bu.BTN.values()]
@@ -753,7 +754,7 @@ def test_ui():
     check("Retirer ma demande" in labels and "Mode plan : désactivé" in labels, "with Withdraw and the plan mode")
     keep = [b for b in bu.BTN.values() if b.label.startswith("Garder ce tracé")]
     check(len(keep) == 1 and keep[0].enabled is False, "Keep this route is off without a route")
-    m = host.M.model(host.g().FILES["feat_perms.txt"])
+    m = host.M.model(host.g().FILES["team"])
     check(m.opt.perms and m.opt.plans and m.me.role == "top", "the file reads back")
     check(host.M.nextBudget("default") == "-1" and host.M.nextBudget("100000000") == "default", "the budget button goes round")
 
@@ -774,6 +775,300 @@ def test_switch():
     check(plain.allow(buy("Bob#1"))[0] is False, "without the switch, refused")
 
 
+# ------------------------------------------------------------------------------------------------- integrated (the real hooks)
+# The module through the real options host (mpfever_feat.lua) and the bridge's and the window's real functions, taken from their
+# files: the options applied from the host's f_opts, the window's requests through stampHeld, the refusals of a command and of a
+# speed request before anything is sent, the answers of guiHandleEvent, a tool's build counted on the builder's game and on the
+# replaying one alike (SIM.featNative / SIM.featWho, the session name told by f_me), the year from the calendar, and the tab drawn
+# by the window's own U.featU. Everything with the options off first: nothing at all.
+CONTENT = os.path.join(HERE, "..", "mod", "mpfever_1", "content")
+
+
+def read_content(name):
+    with open(os.path.join(CONTENT, name), encoding="utf-8") as f:
+        return f.read()
+
+
+def extract(src, pattern, what, local=False):
+    import re
+    m = re.search(pattern, src, re.S | re.M)
+    if not m:
+        print("  FAIL  " + what + " not found")
+        failures.append(what + " not found")
+        return ""
+    code = m.group(0)
+    # (a local function of the bridge's main chunk becomes a global of the test's runtime)
+    return code.replace("local function ", "function ", 1) if local else code
+
+
+BRIDGE_SRC = read_content("mpfever_bridge.script.lua")
+UI_SRC = read_content("mpfever_ui.script.lua")
+BRIDGE_PARTS = [
+    extract(BRIDGE_SRC, r"^SIM\.featEvent = function\(st, name, param\)\n.*?^end\n", "SIM.featEvent"),
+    extract(BRIDGE_SRC, r"^SIM\.featNative = function\(state, param, seq0\)\n.*?^end\n", "SIM.featNative"),
+    extract(BRIDGE_SRC, r"^SIM\.featWho = function\(st, a, own, now\)\n.*?^end\n", "SIM.featWho"),
+    extract(BRIDGE_SRC, r"^SIM\.featBuildCo = function\(args\)\n.*?^end\n", "SIM.featBuildCo"),
+    extract(BRIDGE_SRC, r"^G\.featBridge = function\(\)\n.*?^end\n", "G.featBridge"),
+    extract(BRIDGE_SRC, r"^G\.featGui = function\(st\)\n.*?^end\n", "G.featGui"),
+    extract(BRIDGE_SRC, r"^G\.featRefuse = function\(p\)\n.*?^end\n", "G.featRefuse"),
+    extract(BRIDGE_SRC, r"^G\.featGuiVeto = function\(id, name, param\)\n.*?^end\n", "G.featGuiVeto"),
+    extract(BRIDGE_SRC, r"^G\.featRequest = function\(p\)\n.*?^end\n", "G.featRequest"),
+    extract(BRIDGE_SRC, r"^local function stampHeld\(\)\n.*?^end\n", "stampHeld", local=True),
+    extract(BRIDGE_SRC, r"^local function guiHandleEvent\(userParams, state, guiState, src, id, name, param\)\n.*?^end\n", "guiHandleEvent", local=True),
+]
+WINDOW_PART = extract(UI_SRC, r"^U\.featOff = .*?^U\.featTabRows = function\(K, st, key\)\n.*?^end\n", "the window's game options")
+
+# the bridge's and the window's surroundings, mocked: a game of its own per runtime
+IHARNESS = r'''
+NOW, MCOUNT, YEAR = 100000, 100, 1950
+LOGS, CHAT, EVENTS, SIMQ, SENTL, QUEUED, UILINES, FS, REQLINES = {}, {}, {}, {}, {}, {}, {}, {}, {}
+function log(s) LOGS[#LOGS + 1] = tostring(s) end
+function countLogs(pat) local n = 0 for _, l in ipairs(LOGS) do if l:find(pat, 1, true) then n = n + 1 end end return n end
+function gameTime() return NOW end
+function T(fr, en) return en end
+function money(n) return tostring(n) end
+BS, TAB, NL = "/", "\t", "\n"
+K = { FEAT = true }
+R, CO = {}, {}
+GAME = { st = {} }
+STATE = { get = function() return GAME.st end, set = function() end }
+FEATCALLS = 0
+C = { ROLE = "client", NAME = "nobody", SERVER = false, DIR = "D", BS = "/", NL = "\n", CR = "\r", ACTIVE = true,
+  T = function(fr, en) return en end, Tf = function(fr, en) return en end,
+  line = function(kind, r) return kind .. " " .. tostring(r.tok) .. " " .. tostring(r.success) .. " " .. tostring(r.err) end,
+  appendFile = function(path, text) FS[path] = (FS[path] or "") .. text return true end,
+  deser = function(p) return p end,
+  ser = function(v) return ser(v) end,
+  IO = { open = function(path, mode)
+    if mode == "wb" then local buf = {} return { write = function(_, s) buf[#buf + 1] = s end, close = function() FS[path] = table.concat(buf) end } end
+    local s = FS[path]
+    if not s then return nil end
+    return { read = function() return s end, close = function() end } end } }
+C.feat = function() FEATCALLS = FEATCALLS + 1 return F end
+G = { frames = 1000, session = { started = true, resync = false }, connected = true, cmode = "shared", peers = {}, oseq = 0,
+  me = "nobody", myCo = nil, waits = {}, modWait = {} }
+G.coEvent = function(name, param) EVENTS[#EVENTS + 1] = { name = name, p = ser(param or {}), from = G.me } end
+G.featChat = function(t) CHAT[#CHAT + 1] = t return true end
+G.resyncRefuse = function() return false end
+G.uiEdit = function() return nil end
+G.pvPoints = function(param) return param.pts or {} end
+SIM = {}
+SIM.featBridge = function()
+  return { log = log, gameTime = gameTime, STEP = 200, R = R, CO = CO,
+    money = function() return 0 end, book = function() error("no money moves in perms") end,
+    companies = function() return {} end, month = function() return MCOUNT end,
+    date = function() return { year = YEAR, month = 1, day = 1 } end }
+end
+function toSim(name, p) SIMQ[#SIMQ + 1] = { name = name, p = ser(p) } end
+function send(kind, p) SENTL[#SENTL + 1] = kind end
+function queueLocal(a) QUEUED[#QUEUED + 1] = a.fn end
+function stampFor(t) return t + 400 end
+function pausedStamp(t) return t end
+function gameSpeed() return 1 end
+function readLines(name) if name ~= "ui.log" then return {} end local l = UILINES; UILINES = {} return l end
+function parseLine(line) return line.kind, nil, line.p end
+function ui(kind, p) UILINES[#UILINES + 1] = { kind = kind, p = p } end
+-- the window's
+U = { isHost = function(st) return st and st.host == true end, winChanged = function() end }
+function sendLine(kind, p) REQLINES[#REQLINES + 1] = kind .. " " .. tostring(p.m) .. " " .. tostring(p.kind) .. " " .. tostring(p.payload) end
+WK = { TEXT_W = 556, ICON_SETTINGS = "i", builtin = { TextInputField = function(t) return { kind = "input", key = t.meta.localKey, on = t.onValueChange } end },
+  style = function(s) return s end }
+function WK.text(t, class, cls, w) return { kind = "text", t = tostring(t) } end
+function WK.muted(t, w) return { kind = "muted", t = tostring(t) } end
+function WK.section(icon, t) return { kind = "section", t = t } end
+function WK.gap() return { kind = "gap" } end
+function WK.row(c) return { kind = "row", c = c } end
+function WK.col(c) return { kind = "col", c = c } end
+function WK.btn(label, tip, fn, primary, enabled) return { kind = "btn", t = label, fn = fn, primary = primary, enabled = enabled ~= false } end
+-- (the 1 s rate of the modules' gui: every call of the test runs it)
+function guiNow() F.guiAt = -10; G.frames = G.frames + 1; G.featGui(GAME.st) end
+function simDeliver()
+  local q = SIMQ; SIMQ = {}
+  for _, e in ipairs(q) do SIM.featEvent(GAME.st, e.name, deser(e.p)) end
+end
+function permsSrc() return ser(GAME.st.feat and GAME.st.feat.perms) end
+'''
+
+
+class IGame:
+    """A game of the integrated test: the options host, the module, the bridge's and the window's real hook functions."""
+
+    def __init__(self, me, role):
+        self.L = lua52.LuaRuntime(unpack_returned_tuples=True)
+        self.L.execute(HARNESS)       # (ser, deser, plainErr)
+        self.L.execute(IHARNESS)
+        g = self.L.globals()
+        g.PERMS_SRC = SRC
+        g.F = self.L.execute(read_content("mpfever_feat.lua"))
+        self.L.execute(r'''
+        PRICES = { [11] = 600000, [12] = 150000 }
+        ZONES = {}
+        F.loader = function(id)
+          if id ~= "perms" then return nil end
+          local M = load(PERMS_SRC, "=perms")()
+          M.modelPrice = function(i) return PRICES[i] or 0 end
+          M.draw = { circle = function(k, x, y) ZONES[k] = { x, y } end, remove = function(k) ZONES[k] = nil end,
+            focus = function() end, center = function() return 10, 20, 0 end }
+          PERMS = M
+          return M
+        end
+        F.load(log)
+        ''')
+        for part in BRIDGE_PARTS:
+            if part:
+                self.L.execute(part)
+        if WINDOW_PART:
+            self.L.execute(WINDOW_PART)
+        g.G.me, g.C.NAME, g.C.ROLE = me, me.split("#")[0], role
+        self.name = me
+
+    def run(self, code):
+        return self.L.execute(code)
+
+    def g(self):
+        return self.L.globals()
+
+
+def ideliver(games):
+    """The events the games' interfaces sent (G.coEvent), applied by every game in the same order, with their sender as the bridge
+    stamps it (mpfFrom), through the bridge's SIM.featEvent. Returns the names."""
+    names = []
+    for src in games:
+        evs = src.g().EVENTS
+        src.run("EVENTS = {}")
+        for i in range(1, len(evs) + 1):
+            e = evs[i]
+            names.append(e.name)
+            for gm in games:
+                gm.g().ev_in = gm.L.eval("function(p, from) local t = deser(p); t.mpfFrom = from; SIM.featEvent(GAME.st, '%s', t) end" % e.name)
+                gm.g().ev_in(e.p, e["from"])
+    return names
+
+
+def test_integrated():
+    print("integrated: the options host, the bridge's and the window's real functions")
+    host, bob = IGame("Host", "host"), IGame("Bob#1", "client")
+    games = [host, bob]
+    opts = "perms=1;perms.budget=1000000;plans=1"
+    # ---- all off: nothing at all
+    for gm in games:
+        gm.run("guiNow()")
+        gm.run("ui('speed_req', { speed = 2 }); stampHeld()")
+        r = gm.run("return guiHandleEvent(nil, nil, nil, 'src', 'bulldozer', 'builder.proposalCreate', { {}, { costs = 5 } })")
+        g = gm.g()
+        check(g.FEATCALLS == 0 and len(g.EVENTS) == 0 and len(g.SIMQ) == 0 and len(g.FS) == 0 and r is None,
+              gm.name + ", options off: no hook, no event, no note to the simulation, no file, no answer to a tool")
+        check(len(g.SENTL) == 1 and g.SENTL[1] == "speed_req", gm.name + ", options off: a speed request goes to MPFever.exe as before")
+        gm.run("SENTL = {}")
+    # ---- the host's options into the game (f_opts), applied by every game
+    host.g().G.featOpts = opts
+    for gm in games:
+        gm.run("guiNow()")
+    check([n for n in ideliver(games)] == ["f_opts"], "the host's game sends f_opts")
+    for gm in games:
+        gm.run("guiNow()")
+        g = gm.g()
+        check(g.GAME.st.optsText == opts and g.G.featOn and g.G.featAllow and g.G.featVeto, gm.name + ": the options on, allow and the tools' answers wanted")
+    check(len(bob.g().SIMQ) == 1 and bob.g().SIMQ[1].name == "f_me", "Bob's game tells its simulation its session name (f_me)")
+    for gm in games:
+        gm.run("simDeliver()")
+    check(bob.g().SIM.featMe == "Bob#1" and host.g().SIM.featMe == "Host", "the simulations know their game's session name")
+    bob.run("SIM.featEvent(GAME.st, 'f_me', { name = 'Eve', mpfFrom = 'Eve#3' })")
+    check(bob.g().SIM.featMe == "Bob#1", "an f_me of another game (an action, with its sender) is ignored")
+    check("\nme\tbob\tmember\tbdvlms\t1000000\t0" in (bob.g().FS["D/feat_perms_team.txt"] or ""), "Bob's window file: a member with the default budget")
+    # ---- the host takes Bob's vehicles right away from its window (feat_req through stampHeld)
+    host.run("ui('feat_req', { m = 'perms', kind = 'right', payload = 'bob\\tv' }); stampHeld()")
+    check(ideliver(games) == ["f_perms_set"], "the host's window request becomes f_perms_set")
+    check(host.g().permsSrc() == bob.g().permsSrc() and '["bob"]={["co"]=0,["r"]="bdlms"}' in host.g().permsSrc(), "both games: Bob bdlms")
+    for gm in games:
+        gm.run("guiNow()")
+    # ---- Bob's purchase refused before anything is sent; the window's command gets its refusal
+    bob.run("CHAT = {}; ui('act_req', { tok = 'tk', id = 4, fn = 'makeVehicleBuyCmd', args = { n = 3, 1, 2, { vehicles = { { part = { modelId = 11 } } } } } }); stampHeld()")
+    g = bob.g()
+    check(len(g.SENTL) == 0 and len(g.QUEUED) == 0, "Bob's purchase is neither sent nor applied")
+    check("result tk false game option: You may not buy" in (g.FS["D/results.log"] or ""), "the window's command gets its refusal (results.log)")
+    check(len(g.CHAT) == 1 and "You may not buy" in g.CHAT[1] and g.G.featRefused == 1, "Bob's chat says why")
+    host.run("ui('act_req', { tok = 'th', id = 1, fn = 'makeVehicleBuyCmd', args = { n = 3, 1, 2, { vehicles = { { part = { modelId = 11 } } } } } }); stampHeld()")
+    check(list(host.g().SENTL.values()) == ["act"] and list(host.g().QUEUED.values()) == ["makeVehicleBuyCmd"], "the host's purchase goes (the leader is never restricted)")
+    # ---- speed and pause: allowed, then refused once the right is taken, the chat said once for repeated requests
+    bob.run("SENTL = {}; ui('speed_req', { speed = 0 }); stampHeld()")
+    check(list(bob.g().SENTL.values()) == ["speed_req"], "Bob's pause goes to MPFever.exe while he has the right")
+    host.run("ui('feat_req', { m = 'perms', kind = 'right', payload = 'bob\\ts' }); stampHeld()")
+    ideliver(games)
+    bob.run("SENTL = {}; CHAT = {}; ui('speed_req', { speed = 0 }); ui('speed_req', { speed = 0 }); stampHeld()")
+    g = bob.g()
+    check(len(g.SENTL) == 0 and g.G.featRefused == 3, "without it both requests are refused here")
+    check(len(g.CHAT) == 1 and "speed" in g.CHAT[1], "and the chat says it once")
+    # ---- guiHandleEvent answers: the store's button, the line window, the tools
+    r = bob.run("return guiHandleEvent(nil, nil, nil, 'src', 'vehicleStore', 'mission.buyVehicle', { modelId2quantity = { [12] = 1 } })")
+    check(isinstance(r, str) and "You may not buy" in r, "the store's buy button is off for Bob: " + str(r))
+    check(bob.run("return guiHandleEvent(nil, nil, nil, 'src', 'management.line', 'delete', 5)") is None, "Bob may delete a line")
+    check(bob.run("return guiHandleEvent(nil, nil, nil, 'src', 'bulldozer', 'builder.proposalCreate', { {}, { costs = 10 } })") is None, "Bob's bulldozer is not turned down")
+    host.run("ui('feat_req', { m = 'perms', kind = 'right', payload = 'bob\\tb' }); stampHeld()")
+    ideliver(games)
+    r = bob.run("local r = guiHandleEvent(nil, nil, nil, 'src', 'trackBuilder', 'builder.proposalCreate', { {}, { costs = 10 } }); return next(r.errorMessages), r.skipRender")
+    check(r[0] == "You may not build (your team's rule)." and r[1] is False, "Bob's track tool is turned down, its route still shown")
+    check(bob.g().countLogs("trackBuilder/builder.proposalCreate answered by perms") == 1, "the answer is logged for the in-game check")
+    bob.run("guiHandleEvent(nil, nil, nil, 'src', 'trackBuilder', 'builder.proposalApply', { {}, { costs = 10 } })")
+    check(bob.g().countLogs("feat perms: WARNING the tool trackBuilder applied a build") == 1, "a build applied although turned down is logged")
+    check(host.run("return guiHandleEvent(nil, nil, nil, 'src', 'trackBuilder', 'builder.proposalCreate', { {}, { costs = 10 } })") is None, "the host's tool is not")
+    host.run("ui('feat_req', { m = 'perms', kind = 'right', payload = 'bob\\tb' }); stampHeld()")
+    ideliver(games)
+    # ---- a tool's build: counted for its builder on its own game (the capture) and on the other (the replay), once
+    bob.run("""local s0 = GAME.st.outSeq or 0
+      GAME.st.out = { { n = s0 + 1, at = NOW, cost = 300000, args = {} } }
+      GAME.st.outSeq = s0 + 1
+      SIM.featNative(STATE, { 'proposal', 'data' }, s0)""")
+    host.run("""GAME.st.rcost = { { at = NOW, uid = 'Bob#1:7', cost = 300000, got = 0, n = 0 } }
+      SIM.replayBuildAt = NOW
+      SIM.featNative(STATE, { 'proposal', 'data' }, GAME.st.outSeq or 0)
+      SIM.featNative(STATE, { 'proposal2', 'data2' }, GAME.st.outSeq or 0)""")
+    hs, bs = host.g().permsSrc(), bob.g().permsSrc()
+    check(hs == bs and '["spent"]={["bob"]=300000}' in hs, "Bob's build of 300 000 counted once on both games")
+    check(host.g().countLogs("feat perms: bob spends 300000 (nativeBuild)") == 1, "the spending is logged")
+    bob.run("SIM.featMe = nil; GAME.st.out[1].n = 9; GAME.st.outSeq = 9; local a = {}; SIM.featWho(GAME.st, a, true, NOW); WHO = a.origin")
+    check(bob.g().WHO is None and bob.g().countLogs("session name is not known yet") == 1, "before f_me, an own build has no builder (logged)")
+    bob.run("SIM.featMe = 'Bob#1'")
+    check(host.run("return SIM.featBuildCo({ proposal = { a = { k = 'player', co = 4 }, b = { k = 'player', co = 4 }, c = { k = 'player', co = 2 } } })") == 4,
+          "the company a captured build names most (a computer company's, on the host's game)")
+    # ---- the year from the calendar (H5: 1 January), the months from the game months
+    for gm in games:
+        gm.run("F.simTick(GAME.st, SIM.featBridge()); MCOUNT = 101; F.simTick(GAME.st, SIM.featBridge())")
+    check('["year"]=1950' in host.g().permsSrc() and '["mon"]=101' in host.g().permsSrc(), "the year from the calendar, the month from the game months")
+    for gm in games:
+        gm.run("MCOUNT = 102; F.simTick(GAME.st, SIM.featBridge())")
+    check('["spent"]' in host.g().permsSrc(), "the spending stays within the year")
+    for gm in games:
+        gm.run("YEAR = 1951; MCOUNT = 103; F.simTick(GAME.st, SIM.featBridge())")
+    check('["spent"]' not in host.g().permsSrc() and host.g().permsSrc() == bob.g().permsSrc(), "1 January: the year's spending back to 0 on both games")
+    check(host.run("return PERMS.yearNow({}, 25)") == 2, "without the calendar: twelve game months a year")
+    # ---- the window's tab, drawn by the window's own helpers (U.featU)
+    bob.run("ui('feat_req', { m = 'perms', kind = 'ask', payload = '250000\\tdepot' }); stampHeld()")
+    ideliver(games)
+    for gm in games:
+        gm.run("guiNow()")
+    check("Bob asks for approval of" in "\n".join(host.g().CHAT.values()), "the host is told of Bob's request in its chat")
+    rows = host.run("ROWS = U.featTabRows(WK, { mode = 'shared', opts = '%s', host = true, me = 'Host' }, 'f_team'); return #ROWS" % opts)
+    labels = host.run(r'''local out, most = {}, 0
+      for _, r in ipairs(ROWS) do
+        if r.kind == "row" then
+          local n = 0
+          for _, b in ipairs(r.c) do if b.kind == "btn" then n = n + 1; out[#out + 1] = b.t end end
+          if n > most then most = n end
+        end
+      end
+      return table.concat(out, "|"), most''')
+    check(rows > 8 and "Accept" in labels[0] and "[ ] Vehicles" in labels[0] and labels[1] <= 3,
+          "the host's tab: Accept and the rights toggles, three buttons a row at most (%d rows)" % rows)
+    host.run(r'''for _, r in ipairs(ROWS) do if r.kind == "row" then for _, b in ipairs(r.c) do if b.t == "Accept" then b.fn() end end end end''')
+    check(any(l.startswith("feat_req perms answer 1\t1") for l in host.g().REQLINES.values()), "Accept: the window's request to the module (feat_req)")
+    bob.run("ROWS = U.featTabRows(WK, { mode = 'shared', opts = '%s', me = 'Bob#1' }, 'f_team')" % opts)
+    inputs = bob.run(r'''local n = 0 for _, r in ipairs(ROWS) do if r.kind == "input" then n = n + 1; if n == 1 then r.on("123456") end end end return n''')
+    check(inputs >= 2, "the tab's text fields (u.input of the window): %d" % inputs)
+    check(bob.run("return PERMS.UIV.name") == "123456", "a text field gives its text to the module (the plan's name)")
+    check(bob.g().countLogs("failed") == 0 and host.g().countLogs("failed") == 0, "no hook failed (%s)" % [l for l in host.g().LOGS.values() if "failed" in l][:2])
+
+
 def main():
     test_declarations()
     test_off()
@@ -783,6 +1078,7 @@ def main():
     test_separate()
     test_ui()
     test_switch()
+    test_integrated()
     if failures:
         print(f"FAIL {len(failures)} check(s):")
         for f in failures:

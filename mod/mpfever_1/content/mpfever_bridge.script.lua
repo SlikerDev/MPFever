@@ -1875,6 +1875,12 @@ SIM.featTick = function(state)
 end
 -- an MPFever event "f_..." (handleEvent saves the state after it)
 SIM.featEvent = function(st, name, param)
+	if name == "f_me" then
+		-- (this game's session name, from its own interface: never another game's, whose events carry their sender, see
+		-- executeActionOnce; for this game's own builds, see SIM.featWho)
+		if type(param) == "table" and param.mpfFrom == nil and type(param.name) == "string" then SIM.featMe = param.name end
+		return
+	end
 	local F = C.feat()
 	if not F then
 		if not SIM.featMissing then SIM.featMissing = true; log("options: mpfever_feat.lua is not loaded: event " .. tostring(name) .. " ignored") end
@@ -1900,11 +1906,52 @@ SIM.featNative = function(state, param, seq0)
 	local st = state:get()
 	if type(st) ~= "table" or st.solo then return end
 	local now = gameTime()
-	if not (SIM.replayBuildAt == now or (seq0 and (tonumber(st.outSeq) or 0) > seq0)) then return end
+	local own = seq0 ~= nil and (tonumber(st.outSeq) or 0) > seq0
+	if not (SIM.replayBuildAt == now or own) then return end
 	local F = C.feat()
 	if not F then return end
 	local a = { fn = "nativeBuild", native = true, at = now, proposal = param[1], data = param[2] }
+	-- (who built it and what it cost its builder, when known: see SIM.featWho)
+	pcall(SIM.featWho, st, a, own, now)
 	if F.simAction(st, a, true, SIM.featBridge()) then state:set(st) end
+end
+-- The builder of a tool's build and its cost, the same on every game (a.origin, a.cost, a.co; a.uid for a replay): this game's own
+-- build, the capture just made (its cost as shipped, REFUND.costOf; its builder this game's player under its session name, as the
+-- others name it, told by the interface: f_me, see G.featGui; its company the one its owner references name: a computer
+-- company's build is captured on the host's game too); another player's, the last announcement of a shipped build at this step
+-- (replay_cost: its uid "<player>:<n>", its builder's cost and company), heard once (a replay of several proposals is one build).
+-- Nothing when the cost was not shipped (MPFEVER_NOREFUND=1) or the name is not known yet.
+SIM.featWho = function(st, a, own, now)
+	if own then
+		local o = type(st.out) == "table" and st.out[#st.out] or nil
+		if not (o and o.n == st.outSeq and o.at == now) then return end
+		if not SIM.featMe then
+			if not SIM.featMeMissing then SIM.featMeMissing = true; log("options: this game's session name is not known yet: its build at t=" .. now .. " has no builder for the options") end
+			return
+		end
+		a.origin, a.cost = SIM.featMe, o.cost
+		if type(st.co) == "table" and st.co.mode == "separate" then a.co = SIM.featBuildCo(o.args) end
+		return
+	end
+	local rc = type(st.rcost) == "table" and st.rcost[#st.rcost] or nil
+	if not (rc and rc.at == now and not rc.heard) then return end
+	rc.heard = true
+	a.uid, a.cost, a.co = rc.uid, rc.cost, rc.co
+	a.origin = type(rc.uid) == "string" and rc.uid:match("^(.*):%d+$") or nil
+end
+-- the company a captured build's owner references name most (as the capture's log counts them), nil for none
+SIM.featBuildCo = function(args)
+	local tally, seen = {}, 0
+	local function walk(t, depth)
+		if type(t) ~= "table" or depth > 7 or seen > 20000 then return end
+		seen = seen + 1
+		if t.k == "player" and type(t.co) == "number" then tally[t.co] = (tally[t.co] or 0) + 1 end
+		for _, v in pairs(t) do if type(v) == "table" then walk(v, depth + 1) end end
+	end
+	pcall(walk, args, 0)
+	local best, n = nil, 0
+	for co, k in pairs(tally) do if k > n or (k == n and co < best) then best, n = co, k end end
+	return best
 end
 -- whether a module on hears the game's own script events (and the modules loaded, with this log, at the first look)
 SIM.featHearing = function(text)
@@ -3618,7 +3665,8 @@ H.session = function(from, p)
 	-- (the computer companies the host chose in its lobby, "n:colour,...": run by the host's game, see mpfever_ai.lua)
 	if p.cmode ~= nil then G.coAi = p.ai end
 	-- (0.6) the session's game options, the host's choice ("id=1;id.param=v;..."; none: nothing to change), see G.featGui
-	if K.FEAT then G.featOpts = type(p.opts) == "string" and p.opts or nil end
+	-- (G.featTestOpts: an autotest's own options, see H.permstest)
+	if K.FEAT then G.featOpts = G.featTestOpts or (type(p.opts) == "string" and p.opts or nil) end
 	G.session.started = p.started == true
 	-- a resynchronisation is under way (see G.resyncRefuse); MPFEVER_RESYNCBUILDS=1: builds are not refused then (as before 0.5.0)
 	local rs = p.resync == true and os.getenv("MPFEVER_RESYNCBUILDS") ~= "1"
@@ -8124,6 +8172,10 @@ local function stampHeld()
 				queueLocal(a)
 				if G.buildLead then G.leadNoteDue(a) end
 			end
+		elseif p and kind == "speed_req" and G.featOn and G.featAllow
+			and G.featRefuse({ fn = "makeGameSetSpeedCmd", args = { n = 1, p.speed }, speed = true }) then
+			-- (0.6, a speed or a pause refused by a game option: never asked of MPFever.exe; the buttons show the session's speed
+			-- again after 2 s, see U.shownSpeed)
 		elseif p and (kind == "speed_req" or kind == "act_fail" or kind == "save_done") then
 			send(kind, p)
 		elseif p and kind == "terrain_tool" then
@@ -15815,11 +15867,21 @@ G.featBridge = function()
 				f:close()
 				G.featFiles[file] = text
 				return true
+			end,
+			-- (the player's language, the points of a tool's route, the other players of the session, see F.guiEnv)
+			T = C.T, pvPoints = function(param) return G.pvPoints(param) end,
+			players = function()
+				local out = {}
+				for name in pairs(G.peers or {}) do out[#out + 1] = name end
+				table.sort(out)
+				return out
 			end }
 		G.featB = B
 	end
 	B.isHost, B.me, B.myCo = C.ROLE == "host", G.me, G.myCo
 	B.mode = G.cmode == "separate" and "separate" or "shared"
+	-- (a dedicated server's owner, its game only: the session's owner it names, see H.session)
+	B.owner = C.SERVER and G.coOwner or nil
 	return B
 end
 -- a notice in this game's chat only (the window's chat file, as MPFever.exe writes it: id 0, from « MPFever »)
@@ -15837,11 +15899,12 @@ G.featGui = function(st)
 	G.featOn = have ~= ""
 	G.featSt = st
 	local want = G.featOpts
-	if not G.featOn and (want == nil or want == "") then G.featAllow = false; return end
+	if not G.featOn and (want == nil or want == "") then G.featAllow, G.featVeto = false, false; return end
 	local F = C.feat()
 	if not F then return end
 	F.load(log)
 	G.featAllow = G.featOn and F.wantsAllow(have)
+	G.featVeto = G.featOn and F.wantsVeto(have)
 	if C.ROLE == "host" and want ~= nil and G.connected and G.session.started and not G.session.resync then
 		local mode = G.cmode == "separate" and "separate" or "shared"
 		-- (the canon of the session's text, kept while it is the same)
@@ -15854,6 +15917,12 @@ G.featGui = function(st)
 		end
 	end
 	if G.featOn then F.gui(st, G.featBridge(), os.clock()) end
+	-- (this game's session name to its simulation, for its own builds: see SIM.featWho; again every 30 s, as a load starts the
+	-- simulation's Lua state again)
+	if G.featOn and G.connected and (G.featMeSent ~= G.me or G.frames - (G.featMeAt or -100000) > 1800) then
+		G.featMeSent, G.featMeAt = G.me, G.frames
+		pcall(toSim, "f_me", { name = G.me })
+	end
 end
 -- A window's command (an "act_req" of ui.log, before it is stamped) or a tool's build held by the DLL (fn "nativeBuild"), checked by
 -- the modules on (M.allow) before anything is sent: refused, it is never applied anywhere (no desync), the chat says why and a
@@ -15867,7 +15936,10 @@ G.featRefuse = function(p)
 		if allowed then return false end
 		local reason = (type(why) == "string" and why ~= "") and why or C.T("Refusé par une option de la partie.", "Refused by a game option.")
 		log("options: " .. tostring(a.fn) .. (a.natId and (" " .. a.natId) or "") .. " refused here by " .. tostring(M and M.ID) .. ": " .. reason)
-		G.featChat(reason)
+		G.featRefused = (G.featRefused or 0) + 1
+		-- (a speed request comes again while the buttons wait: the same reason said once in 3 s)
+		if not (p.speed and G.featSaid == reason and G.frames - (G.featSaidAt or -1000) < 180) then G.featChat(reason) end
+		G.featSaid, G.featSaidAt = reason, G.frames
 		if p.tok then C.appendFile(C.DIR .. BS .. "results.log", C.line("result", { tok = p.tok, id = p.id, fn = p.fn, success = false, err = "game option: " .. reason })) end
 		return true
 	end)
@@ -15886,6 +15958,25 @@ G.featTakeTool = function()
 	if t and G.frames - t.frame <= 5 then return t.compact end
 	return nil
 end
+-- The game's interface events on this game (guiHandleEvent), for the modules on that answer them (M.guiVeto: a tool's proposal,
+-- the vehicle store's buy button, the line window's delete): the answer guiHandleEvent returns, nil for none (as before 0.6).
+-- The first answers of each kind are logged, for the in-game check that the game heeds them alongside its own scripts.
+G.featGuiVeto = function(id, name, param)
+	local F = C.feat()
+	if not F then return nil end
+	local r, M = F.guiVeto(id, name, param, G.featSt or {}, G.featBridge())
+	if r ~= nil then
+		G.featVetoLog = G.featVetoLog or {}
+		local k = tostring(id) .. "/" .. tostring(name)
+		local n = (G.featVetoLog[k] or 0) + 1
+		G.featVetoLog[k] = n
+		if n <= 3 or n % 500 == 0 then
+			local okS, s = pcall(function() return type(r) == "table" and C.ser(r):sub(1, 200) or tostring(r) end)
+			log("options: " .. k .. " answered by " .. tostring(M and M.ID) .. " (" .. n .. "): " .. (okS and s or "?"))
+		end
+	end
+	return r
+end
 -- a request of the MPFever window (ui.log "feat_req": the module, its kind and payload) to that module of this game
 G.featRequest = function(p)
 	local F = C.feat()
@@ -15896,6 +15987,86 @@ G.featPausedAct = function(a, r)
 	local args = nil
 	if a.fn ~= "makeWorldBuildProposalCmd" and type(a.args) == "table" then args = a.args end
 	toSim("f_act", { a = { fn = a.fn, args = args, co = a.co, origin = a.origin, uid = a.uid, at = a.at, paused = true }, ok = r.success == true })
+end
+
+-- Team permissions scenario (0.6, MPFEVER_SCENARIO=permstest, a co-op session, any savegame; a vehicle with a depot lets the client
+-- try a real purchase): the host switches the game options "perms" (budget 1 000 000) and "plans" on for this session (whatever
+-- MPFever.exe's options), takes the client's Vehicles and Speed rights away and puts a note on the map; the client's game then
+-- refuses its own purchase and its pause before anything is sent, its vehicle store's buy button says why, and it asks for an
+-- approval, which every game must hold. "AUTOTEST permstest: ..." in both mod.log; the last check must stay in sync (nothing
+-- refused was ever sent).
+H.permstest = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	local function say(line) log("AUTOTEST permstest: " .. line); AUTO.results[#AUTO.results + 1] = "permstest: " .. line end
+	local function perms() local st = G.featSt or {}; return type(st.feat) == "table" and st.feat.perms or nil end
+	local function on() local st = G.featSt or {}; return type(st.optsText) == "string" and st.optsText:find("perms=1", 1, true) ~= nil end
+	-- (cond polled every 30 frames, then done(cond met) once it is or after that many frames)
+	local function wait(cond, frames, done)
+		local t0 = G.frames
+		local function poll()
+			local ok = cond()
+			if ok or G.frames - t0 > frames then return done(ok) end
+			G.waits[#G.waits + 1] = { at = G.frames + 30, fn = poll }
+		end
+		poll()
+	end
+	if G.cmode == "separate" then say("co-op only (the host leads the co-op's team): nothing tried"); return autoFinish() end
+	if C.ROLE == "host" then
+		G.featTestOpts = "perms=1;perms.budget=1000000;plans=1"
+		G.featOpts = G.featTestOpts
+		wait(on, 60 * 40, function(ok)
+			say("options in the game: " .. tostring((G.featSt or {}).optsText) .. (ok and "" or " (NOT applied within 40 s)"))
+			if not ok then return autoFinish() end
+			local peer = nil
+			for name in pairs(G.peers) do if not peer or name < peer then peer = name end end
+			if not peer then say("no other player"); return autoFinish() end
+			local key = peer:gsub("#.*$", ""):lower()
+			pcall(G.featRequest, { m = "perms", kind = "right", payload = key .. "\tv" })
+			pcall(G.featRequest, { m = "perms", kind = "right", payload = key .. "\ts" })
+			pcall(G.featRequest, { m = "perms", kind = "note", payload = "permstest\tA note of the autotest" })
+			wait(function() local s = perms(); local e = s and type(s.p) == "table" and s.p[key]; return type(e) == "table" and e.r == "bdlm" end, 60 * 20, function(ok2)
+				local s = perms()
+				local e = s and type(s.p) == "table" and s.p[key] or nil
+				say(key .. "'s rights here: " .. tostring(e and e.r) .. (ok2 and " (bdlm expected)" or " (NOT bdlm)") .. ", plans "
+					.. tostring(s and type(s.plans) == "table" and #s.plans or 0) .. " (1 expected)")
+				autoFinish()
+			end)
+		end)
+		return
+	end
+	local me = tostring(G.me):gsub("#.*$", ""):lower()
+	wait(function() local s = perms(); local e = s and type(s.p) == "table" and s.p[me]; return on() and type(e) == "table" and e.r == "bdlm" end, 60 * 40, function(ok)
+		if not ok then say("the host's rule did not come within 40 s (options " .. tostring((G.featSt or {}).optsText) .. ")"); return autoFinish() end
+		say("this player's rights: bdlm (vehicles and speed taken)")
+		local n0 = G.featRefused or 0
+		-- a purchase as the depot window sends it (a copy of a vehicle with a depot), and a pause
+		local bought = false
+		pcall(function()
+			local mePl = api.engine.util.getPlayer()
+			for _, v in ipairs(R.entitiesWith("TRANSPORT_VEHICLE")) do
+				local tv = api.engine.getComponent(v, api.type.ComponentType.TRANSPORT_VEHICLE)
+				if not bought and tv and type(tv.depot) == "number" and tv.depot >= 0 and api.engine.entityExists(tv.depot) then
+					bought = true
+					uiRequest("makeVehicleBuyCmd", { n = 3, [1] = mePl, [2] = tv.depot, [3] = C.marshal(tv.transportVehicleConfig) })
+				end
+			end
+		end)
+		C.appendFile(C.DIR .. BS .. "ui.log", C.line("speed_req", { speed = 0 }))
+		local okS, store = pcall(G.featGuiVeto, "vehicleStore", "mission.buyVehicle", { modelId2quantity = {} })
+		say("the vehicle store's buy button: " .. tostring(okS and store or "error " .. tostring(store)))
+		pcall(G.featRequest, { m = "perms", kind = "ask", payload = "500000\tpermstest" })
+		G.waits[#G.waits + 1] = { at = G.frames + 600, fn = function()
+			say("refused here: " .. ((G.featRefused or 0) - n0) .. " (" .. (bought and 2 or 1) .. " expected: " .. (bought and "the purchase and " or "") .. "the pause)")
+			local s = perms()
+			local asked = false
+			for _, a in ipairs(s and type(s.asks) == "table" and s.asks or {}) do if a.key == me then asked = true end end
+			say("the request for approval " .. (asked and "is in the game" or "is NOT in the game"))
+			autoFinish()
+		end }
+	end)
 end
 
 local function guiUpdate(userParams, state, guiState)
@@ -16155,6 +16326,12 @@ local function guiHandleEvent(userParams, state, guiState, src, id, name, param)
 		if not G.evSeen[key] then G.evSeen[key] = true; log("tool event: " .. key) end
 		-- BUILDLEAD: a construction tool is in hand (it sends these while the player aims, as well as when it builds)
 		if G.buildLead then G.buildToolSeen(tostring(id)) end
+	end
+	-- (0.6) a game option's answer to this event (M.guiVeto: a tool turned down before the click, the vehicle store's buy button
+	-- off, a line kept), returned as the game's own scripts return theirs. Nothing while no option is on: no answer, as before
+	if G.featOn and G.featVeto then
+		local okV, v = pcall(G.featGuiVeto, id, name, param)
+		if okV and v ~= nil then return v end
 	end
 end
 
