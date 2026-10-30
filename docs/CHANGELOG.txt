@@ -1,7 +1,44 @@
 MPFever - Changelog
 ===================
 
-0.5.14 - the game's rules chosen in the lobby and kept in the savegame, computer companies that pay their way, signals on the map, fixes
+0.6.0 - game options for every taste (all off by default), computer companies that never go bankrupt, fewer desyncs
+  - NEW: game options, chosen by the host in the lobby ("Game settings...", section "Game options (0.6)", now in the co-op
+    lobby too) and kept in the savegame. Every option is OFF by default: with all of them off, a game plays as in 0.5.14. An
+    option with settings shows them only while it is on. The players see the options on in the lobby and in the "Game" tab
+    of the MPFever window, where the host can change them during the game. Dedicated server: game-options= in
+    mpfever_server.properties. MPFEVER_FEAT=0: no game option at all. These options are new: report anything odd.
+    - Players' journal (both modes): what every player built, demolished, bought or sold, in a "Journal" tab (details behind a
+      switch); in the chat only "X demolished what Y built". "Built by" in the windows of stations, depots and vehicles, kept
+      in the savegame. "See a player's view": jump to where another player of your company is looking (each player may refuse).
+    - Ranking and goal (one company per player): a ranking tab with each company's value (money - loans + resale value of its
+      vehicles, measured by the host) and its history; a game goal (value, money or tenders won, over N game years; computer
+      companies ranked, winning only if the host allows it; the host can only cancel it); a yearly report in the chat.
+    - Competition (one company per player): each company's share of passengers and of cargo per town, who serves each
+      industry, and two alerts: a competitor arrives in your town, you lose first place.
+    - Territories and handicaps (one company per player): each company claims one town during its first year, a circle on the
+      ground; the others cannot build stations, stops or depots there; computer companies respect them. A money handicap per
+      player (the savegame's company keeps its money).
+    - Tenders (one company per player): calls for offers (passengers between two towns, cargo to an industry or to a town),
+      at most 2 open, won by the first company to deliver the amount; the prize is created like a subsidy. Frequency and prize
+      level set by the host. Computer companies can win them.
+    - Permissions and plans (co-op, and companies of several players): the leader sets each member's rights (build, demolish,
+      vehicles, lines, loans, speed and pause) and yearly budget, approves requests; notes on the map for the team.
+    - Trade (one company per player): a company's chief sells a line (with its stations), a station or a depot to another
+      company; supply contracts between companies (an amount a month at a price, paid pro rata, with a penalty).
+    - Stock market (one company per player): 10 shares per company, 2 a month per buyer, dividends, takeover beyond 50 % with
+      a premium set by the host, computer companies buyable or not, 24 months of protection at the start.
+    - Public games: players at most, a game still listed while it runs, the host's IP address shown or not (with a warning), a
+      ban list kept by the host, every arrival approved by the host, Steam joins to a private game for Steam friends only.
+  - NEW (computer companies): a computer company never goes bankrupt any more, whatever its level (MPFEVER_AINOBANKRUPT=0: as
+    before). It keeps a floor of money no purchase or build goes under, sells vehicles of its losing lines first when money
+    runs low, takes the cheapest loan when needed and repays it (MPFEVER_AISOLVENT=0, MPFEVER_AIFLOOR=0, MPFEVER_AISTUCK=0).
+    In a 40-minute test at x4 (about 6 game years, from 2 million each): Easy 3.1 M, Normal 6.5 M, Hard 6.8 M and 43 vehicles.
+  - NEW (computer companies): long-term freight. A computer company with money to spare picks a raw producer and serves it
+    at a planned loss, within a budget, so that the producer grows (an industry grows with what is transported from it); the
+    line is judged on the producer's growth, ended after a year without growth, and another one is tried later
+    (MPFEVER_AILONGFREIGHT=0). Deliveries of goods to towns are prepared but stay off (MPFEVER_AITOWNFREIGHT=1 to try them).
+  - FIX (computer companies): their roads and garages no longer demolish town buildings in their way: a build that would is
+    left out (MPFEVER_AIKEEPBUILDINGS=0: as before).
   - FIX (desyncs, new industries; found and fixed first by TPF3-MP, MIT, ported): the engine runs each batch of steps on one
     of its two game states by turns, and the industries' demand scheduler keeps, once per game state and outside the world,
     the demand it saw last and the spawn attempts still due. A demand change was counted in both, and the attempts came out
@@ -11,6 +48,8 @@ MPFever - Changelog
     a game whose intervals all fall on one state (the game alone gives five to ten, by how its batches fell).
     MPFEVER_INDUSTRYDEMAND=0 on every game: as before. Diagnostic MPFEVER_INDUSTRYLOG=1: each scheduler call in native.log
     ("industry demand: t=... due ... -> ..."), the same lines on every game.
+
+0.5.14 - the game's rules chosen in the lobby and kept in the savegame, computer companies that pay their way, signals on the map, fixes
   - NEW (one company per player): the game's rules, chosen by the host and kept in the savegame. In the lobby, "Game
     settings..." under the savegame's picture opens them (the players of the lobby see them on one line): the start money of a
     new company (0 to 20 million, 2 million by default), the sharing rules between companies on or off, the months in debt
