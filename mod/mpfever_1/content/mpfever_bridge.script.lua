@@ -16205,7 +16205,17 @@ H.stocktest = function(from, p)
 	AUTO.points = {}
 	local function note(t) AUTO.results[#AUTO.results + 1] = t; log("AUTOTEST " .. t) end
 	local function S() local st = G.featSt; return st and type(st.feat) == "table" and st.feat.stock or nil end
-	if not (G.co and G.myCo) then note("stocktest: not in the companies mode"); return autoFinish() end
+	if not (G.co and G.myCo) then
+		-- (the client's company may come a moment after the scenario starts, MPFEVER_TOGETHER starts both at once: again in 2 s,
+		-- for a minute)
+		G.stockWaited = (G.stockWaited or 0) + 1
+		if G.stockWaited <= 30 then
+			AUTO.running = false
+			G.waits[#G.waits + 1] = { at = G.frames + 120, fn = function() H.stocktest(from, p) end }
+			return
+		end
+		note("stocktest: not in the companies mode"); return autoFinish()
+	end
 	local function sorted(t) local ks = {} for k in pairs(t or {}) do ks[#ks + 1] = k end table.sort(ks, function(a, b) return tostring(a) < tostring(b) end) return ks end
 	-- (the state as both games must have it: the month, the prices, the holdings, the computer companies retired)
 	local function sig()
