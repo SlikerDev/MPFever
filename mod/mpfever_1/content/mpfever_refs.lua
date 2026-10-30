@@ -786,7 +786,20 @@ function R.translateOut(fn, margs, rev)
 		d.__ref = true
 		return d
 	end
-	for i, kind in pairs(R.ARGS[fn] or {}) do margs[i] = ref(kind, margs[i]) end
+	for i, kind in pairs(R.ARGS[fn] or {}) do
+		local v = margs[i]
+		-- (a list of entities, as a sale of several vehicles takes them: each one a reference too, 0.5.14. Before, the list went
+		-- with this game's raw ids, which name other vehicles on a game whose ids differ. MPFEVER_REFLISTS=0: as before)
+		local list = type(v) == "table" and not v.__ref and not v.__ud and #v > 0 and os.getenv("MPFEVER_REFLISTS") ~= "0"
+		if list then
+			for k, x in pairs(v) do if type(k) ~= "number" or type(x) ~= "number" then list = false; break end end
+		end
+		if list then
+			for k = 1, #v do v[k] = ref(kind, v[k]) end
+		else
+			margs[i] = ref(kind, v)
+		end
+	end
 	if fn == "makeLineCreateCmd" or fn == "makeLineUpdateCmd" then
 		local line = margs[fn == "makeLineCreateCmd" and 4 or 2]
 		if type(line) == "table" then
