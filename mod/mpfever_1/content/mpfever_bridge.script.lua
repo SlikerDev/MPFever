@@ -14860,7 +14860,9 @@ G.coEco = function(st, reg, c)
 	local want = tonumber(G.coBankrupt)
 	local rules = reg.rules or {}
 	local newRules = os.getenv("MPFEVER_SHARESWITCH") ~= "0"
-	local shareWant = newRules and (G.coShare ~= false) or nil
+	-- (not "newRules and x or nil": a false x would give nil, and the rules switched off never reached the game)
+	local shareWant = nil
+	if newRules then shareWant = G.coShare ~= false end
 	local startWant = newRules and tonumber(G.coStart) or nil
 	-- (the computer companies with their colour, level and start money, "n:colour:level[:money],...": a lobby on this savegame
 	-- gives them their level and money again)
