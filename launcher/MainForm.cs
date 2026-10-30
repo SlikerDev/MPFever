@@ -3036,9 +3036,9 @@ namespace MPFever
                     var f = part.Split(':');
                     if (f.Length < 3 || !int.TryParse(f[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out int n)
                         || !int.TryParse(f[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out int lv) || lv < 1 || lv > 3) continue;
-                    long mo = -1;
-                    if (f.Length >= 4 && (!long.TryParse(f[3], NumberStyles.Integer, CultureInfo.InvariantCulture, out mo) || mo < -1)) mo = -1;
-                    lock (lobbyAi) { if (lobbyAi.TryGetValue(n, out var a)) { a.Level = lv; a.Money = mo; n0++; } }
+                    long aiMoney = -1;
+                    if (f.Length >= 4 && (!long.TryParse(f[3], NumberStyles.Integer, CultureInfo.InvariantCulture, out aiMoney) || aiMoney < -1)) aiMoney = -1;
+                    lock (lobbyAi) { if (lobbyAi.TryGetValue(n, out var a)) { a.Level = lv; a.Money = aiMoney; n0++; } }
                 }
                 if (n0 > 0) said.Add(F("{0} entreprise(s) de l'ordinateur avec leur niveau", "{0} computer company(ies) with their level", n0));
             }
