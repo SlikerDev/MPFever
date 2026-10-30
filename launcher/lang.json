@@ -10791,6 +10791,19 @@
       "zh-CN": "%s 的建造已取消:另一位玩家在同一时刻于同一地点建造。请重新建造。",
       "zh-TW": "%s 的建造已取消:另一位玩家在同一時刻於同一地點建造。請重新建造。"
     },
+    "%s's build reached the host's game too late and was not kept. Please make it again.": {
+      "de": "Der Bau von %s kam zu spät im Spiel des Hosts an und wurde nicht behalten. Bitte erneut bauen.",
+      "es": "La construcción de %s llegó demasiado tarde a la partida del anfitrión y no se ha conservado. Vuelve a hacerla.",
+      "it": "La costruzione di %s è arrivata troppo tardi nella partita dell'host e non è stata mantenuta. Rifalla.",
+      "nl": "De bouw van %s kwam te laat aan in het spel van de host en is niet behouden. Bouw het opnieuw.",
+      "pl": "Budowa gracza %s dotarła do gry hosta zbyt późno i nie została zachowana. Zbuduj ją ponownie.",
+      "pt-BR": "A construção de %s chegou tarde demais ao jogo do anfitrião e não foi mantida. Faça-a de novo.",
+      "ru": "Постройка игрока %s пришла в игру хоста слишком поздно и не сохранилась. Постройте ещё раз.",
+      "ja": "%s の建設はホストのゲームに届くのが遅すぎたため、残りませんでした。もう一度建設してください。",
+      "ko": "%s의 건설이 호스트의 게임에 너무 늦게 도착해 유지되지 않았습니다. 다시 건설해 주세요.",
+      "zh-CN": "%s 的建造到达主机的游戏太晚,未被保留。请重新建造。",
+      "zh-TW": "%s 的建造到達主機的遊戲太晚,未被保留。請重新建造。"
+    },
     "Your builds show at once on your game instead of waiting for the other games: you can attach the next piece right away.": {
       "de": "Deine Bauten erscheinen sofort in deinem Spiel, statt auf die anderen Spiele zu warten: Du kannst das nächste Stück gleich anschließen.",
       "es": "Tus construcciones aparecen al instante en tu partida en lugar de esperar a las demás: puedes enlazar la siguiente pieza enseguida.",
