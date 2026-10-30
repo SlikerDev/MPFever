@@ -18,6 +18,8 @@ bridge file. A mocked game gives each line its earnings, seats in use and vehicl
   - in debt: only a line that loses money has a vehicle sold (MPFEVER_AIDEBTSELL=0: the emptiest line's, as before), else a
     loan is asked, one at most, the lowest monthly payment (MPFEVER_AILOANPICK=0: the first offer); money to spare repays
     a loan only when there is one;
+  - townsForLines: a town another computer company works on goes after the others (MPFEVER_AISPREAD=0), a station nobody
+    owns is no competitor (MPFEVER_AIRETRY=0: counted); bestBus: one-compartment models only (MPFEVER_AIMULTICOMP=1: any);
   - loanBook: count, still owed, monthly payments; M.listOf: a computer company's start money (0 to 10 billion, -1 or none:
     the players');
   - the bridge's ai_loan: at most param.max loans, with param.pick the offer of the lowest monthly payment (the first one
@@ -40,7 +42,7 @@ BRIDGE = os.path.join(CONTENT, "mpfever_bridge.script.lua")
 
 # (the module's locals, for the test only: added before its last line)
 EXPOSE = r'''
-M.TEST = { mayExpand = mayExpand, manageLines = manageLines, bestPair = bestPair, loanBook = loanBook,
+M.TEST = { mayExpand = mayExpand, manageLines = manageLines, bestPair = bestPair, loanBook = loanBook, townsForLines = townsForLines,
   level = function(i) LV = LEVELS[i]; RESERVE = LV.reserve end,
   buyFor = function(f) buyFor = f end }
 return M
@@ -253,6 +255,43 @@ end
           run("return pair(2, { pairDone = { ['1/2'] = true } }, function(A) A.pairUnderWay = '1/2' end)") == "1/2 300")
     check("MPFEVER_AIPAIRSPREAD=0: as before",
           run("return pair(2, { pairDone = { ['1/2'] = true } }, function(A) ENV.MPFEVER_AIPAIRSPREAD = '0' end)") == "1/2 300")
+
+    print("the towns spread over the companies (townsForLines) and the one-compartment buses (bestBus)")
+    run(r'''
+STATIONS = {}
+api.engine.system.stationSystem = { getStations = function(t) return STATIONS[t] or {} end }
+E.R.ownerOf = function(e) return OWNERS and OWNERS[e] end
+function towns(setup)
+  fresh(2)
+  STATIONS, OWNERS = {}, {}
+  if setup then setup() end
+  local t = {}
+  for _, x in ipairs(T.townsForLines(E, CO.ent)) do t[#t + 1] = x.e end
+  return table.concat(t, ",")
+end
+''')
+    check("alone: the biggest town first", run("return towns()") == "1,2,3")
+    check("a town another computer company works on goes after the others",
+          run("return towns(function() E.G.AIS[2] = { targets = { [1] = {} } } end)") == "2,3,1")
+    check("MPFEVER_AISPREAD=0: as before",
+          run("return towns(function() E.G.AIS[2] = { targets = { [1] = {} } }; ENV.MPFEVER_AISPREAD = '0' end)") == "1,2,3")
+    check("a station nobody owns (an industry's) is no competitor",
+          run("return towns(function() STATIONS[1] = { 51, 52, 53, 54 } end)") == "1,2,3")
+    check("MPFEVER_AIRETRY=0: counted, as before",
+          run("return towns(function() STATIONS[1] = { 51, 52, 53, 54 }; ENV.MPFEVER_AIRETRY = '0' end)") == "2,1,3")
+    run(r'''
+local function model(seats, comps)
+  local c = {}
+  for i = 1, comps do c[i] = { loadConfigs = { { cargoEntry = { capacity = seats } } } } end
+  return { metadata = { availability = { yearFrom = 1930, yearTo = 0 }, transportVehicle = { compartments = c } } }
+end
+MODELS = { [11] = model(40, 1), [12] = model(45, 2) }
+api.res = { modelRep = { getAll = function() return { [11] = "model/vehicle/bus/a.mdl", [12] = "model/vehicle/bus/b.mdl", [13] = "model/vehicle/truck/c.mdl" } end, get = function(id) return MODELS[id] end } }
+function bus() local b = M.f.bestBus(E) return b and (b.id .. ":" .. b.seats) or "none" end
+''')
+    got = run("ENV = {}; return bus()")
+    check("a model of one compartment only (the shape of the purchase)", got == "11:40", got)
+    check("MPFEVER_AIMULTICOMP=1: any model, as before", run("ENV = { MPFEVER_AIMULTICOMP = '1' }; local r = bus(); ENV = {}; return r") == "12:45")
 
     print("loanBook and M.listOf")
     got = run(r'''
