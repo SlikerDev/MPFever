@@ -188,6 +188,30 @@ namespace MPFever
 
         volatile string serverListView = "";
         volatile bool serverListWanted;
+        // (0.6) until when the list is taken as an older one (no /api/games, see FetchList)
+        DateTime listOldUntil = DateTime.MinValue;
+
+        /// <summary>(0.6) The entries of the list: /api/games (v2: every entry, the players' public games too), else /api/servers.
+        /// A list that answers /api/games with an HTTP error (an older list: 404) is remembered as one for 10 minutes: one request a
+        /// cycle, /api/servers, not two. A list that does not answer at all (down, unreachable) is not asked /api/servers as well:
+        /// the error goes to the caller after one wait of 6 s, not two. v2 false (MPFEVER_PUBLICGAMES=0): /api/servers, as before.</summary>
+        internal static List<object> FetchList(string url, bool v2, ref DateTime oldUntil)
+        {
+            if (v2 && DateTime.UtcNow >= oldUntil)
+            {
+                string body = null;
+                try { body = ListRequest(url + "/api/games", null); }
+                catch (WebException e) when (e.Response is HttpWebResponse r && (int)r.StatusCode >= 400 && (int)r.StatusCode < 500) { }
+                List<object> games = null;
+                if (body != null)
+                    try { games = Json.Parse(body) is Dictionary<string, object> d && d.TryGetValue("games", out var g) ? g as List<object> : null; } catch (Exception) { }
+                if (games != null) return games;
+                // (an older list has no such route: its servers, as before)
+                oldUntil = DateTime.UtcNow.AddMinutes(10);
+            }
+            var ds = Json.Parse(ListRequest(url + "/api/servers", null)) as Dictionary<string, object>;
+            return ds != null && ds.TryGetValue("servers", out var s) ? s as List<object> : null;
+        }
 
         /// <summary>Started with the game's menu: the list read every 20 s (at once when the page asks) while no session runs,
         /// for the « Servers » tab (menu_state servers=, one server per \u001e, its fields separated by \u001f: name, address to
@@ -210,23 +234,7 @@ namespace MPFever
                 string view;
                 try
                 {
-                    Dictionary<string, object> d = null;
-                    List<object> list = null;
-                    if (!PublicOff)
-                    {
-                        try
-                        {
-                            d = Json.Parse(ListRequest(url + "/api/games", null)) as Dictionary<string, object>;
-                            list = d != null && d.TryGetValue("games", out var g) ? g as List<object> : null;
-                        }
-                        // (an older list has no such route: its servers, as before)
-                        catch (Exception) { list = null; }
-                    }
-                    if (list == null)
-                    {
-                        d = Json.Parse(ListRequest(url + "/api/servers", null)) as Dictionary<string, object>;
-                        list = d != null && d.TryGetValue("servers", out var s) ? s as List<object> : null;
-                    }
+                    var list = FetchList(url, !PublicOff, ref listOldUntil);
                     var rows = new List<string>();
                     foreach (var o in (list ?? new List<object>()).OfType<Dictionary<string, object>>().Take(200))
                     {

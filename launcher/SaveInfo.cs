@@ -28,10 +28,33 @@ namespace MPFever
         /// <summary>The computer companies of a savegame (keys "ai:n", not gone), by number; empty when none or unreadable.</summary>
         public static List<Company> AiCompanies(string savePath)
         {
-            var found = new SortedDictionary<int, Company>();
             byte[] d;
             try { d = Zstd.DecompressFile(savePath); }
             catch (Exception e) { Log.W("savegame companies: " + e.Message); return new List<Company>(); }
+            return AiCompaniesOf(d);
+        }
+
+        /// <summary>(0.6) What a lobby reads of its savegame, from one decompression (a big savegame takes seconds): its computer
+        /// companies (only when asked: one company per player), its game's rules and its game options (see AiCompanies, Rules,
+        /// Opts); null when the savegame cannot be read.</summary>
+        public sealed class Marks
+        {
+            public List<Company> Ai;
+            public Dictionary<string, string> Rules;
+            public string Opts;
+        }
+
+        public static Marks Read(string savePath, bool ai)
+        {
+            byte[] d;
+            try { d = Zstd.DecompressFile(savePath); }
+            catch (Exception e) { Log.W("savegame: " + e.Message); return null; }
+            return new Marks { Ai = ai ? AiCompaniesOf(d) : null, Rules = RulesOf(d), Opts = OptsOf(d) };
+        }
+
+        static List<Company> AiCompaniesOf(byte[] d)
+        {
+            var found = new SortedDictionary<int, Company>();
             for (int i = IndexOf(d, KeyEntry, 0); i >= 0; i = IndexOf(d, KeyEntry, i + 1))
             {
                 int v = i + KeyEntry.Length;
@@ -76,6 +99,11 @@ namespace MPFever
             byte[] d;
             try { d = Zstd.DecompressFile(savePath); }
             catch (Exception e) { Log.W("savegame rules: " + e.Message); return null; }
+            return RulesOf(d);
+        }
+
+        static Dictionary<string, string> RulesOf(byte[] d)
+        {
             int i = IndexOf(d, RulesMark, 0);
             if (i < 0) return null;
             // (the text is a Lua string of the game's state: its length right before it)
@@ -99,6 +127,12 @@ namespace MPFever
             byte[] d;
             try { d = Zstd.DecompressFile(savePath); }
             catch (Exception e) { Log.W("savegame options: " + e.Message); return null; }
+            return OptsOf(d);
+        }
+
+        /// <summary>The game options of a decompressed savegame (see Opts).</summary>
+        public static string OptsOf(byte[] d)
+        {
             int i = IndexOf(d, OptsMark, 0);
             if (i < 0) return null;
             // (a Lua string of the game's state: its length right before it, the text ends with ';')

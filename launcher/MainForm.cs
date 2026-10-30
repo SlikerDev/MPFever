@@ -131,13 +131,13 @@ namespace MPFever
         string lobbyPublic = "", lobbyLocal = "";
         int lobbyPort;
         // (0.6) the session's game options are GameOptions(): the string the lobby's "Game settings" edit ("id=1;id.param=v;...",
-        // docs/FEATURES-0.6.md), read through OptValue by MPFever.exe's own options (the public games: PublicGames.cs). Kept while
-        // mpfever_settings.txt is not written again (SaveSetting counts its writes): the status and the public games read them every
-        // second. (autotests, the scenario pubtest: the scenario's own options, never written into mpfever_settings.txt)
-        sealed class OptsCache { public int Gen; public string Text; }
-        volatile OptsCache gameOptsCache;
+        // docs/FEATURES-0.6.md), read through OptValue by MPFever.exe's own options (the public games: PublicGames.cs). Kept in
+        // memory (KeptGameOptions): read once from mpfever_settings.txt, then changed only by SaveSetting("gameopts"); the status,
+        // the session and the public games read them every second or so, and a read that failed (the file written by another
+        // request at that moment, an antivirus) turned every option off in every game for 10 s. (autotests, the scenario pubtest:
+        // the scenario's own options, never written into mpfever_settings.txt)
+        static volatile string gameOptsKept;
         volatile string gameOptsTest;
-        static int settingsGen;
 
         /// <summary>One value of an options string "id=1;id.param=v;..." (the key "id" or "id.param"), or null when absent.</summary>
         internal static string OptValue(string opts, string key)
@@ -1029,23 +1029,66 @@ namespace MPFever
 
         // ---------------------------------------------------------------- main menu mode
 
-        static string SettingsFile => Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "mpfever_settings.txt");
+        // (the self-test's own file: never the player's)
+        internal static string SettingsFileForTest;
+        static string SettingsFile => SettingsFileForTest ?? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "mpfever_settings.txt");
+        static readonly object settingsWrite = new object();
 
-        internal static Dictionary<string, string> LoadSettings()
+        internal static Dictionary<string, string> LoadSettings() => LoadSettings(out _);
+
+        /// <summary>The settings; ok false when the file is there but could not be read (written by another request at that moment, an
+        /// antivirus), after three tries 20 ms apart: the dictionary is then empty, not the player's settings.</summary>
+        internal static Dictionary<string, string> LoadSettings(out bool ok)
         {
             var d = new Dictionary<string, string>();
-            try { foreach (var l in File.ReadAllLines(SettingsFile)) { int i = l.IndexOf('='); if (i > 0) d[l.Substring(0, i)] = l.Substring(i + 1); } } catch { }
-            return d;
+            ok = true;
+            for (int tries = 0; ; tries++)
+            {
+                try
+                {
+                    d.Clear();
+                    foreach (var l in File.ReadAllLines(SettingsFile)) { int i = l.IndexOf('='); if (i > 0) d[l.Substring(0, i)] = l.Substring(i + 1); }
+                    return d;
+                }
+                catch (FileNotFoundException) { d.Clear(); return d; }
+                catch (DirectoryNotFoundException) { d.Clear(); return d; }
+                catch (Exception)
+                {
+                    if (tries >= 2) { d.Clear(); ok = false; return d; }
+                    Thread.Sleep(20);
+                }
+            }
         }
 
         internal static void SaveSetting(string k, string v)
         {
-            var d = LoadSettings();
-            d[k] = v;
-            try { File.WriteAllLines(SettingsFile, d.Select(kv => kv.Key + "=" + kv.Value)); } catch { }
-            // (0.6: the game options kept by GameOptions are read again)
-            Interlocked.Increment(ref settingsGen);
+            // (0.6) the game options in memory first: the session's from now on, even if the file cannot be written
+            if (k == "gameopts") gameOptsKept = GameOpts.Canon(v ?? "");
+            lock (settingsWrite)
+            {
+                var d = LoadSettings(out bool ok);
+                // (0.6: a file that could not be read is not written again with this one setting only: the others were lost)
+                if (!ok) { Log.W("settings: mpfever_settings.txt could not be read, " + k + " not saved"); return; }
+                d[k] = v;
+                try { File.WriteAllLines(SettingsFile, d.Select(kv => kv.Key + "=" + kv.Value)); } catch { }
+            }
         }
+
+        /// <summary>(0.6) The game options kept in memory (see gameOptsKept): read from the settings the first time, again only while
+        /// the file cannot be read (then none, never a game's options turned off by a failed read once they are known).</summary>
+        internal static string KeptGameOptions()
+        {
+            var kept = gameOptsKept;
+            if (kept != null) return kept;
+            var d = LoadSettings(out bool ok);
+            d.TryGetValue("gameopts", out var v);
+            var s = GameOpts.Canon(v ?? "");
+            if (ok) gameOptsKept = s;
+            return s;
+        }
+
+        /// <summary>(the self-test) the game options read from the settings file again, as at MPFever.exe's start.</summary>
+        internal static void ForgetGameOptions() { gameOptsKept = null; }
 
         /// <summary>The player name kept from the last host or join in the MPFever window (name= in mpfever_settings.txt),
         /// else the Windows user name. The game and the launcher window both start with it.</summary>
@@ -1473,10 +1516,15 @@ namespace MPFever
                 try { StartHost(name, false, menuGame); }
                 catch (Exception e) { menuPhase = "error"; menuText = T("Impossible d'héberger : ", "Cannot host: ") + e.Message; MenuStatus(); return; }
                 // the lobby opens: the savegame is loaded once the host starts the game (see StartLobbyGame), by every game at once
+                // (0.6: a new lobby for the savegame's game options, see ApplySaveOpts)
+                int optsGen;
+                lock (saveOptsLock) { optsGen = ++lobbyGen; lobbyOptsAtOpen = GameOptions(); }
                 lobbySave = arg; lobbyOpen = true; lobbyStarting = false;
-                // (one company per player: the savegame's computer companies, in the lobby from the start)
+                // (one company per player: the savegame's computer companies, in the lobby from the start; its rules and its game
+                // options from the same reading)
                 lock (lobbyAi) lobbyAi.Clear();
-                if (companyMode == "separate") LoadLobbyAi(arg);
+                if (companyMode == "separate") LoadLobbyAi(arg, optsGen);
+                bool optsHere = companyMode != "separate";
                 // its fingerprint, for the players who already have it (copied by hand before joining: nothing to send them)
                 lobbySaveSha = ""; lobbySaveSize = 0;
                 lock (saveHave) saveHave.Clear();
@@ -1491,8 +1539,10 @@ namespace MPFever
                         if (lobbySave != fpSave) return;
                         lobbySaveSize = new FileInfo(f).Length; lobbySaveSha = sha;
                         BroadcastLobby();
-                        // (0.6: the game options the savegame was played with, in both company modes)
-                        try { LoadSaveOpts(fpSave, f); } catch (Exception e) { Log.W("savegame options: " + e.Message); }
+                        // (0.6: the game options the savegame was played with; one company per player: read with its computer
+                        // companies, see LoadLobbyAi. MPFEVER_SAVEOPTS=0: never, the savegame is not decompressed here, as in 0.5.14)
+                        if (optsHere && !SaveOptsOff)
+                            try { var mk = SaveInfo.Read(f, false); ApplySaveOpts(optsGen, mk?.Opts); } catch (Exception e) { Log.W("savegame options: " + e.Message); }
                     }
                     catch (Exception e) { Log.W("savegame fingerprint: " + e.Message); }
                 }) { IsBackground = true, Name = "Savegame fingerprint" }.Start();
@@ -1996,7 +2046,7 @@ namespace MPFever
 
         /// <summary>(the host, one company per player) the computer companies of the lobby's savegame, read from it: in the lobby from
         /// the start, with their colour (another free one when a player has it).</summary>
-        void LoadLobbyAi(string save)
+        void LoadLobbyAi(string save, int optsGen)
         {
             new Thread(() =>
             {
@@ -2005,7 +2055,9 @@ namespace MPFever
                     var f = GameInstall.FindSave(save);
                     if (f == null) return;
                     var t0 = DateTime.UtcNow;
-                    var list = SaveInfo.AiCompanies(f);
+                    // (0.6: its companies, its rules and its game options from one decompression; before, one each)
+                    var marks = SaveInfo.Read(f, true);
+                    var list = marks?.Ai ?? new List<SaveInfo.Company>();
                     // (0.5.14: the savegame's rules too, the lobby starts with them)
                     if (lobbySave != save || !lobbyOpen) return;
                     foreach (var c in list)
@@ -2018,7 +2070,8 @@ namespace MPFever
                         if (taken) ix = FreeLobbyColor(c.Number);
                         lock (lobbyAi) lobbyAi[c.Number].Color = ix;
                     }
-                    try { LoadSaveRules(save, f); } catch (Exception e) { Log.W("savegame rules: " + e.Message); }
+                    try { LoadSaveRules(save, marks?.Rules); } catch (Exception e) { Log.W("savegame rules: " + e.Message); }
+                    if (!SaveOptsOff) try { ApplySaveOpts(optsGen, marks?.Opts); } catch (Exception e) { Log.W("savegame options: " + e.Message); }
                     if (list.Count > 0)
                         Log.W(F("Sauvegarde : {0} entreprise(s) de l'ordinateur reprise(s) ({1:0.0} s)", "Savegame: {0} computer company(ies) taken again ({1:0.0} s)", list.Count, (DateTime.UtcNow - t0).TotalSeconds));
                     BroadcastLobby();
@@ -2056,6 +2109,19 @@ namespace MPFever
                 string file = GameInstall.FindSave(lobbySave);
                 if (file == null) { menuPhase = "error"; menuText = F("Sauvegarde « {0} » introuvable.", "Savegame « {0} » not found.", lobbySave); MenuStatus(); return; }
                 byte[] bytes = File.ReadAllBytes(file);
+                // (0.6) the savegame's game options not settled yet (its reading still under way, a big savegame): read now from these
+                // bytes, before the session carries the options (else the host's game would switch the savegame's off at once)
+                if (!SaveOptsOff)
+                {
+                    int gen; bool settled;
+                    lock (saveOptsLock) { gen = lobbyGen; settled = saveOptsGen == gen; }
+                    if (!settled)
+                    {
+                        string o = null;
+                        try { o = SaveInfo.OptsOf(Zstd.Decompress(bytes)); } catch (Exception e) { Log.W("savegame options: " + e.Message); }
+                        ApplySaveOpts(gen, o);
+                    }
+                }
                 lobbyStarting = true;
                 lobbyOpen = false;
                 int id = Interlocked.Increment(ref resyncId);
@@ -2392,6 +2458,10 @@ namespace MPFever
 
         // ---------------------------------------------------------------- sessions
 
+        /// <summary>Relay.Admit of a player's own game: its version (unless anyVersion), then the public games' rules (PublicAdmit).</summary>
+        internal static Func<Peer, Msg, string> HostAdmit(bool anyVersion, Func<Msg, string> version, Func<Peer, string> pub)
+            => (p, m) => (anyVersion ? null : version(m)) ?? pub(p);
+
         void StartHost(string name, bool launch, GameLink existing = null)
         {
             leftSession = null;   // (a report describes this session now)
@@ -2402,8 +2472,9 @@ namespace MPFever
             // a player's own game lets in only the players with its version: a guest on another version replays the builds its
             // own way and the games go apart (issue #73: a host on 0.3.20, its guest on 0.3.22). MPFEVER_ANYVERSION=1 lets everybody in.
             // (0.6: then the host's ban list, a free place in a public game and the host's answer to every arrival, when its game
-            // options ask for them: PublicGames.cs; none of them by default)
-            else if (Environment.GetEnvironmentVariable("MPFEVER_ANYVERSION") != "1") { var r = relay; relay.Admit = (p, m) => VersionAdmit(m.Payload) ?? PublicAdmit(r, p); }
+            // options ask for them: PublicGames.cs; none of them by default. MPFEVER_ANYVERSION=1 skips the version check only: the
+            // ban list, the places and the host's answer still hold, else a banned player came in with that switch)
+            else { var r = relay; relay.Admit = HostAdmit(Environment.GetEnvironmentVariable("MPFEVER_ANYVERSION") == "1", m => VersionAdmit(m.Payload), p => PublicAdmit(r, p)); }
             relay.Joined += p =>
             {
                 Log.Ok(F("{0} a rejoint la session", "{0} joined the session", p.Name));
@@ -3103,25 +3174,45 @@ namespace MPFever
             if (v != null) return GameOpts.Canon(v);
             var test = gameOptsTest;
             if (test != null) return GameOpts.Canon(test);
-            // (kept until SaveSetting writes the file again: read every second by the status and the public games)
-            int gen = Thread.VolatileRead(ref settingsGen);
-            var c = gameOptsCache;
-            if (c != null && c.Gen == gen) return c.Text;
-            LoadSettings().TryGetValue("gameopts", out v);
-            var s = GameOpts.Canon(v ?? "");
-            gameOptsCache = new OptsCache { Gen = gen, Text = s };
-            return s;
+            // (kept in memory: read every second by the status, the session and the public games)
+            return KeptGameOptions();
+        }
+
+        // (0.6) the savegame's game options in the lobby: lobbyGen counts the lobbies opened, saveOptsGen is the last one whose
+        // savegame's options were settled (taken, or none to take), lobbyOptsAtOpen the options when it opened. MPFEVER_SAVEOPTS=0:
+        // never read from the savegame (the host's last choice only; no decompression of a savegame in a co-op lobby, as in 0.5.14)
+        readonly object saveOptsLock = new object();
+        int lobbyGen, saveOptsGen = -1;
+        string lobbyOptsAtOpen = "";
+        static bool SaveOptsOff => Environment.GetEnvironmentVariable("MPFEVER_SAVEOPTS") == "0" || Environment.GetEnvironmentVariable("MPFEVER_FEAT") == "0";
+
+        /// <summary>(0.6) What the lobby takes of its savegame's options: the savegame's (canon), or null to keep the session's. None
+        /// when the savegame has none (no option was ever on in it), or when the host chose other options since the lobby opened
+        /// (its choice, made while the savegame was read, wins).</summary>
+        internal static string SaveOptsToTake(string saveOpts, string now, string atOpen)
+        {
+            if (saveOpts == null || now != atOpen) return null;
+            var o = GameOpts.Canon(saveOpts);
+            return o == now ? null : o;
         }
 
         /// <summary>(the host) the game options a savegame was played with (the text "mpfopts:...;" its game keeps, see mpfever_feat.lua's
-        /// applyOpts), read when a lobby opens on it: the lobby starts with them. A savegame without them leaves the host's last choice.</summary>
-        void LoadSaveOpts(string save, string file)
+        /// applyOpts), read when a lobby opens on it: the lobby starts with them. A savegame without them leaves the host's last choice.
+        /// Once per lobby (gen): from the reading of the lobby's savegame, or from StartLobbyGame when the host starts before it ended
+        /// (then before the session carries the options: the game would otherwise switch the savegame's off).</summary>
+        void ApplySaveOpts(int gen, string saveOpts)
         {
-            var o = SaveInfo.Opts(file);
-            if (o == null || lobbySave != save || !lobbyOpen) return;
-            o = GameOpts.Canon(o);
-            if (o == GameOptions()) return;
-            SaveSetting("gameopts", o);
+            string o;
+            lock (saveOptsLock)
+            {
+                if (gen != lobbyGen || saveOptsGen == gen || !lobbyOpen) return;
+                saveOptsGen = gen;
+                var now = GameOptions();
+                o = SaveOptsToTake(saveOpts, now, lobbyOptsAtOpen);
+                if (saveOpts != null && now != lobbyOptsAtOpen) Log.W("savegame options: the host chose others meanwhile, its choice kept");
+                if (o == null) return;
+                SaveSetting("gameopts", o);
+            }
             Log.W(F("Options de partie de la sauvegarde reprises : {0}", "The savegame's game options taken again: {0}", o == "" ? T("aucune", "none") : o));
             BroadcastLobby();
             MenuStatus();
@@ -3130,9 +3221,8 @@ namespace MPFever
         /// <summary>(the host) the game's rules of a savegame, read from it when a lobby opens on it (0.5.14: the text "mpfrules:..."
         /// the game keeps, see mpfever_eco.lua's co_rules): the lobby starts with them. A savegame without them leaves the host's
         /// last choices.</summary>
-        void LoadSaveRules(string save, string file)
+        void LoadSaveRules(string save, Dictionary<string, string> r)
         {
-            var r = SaveInfo.Rules(file);
             if (r == null || lobbySave != save || !lobbyOpen) return;
             var said = new List<string>();
             if (r.TryGetValue("bankrupt", out var b) && int.TryParse(b, NumberStyles.Integer, CultureInfo.InvariantCulture, out int mo) && (mo == 0 || mo == 3 || mo == 6 || mo == 12 || mo == 24))

@@ -288,7 +288,8 @@ def launcher_checks(ids, params):
     check("MPFever.exe: the public options read from the lobby's string", re.search(r"g\.Options = \(\) => .*GameOptions\(\);", cs) is not None)
     check("MPFever.exe: no options field of their own", re.search(r"\bstring gameOptions\b|\bOptOn\(|\bOptParam\(", mf) is None)
     save = extract(mf, r"internal static void SaveSetting\(string k, string v\)\n.*?^        \}\n", "SaveSetting")
-    check("MPFever.exe: a settings write reads the options again", "Interlocked.Increment(ref settingsGen)" in save)
+    # (kept in memory, see KeptGameOptions: a settings write of the options changes them there; a failed read never turns them off)
+    check("MPFever.exe: a settings write of the options keeps them in memory", 'if (k == "gameopts") gameOptsKept =' in save)
     # the host's own status lines the window reads are written
     mod = read(MOD)
     ui = read(os.path.join(CONTENT, "mpfever_ui.script.lua"))

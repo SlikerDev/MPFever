@@ -50,6 +50,7 @@ namespace MPFever
             ok &= RunResume();
             ok &= RunServer();
             ok &= RunGameOpts();
+            ok &= RunOptsKept();
             ok &= RunPublic();
             ok &= RunUpdater();
             ok &= RunPortMap();
@@ -392,6 +393,118 @@ namespace MPFever
             }
             catch (Exception e) { Check(false, "game options: " + e.Message); }
             finally { try { Directory.Delete(dir, true); } catch { } }
+            return ok;
+        }
+
+        /// <summary>(0.6, review of 2026-10-30) The game options kept in memory (a settings file that cannot be read never turns them
+        /// off, nor loses the other settings), the lobby's one reading of its savegame (computer companies, rules and options at once;
+        /// the host's choice made meanwhile wins), the public games' rules with MPFEVER_ANYVERSION=1, and the server list read once a
+        /// cycle from an older list (404 on /api/games) and not twice when it does not answer.</summary>
+        static bool RunOptsKept()
+        {
+            bool ok = true;
+            void Check(bool cond, string what) { Log.W((cond ? "  ok    " : "  FAIL  ") + what); ok &= cond; }
+            var dir = Path.Combine(Path.GetTempPath(), "mpfever-selftest-" + Guid.NewGuid().ToString("N").Substring(0, 6));
+            Directory.CreateDirectory(dir);
+            var keepFile = MainForm.SettingsFileForTest;
+            try
+            {
+                // the options in memory
+                var file = Path.Combine(dir, "mpfever_settings.txt");
+                File.WriteAllText(file, "name=me\ngameopts=stock=1;goal=1\n", new UTF8Encoding(false));
+                MainForm.SettingsFileForTest = file;
+                MainForm.ForgetGameOptions();
+                Check(MainForm.KeptGameOptions() == "goal=1;stock=1", "options kept: read from the settings the first time");
+                using (new FileStream(file, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                {
+                    Check(MainForm.KeptGameOptions() == "goal=1;stock=1", "options kept: the file locked (written by another request), still on");
+                    MainForm.SaveSetting("bankrupt", "6");
+                }
+                var after = File.ReadAllText(file);
+                Check(after.Contains("name=me") && after.Contains("gameopts=") && !after.Contains("bankrupt"), "settings: a file that could not be read is not written again with one setting only");
+                MainForm.SaveSetting("gameopts", "goal=1");
+                Check(MainForm.KeptGameOptions() == "goal=1" && File.ReadAllText(file).Contains("gameopts=goal=1"), "options kept: a choice saved, in memory and in the file");
+                MainForm.ForgetGameOptions();
+                using (new FileStream(file, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                    Check(MainForm.KeptGameOptions() == "", "options kept: unreadable at the first reading, none (not kept)");
+                Check(MainForm.KeptGameOptions() == "goal=1", "options kept: read again once the file can be read");
+
+                // the lobby's savegame: one reading for its companies, its rules and its options
+                byte[] Lua(string s)
+                {
+                    var t = Encoding.ASCII.GetBytes(s);
+                    return BitConverter.GetBytes(3).Concat(BitConverter.GetBytes(t.Length)).Concat(t).ToArray();
+                }
+                var junk = Enumerable.Range(0, 3000).Select(k => (byte)(k * 7 % 256)).ToArray();
+                var save = Path.Combine(dir, "save.sav");
+                Zstd.WriteRawFrame(save, junk.Concat(Lua("mpfrules:bankrupt=6;share=0;")).Concat(junk).Concat(Lua("mpfopts:goal=1;")).Concat(junk).ToArray());
+                var mk = SaveInfo.Read(save, true);
+                Check(mk != null && mk.Ai != null && mk.Ai.Count == 0 && mk.Rules != null && mk.Rules["bankrupt"] == "6" && mk.Opts == "goal=1",
+                    "savegame: its companies, rules and options from one decompression");
+                Check(SaveInfo.Read(save, false).Ai == null && SaveInfo.Read(Path.Combine(dir, "none.sav"), true) == null, "savegame: no companies unless asked; none when unreadable");
+                Check(MainForm.SaveOptsToTake("goal=1", "", "") == "goal=1" && MainForm.SaveOptsToTake(null, "", "") == null
+                      && MainForm.SaveOptsToTake("goal=1", "goal=1", "goal=1") == null, "savegame options: taken, none, already the session's");
+                Check(MainForm.SaveOptsToTake("goal=1", "stock=1", "") == null, "savegame options: the host chose others since the lobby opened: its choice kept");
+
+                // the public games' rules with MPFEVER_ANYVERSION=1
+                int versionAsked = 0;
+                var admit = MainForm.HostAdmit(true, m => { versionAsked++; return "old"; }, p => p.Name == "banned" ? "banned" : null);
+                Check(admit(new Peer { Name = "banned" }, Msg.Make("join", "x")) == "banned" && admit(new Peer { Name = "bob" }, Msg.Make("join", "x")) == null && versionAsked == 0,
+                    "MPFEVER_ANYVERSION=1: no version check, the ban list still");
+                var admit2 = MainForm.HostAdmit(false, m => "old", p => null);
+                Check(admit2(new Peer { Name = "bob" }, Msg.Make("join", "x")) == "old", "without it: the version first");
+
+                // the server list: an older list (404 on /api/games), a list that does not answer
+                var listener = new TcpListener(IPAddress.Loopback, 0);
+                listener.Start();
+                int lport = ((IPEndPoint)listener.LocalEndpoint).Port;
+                var asked = new List<string>();
+                var server = new Thread(() =>
+                {
+                    try
+                    {
+                        while (true)
+                        {
+                            using (var c = listener.AcceptTcpClient())
+                            {
+                                var s = c.GetStream();
+                                var buf = new byte[4096];
+                                var head = new StringBuilder();
+                                while (!head.ToString().Contains("\r\n\r\n")) { int n = s.Read(buf, 0, buf.Length); if (n <= 0) break; head.Append(Encoding.ASCII.GetString(buf, 0, n)); }
+                                var path = head.ToString().Split(' ').Skip(1).FirstOrDefault() ?? "";
+                                lock (asked) asked.Add(path);
+                                var body = path == "/api/servers" ? "{\"servers\":[{\"name\":\"S\"}]}" : "";
+                                var status = path == "/api/servers" ? "200 OK" : "404 Not Found";
+                                var bytes = Encoding.UTF8.GetBytes(body);
+                                var resp = Encoding.ASCII.GetBytes("HTTP/1.1 " + status + "\r\nContent-Type: application/json\r\nContent-Length: " + bytes.Length + "\r\nConnection: close\r\n\r\n");
+                                s.Write(resp, 0, resp.Length);
+                                s.Write(bytes, 0, bytes.Length);
+                            }
+                        }
+                    }
+                    catch { }
+                }) { IsBackground = true };
+                server.Start();
+                var until = DateTime.MinValue;
+                var url = "http://127.0.0.1:" + lport;
+                var l1 = MainForm.FetchList(url, true, ref until);
+                var l2 = MainForm.FetchList(url, true, ref until);
+                listener.Stop();
+                lock (asked)
+                    Check(l1 != null && l1.Count == 1 && l2 != null && l2.Count == 1 && asked.Count == 3 && asked[0] == "/api/games" && asked[1] == "/api/servers" && asked[2] == "/api/servers",
+                        "server list: an older list, /api/games once, then /api/servers only (" + string.Join(" ", asked) + ")");
+                var until2 = DateTime.MinValue;
+                bool threw = false;
+                try { MainForm.FetchList(url, true, ref until2); } catch (WebException) { threw = true; }
+                Check(threw && until2 == DateTime.MinValue, "server list: a list that does not answer: the error at once, not taken as an older list");
+            }
+            catch (Exception e) { Check(false, "options kept: " + e.Message); }
+            finally
+            {
+                MainForm.SettingsFileForTest = keepFile;
+                MainForm.ForgetGameOptions();
+                try { Directory.Delete(dir, true); } catch { }
+            }
             return ok;
         }
 
