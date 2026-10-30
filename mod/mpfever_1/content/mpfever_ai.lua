@@ -2740,8 +2740,10 @@ local function ltSync(E, co, lines, vehicles, money)
 			L(E, string.format("long-term line %d under way: budget %d, %d game year(s) at most, its producer makes %d a year", l.e, math.floor(A.lt[l.e].budget),
 				LT.horizonY, math.floor(tonumber(P.prod0) or 0)))
 		elseif E.G.frames < (P.frame or 0) or E.G.frames - (P.frame or 0) > 7200 then
+			-- (not asked again: a line refused every 2 minutes)
 			A.ltPending = nil
-			L(E, "the long-term line asked for was not made")
+			A.ltFailed = A.ltFailed or {}; A.ltFailed[P.key or ""] = true
+			L(E, "the long-term line asked for was not made: its route is left")
 		end
 	end
 	-- (after a load: its oldest line from a raw producer or an industry it feeds, unless its time is up)
