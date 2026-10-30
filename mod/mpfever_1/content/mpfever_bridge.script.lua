@@ -11756,6 +11756,64 @@ H.wintabs = function(from, p)
 	ask(1)
 end
 
+-- (0.6) Statistics scenario (MPFEVER_SCENARIO=featstats, companies mode, best with MPFEVER_SPEED=4): the host's game switches the
+-- options goal, stats and yearly on (MPFEVER_STATSOPTS: other options, "id=1;id.param=v;..."), as its lobby would, and every game
+-- waits for game months measured by the host (two on the host, one more on the client, MPFEVER_STATSSECONDS at most, 170 by
+-- default) and tells what it holds: the options, the months, the last figures, the goal, the window's file, whether this game sent
+-- figures (the host only). The games' results must show the same figures; the launcher's checks say whether they stayed alike.
+H.featstats = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	if not K.FEAT then AUTO.results[1] = "featstats: the game options are off here (MPFEVER_FEAT=0)"; return autoFinish() end
+	if C.ROLE == "host" then
+		G.featOpts = os.getenv("MPFEVER_STATSOPTS") or "goal=1;goal.target=10;goal.years=5;stats=1;yearly=1"
+		G.featOptsAt = nil
+		log("AUTOTEST featstats: the host asks for the options " .. G.featOpts)
+	end
+	local want = C.ROLE == "host" and 2 or 1
+	local secs = tonumber(os.getenv("MPFEVER_STATSSECONDS") or "") or 170
+	local untilFrame = G.frames + secs * 60
+	local seen, first = 0, nil
+	local function stats()
+		local st = G.featSt
+		return st, type(st) == "table" and type(st.feat) == "table" and st.feat.stats or nil
+	end
+	local function report()
+		local st, s = stats()
+		local R1 = AUTO.results
+		R1[#R1 + 1] = "featstats: options " .. tostring(st and st.optsText) .. " (" .. tostring(st and st.optsMode) .. ")"
+		if type(s) ~= "table" then R1[#R1 + 1] = "featstats: NO STATE"; return autoFinish() end
+		R1[#R1 + 1] = "featstats: months measured " .. seen .. " here (last " .. tostring(s.last) .. ", due " .. tostring(s.due) .. ", " .. #(s.m or {}) .. " kept, " .. #(s.y or {}) .. " year(s))"
+		R1[#R1 + 1] = "featstats: last figures " .. tostring(s.m and s.m[#s.m])
+		local g = s.goal
+		R1[#R1 + 1] = "featstats: goal " .. (type(g) == "table" and (tostring(g.seq) .. " " .. tostring(g.state) .. " " .. tostring(g.crit) .. " target " .. tostring(g.target)
+			.. " months " .. tostring(g.startM) .. "-" .. tostring(g.endM) .. " calendar end " .. tostring(g.endYM) .. " winner " .. tostring(g.winner)) or "none")
+		local f = C.IO.open(C.DIR .. BS .. "feat_stats_main.txt", "rb")
+		local text = f and f:read("*a") or nil
+		if f then f:close() end
+		R1[#R1 + 1] = "featstats: window file " .. (text and (#text .. " bytes") or "MISSING")
+		local F = C.feat()
+		local SM = F and F.byId and F.byId.stats
+		R1[#R1 + 1] = "featstats: this game sent figures: " .. ((SM and SM.g and SM.g.sentFor) and ("yes, last month " .. SM.g.sentFor) or "no")
+		for _, l in ipairs(R1) do log("AUTOTEST " .. l) end
+		autoFinish()
+	end
+	local function poll()
+		local _, s = stats()
+		local last = type(s) == "table" and s.last or nil
+		if last and last ~= first then
+			if first ~= nil or C.ROLE == "host" then seen = seen + 1 end
+			first = last
+			log("AUTOTEST featstats: month " .. last .. " measured here (" .. seen .. " of " .. want .. ")")
+		end
+		if seen >= want or G.frames >= untilFrame then return report() end
+		G.waits[#G.waits + 1] = { at = G.frames + 120, fn = poll }
+	end
+	poll()
+end
+
 H.contract = function(from, p)
 	if p.role ~= C.ROLE or AUTO.running then return end
 	local ok, err = pcall(runContract, p)
@@ -15801,7 +15859,15 @@ end
 G.featBridge = function()
 	local B = G.featB
 	if not B then
-		B = { log = log, gameTime = gameTime, R = R, CO = CO,
+		B = { log = log, gameTime = gameTime, R = R, CO = CO, T = C.T,
+			-- (the calendar's date at a game time, now by default: what the host's game reads to date its figures, see stats)
+			date = function(t)
+				local ok, d = pcall(function()
+					local x = api.engine.util.getCalendarDate(tonumber(t) or gameTime())
+					return { year = x.year, month = x.month, day = x.day }
+				end)
+				return ok and d or nil
+			end,
 			-- (an event of a module: stamped and applied by every game at the same step, as the host's events)
 			send = function(name, param) return G.coEvent(name, param) ~= false end,
 			chat = function(text) return G.featChat(text) end,

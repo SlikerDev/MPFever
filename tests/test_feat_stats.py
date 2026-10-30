@@ -12,6 +12,11 @@ value, money and tenders (target, time, ties, computer companies that cannot or 
 off); the host's cancel (window request, client refused), the option switched off, a new goal only after a change; the yearly
 report of every company in each game's language, told once; the savegame (plain data, reload, same outcome); determinism (the
 same state on both games); the window's tab (French and English, chart or table, host and client).
+Integrated (the real files): two games, each with the real options host (mpfever_feat.lua) loading the real stats and tenders
+modules, the bridge's real G.featBridge / G.featGui / G.featRequest and the window's real U.featU / U.featTabRows: nothing at all
+while every option is off; the host's f_opts; the host's figures dated by the engine's calendar (at half the game months' pace);
+the tenders criterion counted by the tenders module's M.wins; the files of the session folder; the tab as the window draws it;
+the host's cancel from its window through the bridge; the options off for months and on again; a goal over the calendar's years.
 Run: python tests/test_feat_stats.py
 """
 import os
@@ -187,6 +192,13 @@ function guiEnv(g)
   end
   env.realTime = function() return g.now end
   env.T = function(fr, en) if g.lang == "fr" then return fr end return en end
+  -- (the calendar the host's game reads: game month mi, at game time mi * 1000, is the year (mi - 1) // 12, month (mi - 1) % 12 + 1,
+  -- so 24001 is January 2000; NODATE: none)
+  env.date = function(t)
+    if NODATE then return nil end
+    local mi = math.floor((t or g.month * 1000) / 1000)
+    return { year = math.floor((mi - 1) / 12), month = (mi - 1) % 12 + 1, day = 1 }
+  end
   return env
 end
 
@@ -326,7 +338,7 @@ for mi = 24006, 24008 do month(mi) end''')
 check(run('return A.st.feat.stats.m[#A.st.feat.stats.m]') == "24008|2000|8|1:3000000,1000000,400000",
       "shared mode with stats: the one company (the game's player) measured: money, loan, vehicles")
 check(run('return feat(A) == feat(B) and B.st.feat.stats.goal == nil') is True, "shared mode: both games agree, no goal")
-check(run('return A.files["feat_stats.txt"]:find("mode\tshared", 1, true) ~= nil and A.files["feat_stats.txt"]:find("opts\t0\t1\t0", 1, true) ~= nil') is True,
+check(run('return A.files["main"]:find("mode\tshared", 1, true) ~= nil and A.files["main"]:find("opts\t0\t1\t0", 1, true) ~= nil') is True,
       "shared mode: the window's file says shared, stats only")
 
 # ---------------------------------------------------------------- the host's monthly figures
@@ -411,7 +423,7 @@ check(run('''local t = {} for _, e in ipairs(A.st.feat.stats.y) do t[#t + 1] = e
       == "2000,2001,2002,2003", "one entry per game year: the start, then each 1st of January")
 check(run('return A.st.feat.stats.y[2]:match("^2001|(%d+)|")') == "24013", "the year's entry is January's figures (month 24013 = 2001/1)")
 check(run("return feat(A) == feat(B) and #A.books + #B.books == 0") is True, "both games agree; no money moved")
-check(run(r'''local fa = A.files["feat_stats.txt"] local fb = B.files["feat_stats.txt"]
+check(run(r'''local fa = A.files["main"] local fb = B.files["main"]
 local function strip(s) return (s:gsub("host\t%d\n", ""):gsub("me\t%d+\n", "")) end
 return strip(fa) == strip(fb)''') is True, "the window's file is the same on both games but 'host' and 'me'")
 
@@ -508,7 +520,7 @@ check(run("return A.st.feat.stats.goal.state") == "run", "the computer company's
 run('''for _, g in ipairs(GAMES) do g.st.feat.tenders.wins["2"] = 3 end
 month(24002)''')
 check(run("return A.st.feat.stats.goal.winner") == 2, "company 2 wins its 3rd tender: it wins the goal")
-check(run('return A.files["feat_stats.txt"]:find("tw\t1:1;2:3;3:9", 1, true) ~= nil') is True, "the tenders won in the window's file")
+check(run('return A.files["main"]:find("tw\t1:1;2:3;3:9", 1, true) ~= nil') is True, "the tenders won in the window's file")
 run('''for _, g in ipairs(GAMES) do g.st.feat.tenders = { done = { { status = "won", winner = 1 }, { status = "expired" }, { status = "won", winner = 1 } } } end''')
 check(run("return M.tenderWins(A.st, 1)") == 2 and run("return M.tenderWins(A.st, 2)") == 0, "the tenders won read from a 'done' list too")
 check(run("return M.tenderWins({ feat = { tenders = 'x' } }, 1)") == 0 and run("return M.tenderWins({}, 1)") == 0,
@@ -652,10 +664,17 @@ function makeU(g, lang, withChart)
     return t
   end
   u.request = function(kind, payload) REQS[#REQS + 1] = kind .. ":" .. tostring(payload) end
-  u.text = function(t, kind) return { k = "text", t = t, kind = kind } end
-  u.button = function(label, fn, on) return { k = "button", t = label, fn = fn, on = on } end
+  u.text = function(t, cls) return { k = "text", t = t, kind = cls } end
+  u.title = function(t) return { k = "text", t = t, kind = "title" } end
+  u.muted = function(t) return { k = "text", t = t, kind = "muted" } end
+  u.button = function(label, fn, primary, enabled, tip) return { k = "button", t = label, fn = fn, on = primary } end
   u.row = function(nodes) return { k = "row", nodes = nodes } end
-  u.table = function(head, rows) return { k = "table", head = head, rows = rows } end
+  -- (lines of cells, widths, header: the first line as titles)
+  u.table = function(lines, widths, header)
+    local rows = {}
+    for i = 2, #lines do rows[#rows + 1] = lines[i] end
+    return { k = "table", head = lines[1], rows = rows, widths = widths, header = header }
+  end
   if withChart then u.chart = function(spec) return { k = "chart", spec = spec } end end
   return u
 end
@@ -736,6 +755,314 @@ check("History" not in run("return TAB_Y2") and "Ranking" in run("return TAB_Y2"
 # a window without some helpers still draws
 check(run('''local r = B.M.ui({ T = function(fr, en) return en end, read = makeU(B, "en").read, text = function(t) return t end })
 return table.concat(r, "\\n")''').find("1   Host Rail   $5.0 M   $5.0 M   $0") >= 0, "a window with text only: the table's rows as texts")
+
+
+# ---------------------------------------------------------------- integrated: the real options host, bridge and window
+# Two games, each with its own copy of the real options host (mpfever_feat.lua) loading the real modules stats and tenders, the
+# bridge's real interface half for the options (G.featBridge, G.featGui, G.featRequest: the host's f_opts, the modules' gui, the
+# window's requests, the files of the session folder) and the window's real tab code (U.featU, U.featTabRows). The simulation is
+# driven as the bridge does it (SIM.featTick only while an option is on; every event applied by every game at the same step,
+# stamped with its sender as executeActionOnce does). The calendar runs at half the game months' pace (the game's calendar speed):
+# the goal's length counts the calendar's years.
+print("integrated (options host, bridge, window)")
+import re
+
+
+def extract(src, pattern, what):
+    m = re.search(pattern, src, re.S | re.M)
+    if not m:
+        check(False, what + " found")
+        return ""
+    return m.group(0)
+
+
+BRIDGE = open(os.path.join(CONTENT, "mpfever_bridge.script.lua"), encoding="utf-8").read()
+WINDOW = open(os.path.join(CONTENT, "mpfever_ui.script.lua"), encoding="utf-8").read()
+G_ = L.globals()
+G_.I_FEATSRC = open(os.path.join(CONTENT, "mpfever_feat.lua"), encoding="utf-8").read()
+G_.I_TENDERSSRC = open(os.path.join(CONTENT, "mpfever_feat_tenders.lua"), encoding="utf-8").read()
+G_.I_BRIDGESRC = "\n".join([
+    extract(BRIDGE, r"^G\.featBridge = function\(\)\n.*?^end\n", "G.featBridge"),
+    extract(BRIDGE, r"^G\.featGui = function\(st\)\n.*?^end\n", "G.featGui"),
+    extract(BRIDGE, r"^G\.featRequest = function\(p\)\n.*?^end\n", "G.featRequest"),
+])
+G_.I_WINSRC = extract(WINDOW, r"^U\.featOff = .*?^U\.featTabRows = function\(K, st, key\)\n.*?^end\n", "the window's game options")
+L.execute(r'''
+I_MONTH, I_CALSLOW = 60000, 2
+api.util = { getDefaultMonthDuration = function() return I_MONTH end }
+-- (the engine's calendar: a calendar month is two game months, from January 1950)
+api.engine.util.getCalendarDate = function(t)
+  local cm = math.floor(t / (I_MONTH * I_CALSLOW))
+  return { year = 1950 + math.floor(cm / 12), month = cm % 12 + 1, day = 1 }
+end
+I_FS, I_PENDING, I_WINCALLS, I_BOOKED, I_REQS = {}, {}, 0, 0, {}
+local function memIO()
+  return { open = function(path, mode)
+    if mode and mode:find("w", 1, true) then
+      local buf = {}
+      return { write = function(self, t) buf[#buf + 1] = t end, close = function() I_FS[path] = table.concat(buf) end }
+    end
+    local s = I_FS[path]
+    if not s then return nil end
+    return { read = function() return s end, close = function() end }
+  end }
+end
+function I_files() local n = 0 for _ in pairs(I_FS) do n = n + 1 end return n end
+
+-- a game: its own options host, modules, bridge half and window, in its own environment (its clock, its language)
+function I_game(name, role, lang, dir, myCo)
+  local g = { name = name, role = role, lang = lang, dir = dir, clock = 0, gt = 0, chats = {}, logs = {}, st = { co = { mode = "separate", list = {} } } }
+  local fakeOs = { clock = function() return g.clock end, getenv = function() return nil end, time = os.time }
+  local envF = setmetatable({ os = fakeOs }, { __index = _G })
+  g.F = assert(load(I_FEATSRC, "=mpfever_feat.lua", "t", envF))()
+  g.F.loader = function(id)
+    if id == "stats" then return assert(load(SRC, "=mpfever_feat_stats.lua", "t", envF))() end
+    if id == "tenders" then
+      local m = assert(load(I_TENDERSSRC, "=mpfever_feat_tenders.lua", "t", envF))()
+      local w = m.wins
+      m.wins = function(st, co) I_WINCALLS = I_WINCALLS + 1 return w(st, co) end
+      return m
+    end
+    return nil
+  end
+  local function lg(t) g.logs[#g.logs + 1] = tostring(t) end
+  g.F.load(lg)
+  g.Bsim = { log = lg, STEP = 200, R = {}, CO = {},
+    gameTime = function() return g.gt end,
+    month = function() return math.floor(g.gt / I_MONTH) end,
+    date = function() return nil end,
+    money = function() return nil end,
+    book = function() I_BOOKED = I_BOOKED + 1 return true end,
+    companies = function(st)
+      local out = {}
+      for _, c in ipairs(st.co.list) do
+        if c.ent and not c.gone then out[#out + 1] = { id = c.id, ent = c.ent, name = c.name or "", ai = tostring(c.key or ""):sub(1, 3) == "ai:", members = {} } end
+      end
+      table.sort(out, function(x, y) return x.id < y.id end)
+      return out
+    end }
+  g.C = { ROLE = role, DIR = dir, BS = "/", NL = "\n", CR = "\r", IO = memIO(), feat = function() return g.F end,
+    T = function(fr, en) if lang == "fr" then return fr end return en end }
+  g.C.Tf = function(fr, en) return g.C.T(fr, en) end
+  g.G = { frames = 1000, session = { started = true, resync = false }, connected = true, cmode = "separate", me = name, myCo = myCo,
+    coEvent = function(n, p) I_PENDING[#I_PENDING + 1] = { name = n, param = p, origin = name, co = myCo } end,
+    featChat = function(t) g.chats[#g.chats + 1] = t return true end }
+  local envB = setmetatable({ G = g.G, C = g.C, BS = "/", log = lg, gameTime = function() return g.gt end, R = {}, CO = {}, os = fakeOs }, { __index = _G })
+  assert(load(I_BRIDGESRC, "=bridge", "t", envB))()
+  -- (the window: its options are those MPFever.exe gives it, the session's)
+  g.U = { isHost = function(st) return st and st.host == true end, winChanged = function() end, menuRequest = function() return true end }
+  local envW = setmetatable({ U = g.U, C = g.C, T = g.C.T, log = lg, money = function(n) return tostring(n) end, os = fakeOs,
+    sendLine = function(kind, p) I_REQS[#I_REQS + 1] = kind .. " " .. tostring(p.m) .. " " .. tostring(p.kind); if kind == "feat_req" then g.G.featRequest(p) end end },
+    { __index = _G })
+  assert(load(I_WINSRC, "=window", "t", envW))()
+  return g
+end
+
+-- every company on every game, each game with its own player entities (base + 100 * id)
+function I_companies(list)
+  for _, g in ipairs(I_GAMES) do
+    g.st.co.list = {}
+    for _, c in ipairs(list) do g.st.co.list[#g.st.co.list + 1] = { id = c.id, name = c.name, key = c.key, color = c.id, ent = g.base + 100 * c.id } end
+  end
+end
+
+-- the events sent, applied by every game at the same step with their sender (executeActionOnce stamps mpfFrom and mpfCo)
+function I_apply()
+  local pend = I_PENDING
+  I_PENDING = {}
+  for _, e in ipairs(pend) do
+    for _, g in ipairs(I_GAMES) do
+      local p = {}
+      for k, v in pairs(e.param) do p[k] = v end
+      p.mpfFrom, p.mpfCo = e.origin, e.co
+      g.F.simEvent(g.st, e.name, p, g.Bsim)
+    end
+  end
+  return #pend
+end
+
+-- the game time moves on by `ms` on every game (the options' tick only while one is on, as SIM.featOn), then each game's
+-- interface half `secs` seconds later (G.featGui, every frame in the game)
+function I_step(ms, secs)
+  for _, g in ipairs(I_GAMES) do
+    g.gt = g.gt + ms
+    if type(g.st.optsText) == "string" and g.st.optsText ~= "" then g.F.simTick(g.st, g.Bsim) end
+  end
+  I_apply()
+  for _, g in ipairs(I_GAMES) do
+    g.clock = g.clock + (secs or 1)
+    g.G.frames = g.G.frames + 60 * (secs or 1)
+    g.G.featGui(g.st)
+  end
+  return I_apply()
+end
+
+-- a game month: its start, then the interface halves 1, 4 and 7 seconds later (the companies read once known for 5 s)
+function I_month() I_step(I_MONTH, 1); I_step(0, 3); I_step(0, 3) end
+
+function I_reset()
+  I_FS, I_PENDING, I_WINCALLS, I_BOOKED, I_REQS = {}, {}, 0, 0, {}
+  BAL, LOAN, VAL, OWNER, EXISTS = {}, {}, {}, {}, {}
+  IA = I_game("host", "host", "fr", "A", 1)
+  IB = I_game("bob#1", "client", "en", "B", 2)
+  IA.base, IB.base = 0, 5000
+  I_GAMES = { IA, IB }
+  for _, g in ipairs(I_GAMES) do g.gt = 24 * I_MONTH + 500 end
+end
+function I_stats(g) return g.st.feat and g.st.feat.stats end
+function I_count(g, pat) local n = 0 for _, l in ipairs(g.logs) do if l:find(pat, 1, true) then n = n + 1 end end return n end
+
+-- the window's drawing kit, as nodes that say what they are (as tests/test_feat_host.py)
+IK = { TEXT_W = 556, ICON_SETTINGS = "i" }
+function IK.text(t, class, cls, w) return { kind = "text", t = tostring(t), cls = cls, w = w } end
+function IK.muted(t, w) return { kind = "muted", t = tostring(t) } end
+function IK.section(icon, t) return { kind = "section", t = t } end
+function IK.gap() return { kind = "gap" } end
+function IK.row(c) return { kind = "row", c = c } end
+function IK.col(c) return { kind = "col", c = c } end
+function IK.btn(label, tip, fn, primary, enabled) return { kind = "btn", t = label, fn = fn, primary = primary } end
+function I_tab(g, opts, host)
+  return g.U.featTabRows(IK, { mode = "separate", opts = opts, host = host, me = g.name }, "f_stats")
+end
+function I_flat(rows)
+  local out = {}
+  local function walk(n)
+    if n.kind == "row" then
+      local cells = {}
+      local plain = true
+      for _, x in ipairs(n.c) do if x.kind ~= "text" then plain = false end end
+      if plain and #n.c > 1 then for _, x in ipairs(n.c) do cells[#cells + 1] = x.t end out[#out + 1] = table.concat(cells, "|") return end
+      for _, x in ipairs(n.c) do walk(x) end
+      return
+    end
+    if n.kind == "col" then for _, x in ipairs(n.c) do walk(x) end return end
+    if n.t then out[#out + 1] = n.t end
+  end
+  for _, n in ipairs(rows) do walk(n) end
+  return table.concat(out, "\n")
+end
+function I_press(rows, label)
+  local function walk(n)
+    if (n.kind == "row" or n.kind == "col") then for _, x in ipairs(n.c) do if walk(x) then return true end end end
+    if n.kind == "btn" and n.t == label then n.fn() return true end
+    return false
+  end
+  for _, n in ipairs(rows) do if walk(n) then return true end end
+  return false
+end
+''')
+
+# all off: the bridge's interface half does nothing (the options host not even asked), nothing is written or sent
+run('''I_reset()
+I_companies({ { id = 1, name = "Host Rail", key = "host" }, { id = 2, name = "Bob Trans", key = "bob" }, { id = 3, name = "Robot", key = "ai:1" } })
+hostFigures(IA, 1, 5000000, 0, { 1000000 }); hostFigures(IA, 2, 2000000, 0, {}); hostFigures(IA, 3, 3000000, 0, {})
+for i = 1, 4 do I_month() end''')
+check(run("return IA.st.optsText == nil and IA.st.feat == nil and IB.st.feat == nil and I_files() == 0 and #IA.chats + #IB.chats == 0") is True
+      and run("return #IA.logs + #IB.logs") <= 2, "integrated, all off: no event, no state, no file, no chat (the options host only loaded)")
+check(run("return #I_tab(IB, '', false)") == 1, "integrated, all off: no Ranking tab in the window")
+
+# the host's options into every game (f_opts), the tenders criterion, the tenders' own count
+SESSION = "goal=1;goal.criterion=tenders;goal.wins=3;goal.years=5;stats=1;yearly=1;tenders=1"
+G_.I_SESSION = SESSION
+run('''IA.G.featOpts = I_SESSION
+IB.G.featOpts = I_SESSION
+I_step(0, 1)''')
+check(run("return IA.st.optsText") == "goal=1;goal.criterion=tenders;goal.wins=3;goal.years=5;stats=1;tenders=1;yearly=1"
+      and run("return IA.st.optsText == IB.st.optsText and IB.st.optsMode == 'separate'") is True,
+      "integrated: the host's game sends the session's options (f_opts), every game takes them (parameters not default only)")
+run('''for _, g in ipairs(I_GAMES) do g.st.feat = g.st.feat or {}; g.st.feat.tenders = { seq = 0, open = {}, done = {}, wins = { ["2"] = 1, ["3"] = 7 } } end
+I_month(); I_month(); I_month()''')
+s_last = run("return I_stats(IA) and I_stats(IA).last")
+check(s_last is not None and run("return ser(IA.st.feat.stats) == ser(IB.st.feat.stats)") is True,
+      "integrated: the months measured by the host, the same figures on both games")
+check(run("return I_stats(IA).m[#I_stats(IA).m]:match('^%d+|(%d+)|%d+|')") == "1951"
+      and run("return I_stats(IA).m[#I_stats(IA).m]:find('|1:5000000,0,1000000;2:2000000,0,0;3:3000000,0,0', 1, true) ~= nil") is True,
+      "integrated: the figures dated by the host's calendar (G.featBridge's date), every company's money, loans, vehicles")
+check(run("return I_count(IA, 'measured and sent')") >= 2 and run("return I_count(IB, 'measured and sent')") == 0
+      and run("return I_count(IA, 'company 2 (player entity 200) read: balance 2000000, ACCOUNT.loan 0')") == 1
+      and run("return I_count(IB, ') taken: 1:5000000')") >= 2,
+      "integrated: the host alone measures (its log says so, each company's first reading once), every game logs the month taken")
+check(run("return I_stats(IA).goal.crit") == "tenders" and run("return I_stats(IA).goal.target") == 3 and run("return I_WINCALLS") > 0,
+      "integrated: the goal counts the tenders won through the tenders module's own count (M.wins) while both are on")
+check(run("return I_stats(IA).goal.state") == "run", "integrated: the computer company's 7 tenders do not win (A2)")
+check(run("return I_FS['A/feat_stats_main.txt'] ~= nil and I_FS['B/feat_stats_main.txt'] ~= nil") is True
+      and run("return I_FS['B/feat_stats_main.txt']:find('tw\\t1:0;2:1;3:7', 1, true) ~= nil") is True,
+      "integrated: the window's file written in each game's session folder (feat_stats_main.txt), the tenders won in it")
+
+# the window: the Ranking tab, its table, the host's cancel through the bridge
+tab_b = run("return I_flat(I_tab(IB, I_SESSION, false))")
+check("Game goal" in tab_b and "Criterion: Tenders won. Target: 3. Length: 5 years." in tab_b,
+      "integrated window: the goal's rules in the client's language")
+check("#|Company|Value|Money|Vehicles|Tenders" in tab_b and "1|Robot (AI)|$3.0 M|$3.0 M|$0|7" in tab_b
+      and "2|Bob Trans (you)|$2.0 M|$2.0 M|$0|1" in tab_b and "3|Host Rail|$6.0 M|$5.0 M|$1.0 M|0" in tab_b,
+      "integrated window: the ranking (by the goal's tenders) as a table of the window (u.table), (you) on the client")
+check("Cancel the goal" not in tab_b, "integrated window: no cancel on the client")
+check(run('''local rows = I_tab(IB, I_SESSION, false)
+for _, r in ipairs(rows) do if r.kind == "col" then local first = r.c[1] return first.c[1].w == 30 and first.c[2].w > first.c[3].w end end
+return false''') is True, "integrated window: the table's columns sized (# narrow, the company's name wider)")
+tab_a = run("return I_flat(I_tab(IA, I_SESSION, true))")
+check("Objectif de partie" in tab_a and "Annuler l'objectif" in tab_a, "integrated window: the host's tab in French with its cancel button")
+
+# the tenders won: company 2 reaches 3, it wins; both chats tell it in their language
+run('''for _, g in ipairs(I_GAMES) do g.st.feat.tenders.wins["2"] = 3 end
+I_month(); I_step(0, 1)''')
+check(run("return I_stats(IA).goal.state") == "won" and run("return I_stats(IB).goal.winner") == 2,
+      "integrated: company 2's 3rd tender wins the goal on every game")
+check(run("return IB.chats[#IB.chats]") == "Goal reached! Bob Trans wins the game. The game goes on."
+      and run("return IA.chats[#IA.chats]") == "Objectif atteint ! Bob Trans remporte la partie. La partie continue.",
+      "integrated: the end told in each game's chat in its language (G.featChat)")
+check(run("return I_BOOKED") == 0, "integrated: no money moved")
+
+# a new session: the value over 5 years of the calendar, the host's cancel from its window, the options off and on again
+run('''I_reset()
+I_companies({ { id = 1, name = "Host Rail", key = "host" }, { id = 2, name = "Bob Trans", key = "bob" } })
+hostFigures(IA, 1, 5000000, 0, {}); hostFigures(IA, 2, 4000000, 0, {})
+IA.G.featOpts = "goal=1;goal.years=5;stats=1"
+I_step(0, 1)
+I_month(); I_month()''')
+check(run("return I_stats(IA).goal.state") == "run" and run("return I_stats(IA).goal.endYM ~= nil") is True,
+      "integrated: a goal over the calendar's years once its first figures came dated")
+# the host cancels from its window: two clicks, the request to its game's module (G.featRequest), f_stats_cancel on every game
+run('''local rows = I_tab(IA, "goal=1;goal.years=5;stats=1", true)
+P1 = I_press(rows, "Annuler l'objectif")
+rows = I_tab(IA, "goal=1;goal.years=5;stats=1", true)
+P2 = I_press(rows, "Confirmer l'annulation")
+I_apply()''')
+check(run("return P1 and P2") is True and run("return I_stats(IA).goal.state") == "cancelled" and run("return I_stats(IB).goal.how") == "host",
+      "integrated: the host's cancel in its window reaches every game (u.request, G.featRequest, f_stats_cancel)")
+check(run("return #I_REQS >= 1 and I_REQS[1]") == "feat_req stats cancel", "integrated: the window's request line (feat_req)")
+# the client's window asks too: nothing (its module refuses, nothing sent)
+run('''I_REQS = {}
+IB.G.featRequest({ m = "stats", kind = "cancel", payload = "1" })
+NPEND = #I_PENDING''')
+check(run("return NPEND") == 0, "integrated: a client's cancel request sends nothing")
+# new rules: a new goal; then every option off for three months, on again: that goal was switched off with them, a new one starts
+run('''IA.G.featOpts = "goal=1;goal.years=10;stats=1"
+I_step(0, 11)
+I_month()
+SEQ1 = I_stats(IA).goal.seq
+IA.G.featOpts = ""
+I_step(0, 11)
+OFFTEXT = IA.st.optsText
+I_month(); I_month(); I_month()
+FILES_OFF = I_files()
+IA.G.featOpts = "goal=1;goal.years=10;stats=1"
+I_step(0, 11)
+I_month(); I_month()''')
+check(run("return SEQ1") == 2 and run("return OFFTEXT") == "", "integrated: new rules, a new goal; all off: f_opts with nothing")
+check(run("return I_stats(IA).goal.seq") == 3 and run("return I_stats(IA).goal.state") == "run"
+      and run("return I_count(IA, 'cancelled: the options were off')") == 1,
+      "integrated: options off for months and on again: the goal of before was switched off with them, a new one runs")
+check(run("return ser(IA.st.feat) == ser(IB.st.feat)") is True, "integrated: both games agree")
+# the calendar's years: 10 years are 120 calendar months, 240 game months here (the calendar at half pace)
+run('''START = I_stats(IA).goal.startM
+for i = 1, 200 do I_month() end
+MID = I_stats(IA).goal.state
+for i = 1, 45 do I_month() end''')
+check(run("return MID") == "run" and run("return I_stats(IA).goal.state") == "won" and run("return I_stats(IA).goal.how") == "time"
+      and run("return I_stats(IA).goal.winner") == 1,
+      "integrated: the length counts the calendar's years (running after 200 game months, over after 240): the best one wins")
+check(run("return ser(IA.st.feat) == ser(IB.st.feat)") is True, "integrated: both games agree to the end")
 
 if failures:
     print(f"FAIL {len(failures)} case(s):")

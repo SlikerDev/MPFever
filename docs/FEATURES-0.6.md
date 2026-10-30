@@ -78,7 +78,8 @@ Simulation half (`env` of M.event / M.tick / M.month / M.onAction / M.onGameEven
   this game), `env.book(ent, amount)` (money added or taken: a journal entry OTHER; the same on every game when called from an
   event), `env.every(steps)` (true once every that many steps, from the game time: the same step on every game),
   `env.month()` (the game month's number), `env.date()` ({ year, month, day } of the calendar at this game time, or nil:
-  decide with env.month(), the calendar follows the game's calendar speed).
+  decide with env.month(), the calendar follows the game's calendar speed), `env.module(id)` (another feature module loaded
+  in this Lua state, e.g. `env.module("tenders").wins`; nil when it is not there).
 Every game runs this code; the host never decides alone here.
 
 GUI half (`env` of M.gui / M.request / M.allow; made by `F.guiEnv` from the bridge's `G.featBridge`): `env.log`, `env.on`,
@@ -87,7 +88,9 @@ player who joined), `env.myCo` (this player's company id, separate mode), `env.m
 this module, one of its M.EVENTS, stamped and applied by every game at the same step, as G.coEvent; not sent during a
 resynchronisation), `env.chat(text)` (a notice in this game's chat only), `env.write(name, lines)` (the file
 `feat_<module>_<name>.txt` of the session folder, name [a-z0-9_]+, lines a list or a text, written only when it changed),
-`env.realTime()` (os.clock, the GUI may), `env.gameTime()`, `env.R`, `env.CO`.
+`env.realTime()` (os.clock, the GUI may), `env.gameTime()`, `env.date(t)` (the calendar's { year, month, day } at game time
+t, now by default; a date the simulation needs is read by the host here and sent in an event), `env.T(fr, en)` (this game's
+language), `env.module(id)`, `env.R`, `env.CO`.
 
 UI (`u` of M.ui, made by `U.featU` in mpfever_ui.script.lua): `u.T(fr, en)`, `u.Tf(fr, en, ...)`, `u.money(n)`, `u.W` (the
 text width), `u.isHost`, `u.me`, `u.mode`, `u.on(id)`, `u.param(id, pid)` (the session's options, as MPFever.exe sends them),

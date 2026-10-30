@@ -288,6 +288,8 @@ local function simEnv(M, st, B)
 		end
 		e.month = function() return e._B.month() end
 		e.date = function() return e._B.date() end
+		-- (another feature module loaded here, e.g. the tenders' count for the game goal: F.byId; nil when it is not there)
+		e.module = function(id) return F.byId and F.byId[tostring(id)] or nil end
 		F.envs.sim[M.ID] = e
 	end
 	e._st, e._B = st, B
@@ -431,11 +433,16 @@ local function guiEnv(M, st, B)
 		end
 		e.realTime = function() return os.clock() end
 		e.gameTime = function() return e._B.gameTime() end
+		-- (the calendar's { year, month, day } at a game time, now by default; nil when it cannot be read)
+		e.date = function(t) if type(e._B.date) == "function" then return e._B.date(t) end return nil end
+		e.module = function(id) return F.byId and F.byId[tostring(id)] or nil end
 		F.envs.gui[M.ID] = e
 	end
 	e._st, e._B = st, B
 	e.isHost, e.me, e.myCo, e.mode = B.isHost, B.me, B.myCo, B.mode
 	e.R, e.CO = B.R, B.CO
+	-- (this game's language: T(fr, en), the bridge's C.T)
+	e.T = B.T
 	return e
 end
 F.guiEnv = guiEnv
