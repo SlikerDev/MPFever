@@ -41,6 +41,11 @@ WHAT WORKS
     lines may only stop at stations that are not private; each time one of their vehicles stops
     at a toll station, they pay the fee to the owner. The line windows show the fee next to the
     name of every other company's station.
+  - Game rules: the host chooses them in the lobby ("Game settings...") and they are kept in
+    the savegame: the start money of a new company (2 million by default; the host's company
+    gets it too at the start of a new game), the sharing rules on or off (off: everything is
+    open and free for every company) and the months in debt before a bankruptcy. The Game tab
+    of the MPFever window shows them to everybody; the host can change them there.
 - Start from the game itself: MPFever.exe starts Transport Fever 3, and a
   "MULTIJOUEUR / MPFever" button in the main menu opens the multiplayer window.
   - Host: pick one of your savegames (any of them, even one made without MPFever: the mod
