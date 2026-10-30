@@ -191,8 +191,14 @@ end
 
 -- Road garages (road_depot.con, not the maintenance stations: they have no exit) whose entrance is joined to the streets: the
 -- company's own first, else any other company's (open to the others by default, for a fee), the nearest to a point
-local function garagesNear(E, ent, p, maxD)
+-- (0.5.14) the road garages joined to the streets, read once for every computer company every 10 s (each look of each company
+-- read every construction and the whole street map, several times: about a second of the host's frame in the first minutes, a
+-- hitch every player felt). MPFEVER_AICACHE=0: read at every call, as before
+local function roadGarages(E)
 	local api, R = E.api, E.R
+	local T = E.G.AIT or {}
+	local cache = os.getenv("MPFEVER_AICACHE") ~= "0"
+	if cache and T.garages and T.garagesAt and E.G.frames - T.garagesAt < 600 and E.G.frames >= T.garagesAt then return T.garages end
 	local segmap = api.engine.system.streetSystem.getNode2SegmentMap()
 	local list = {}
 	for _, e in ipairs(R.entitiesWith("CONSTRUCTION")) do
@@ -203,12 +209,32 @@ local function garagesNear(E, ent, p, maxD)
 			local joined = be and (#(segmap[be.node0] or {}) > 1 or #(segmap[be.node1] or {}) > 1)
 			if vd and #vd.outNodes > 0 and joined then
 				local m = E.C.marshal(c.transf)
-				local pos = { x = m[13], y = m[14], z = m[15] }
-				local d = dist(pos, p)
-				local own = ownerOf(E, e) == ent
-				if d < maxD then list[#list + 1] = { con = e, depot = c.depots[1], pos = pos, d = d, own = own, rank = d - (own and 100000 or 0) } end
+				list[#list + 1] = { con = e, depot = c.depots[1], pos = { x = m[13], y = m[14], z = m[15] }, owner = ownerOf(E, e) }
 			end
 		end
+	end
+	if cache then T.garages, T.garagesAt = list, E.G.frames end
+	return list
+end
+
+local function garagesNear(E, ent, p, maxD)
+	local list = {}
+	-- (0.5.14: not another company's garage whose rule keeps the others out: its purchases were refused on every game, look after
+	-- look. MPFEVER_AICACHE=0: as before)
+	local eco = os.getenv("MPFEVER_AICACHE") ~= "0" and E.C.eco and E.C.eco() or nil
+	local myId = eco and E.G.co and E.CO.idOfEntity(E.G.co, ent) or nil
+	for _, g in ipairs(roadGarages(E)) do
+		local d = dist(g.pos, p)
+		local own = g.owner == ent
+		local open = true
+		if d < maxD and not own and eco and myId and g.owner then
+			local ownerCo = E.CO.idOfEntity(E.G.co, g.owner)
+			if ownerCo then
+				local okU, may = pcall(eco.depotUse, E.G.co, nil, g.depot, myId, ownerCo)
+				if okU and may == false then open = false end
+			end
+		end
+		if d < maxD and open then list[#list + 1] = { con = g.con, depot = g.depot, pos = g.pos, d = d, own = own, rank = d - (own and 100000 or 0) } end
 	end
 	table.sort(list, function(a, b) if a.rank ~= b.rank then return a.rank < b.rank end return a.con < b.con end)
 	return list
