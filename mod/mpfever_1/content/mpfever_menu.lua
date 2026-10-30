@@ -928,7 +928,8 @@ local function setup()
 					local panel = { text(T("Réglages de la partie", "Game settings"), "font-scale-title-3", w),
 						text(T("Pour tous les joueurs ; gardés dans la sauvegarde.", "For every player; kept in the savegame."), "font-scale-body", w), gap(1, 10) }
 					local function choices(label, values, cur, show, send)
-						local row = { text(label, "font-scale-title-4", 300) }
+						-- (the label in a column of its own: the buttons of every row start at the same place)
+						local row = { box(H, { text(label, "font-scale-title-4", 290) }, nil, { size = { 300, -1 } }) }
 						for _, v in ipairs(values) do
 							local pick = v
 							row[#row + 1] = button(show(v), function() send(pick) end, { font = "font-scale-body", primary = cur == v })
