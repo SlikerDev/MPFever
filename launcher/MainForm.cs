@@ -3499,7 +3499,7 @@ namespace MPFever
                         if (from != null) hostGame?.ToGame(m);
                         relay.Broadcast(m, from);
                     }
-                    if (m.Kind != "chat" && m.Kind != "preview" && m.Kind != "aijournal" && m.Kind != "namesync") Log.W($"{m.From} : {m.Kind} {m.Payload}");
+                    if (m.Kind != "chat" && m.Kind != "preview" && m.Kind != "aijournal" && m.Kind != "namesync" && m.Kind != "ping") Log.W($"{m.From} : {m.Kind} {m.Payload}");
                     break;
             }
         }

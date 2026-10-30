@@ -7879,6 +7879,8 @@ local function stampHeld()
 			send(kind, p)
 		elseif p and kind == "terrain_tool" then
 			terrainLead("tool " .. tostring(p.tool))
+		elseif p and kind == "ping_arm" then
+			pcall(G.pingArm, p)
 		end
 	end
 	-- the host's automatic mod commands, written by its simulation (see DET.installModCmds): shipped like a player's. Their
@@ -15316,6 +15318,93 @@ G.previewClear = function(who)
 	for k = 1, s.n do pcall(api.gui.mission.removeZone, "mpfever_pv_" .. s.tag .. "_" .. k) end
 	G.pv.shown[who] = nil
 end
+-- Signals on the map (0.5.14, idea G3 of 0.6): a player picks a kind in the MPFever window (here, watch out, build here), then
+-- clicks the map; every game draws a circle there for 12 s, of the kind's colour with the player's colour in its middle, and
+-- tells it in the chat (ping_journal.txt, read by the window). The interface only: nothing in the simulation, nothing replayed;
+-- the launcher passes the message on as it does the build previews. A dedicated server's game shows none.
+-- MPFEVER_PINGS=0: no signal.
+G.pings = {}
+G.PING_KINDS = { here = { 0.15, 0.7, 1.0 }, warn = { 1.0, 0.3, 0.1 }, build = { 0.25, 0.95, 0.3 } }
+G.pingArm = function(p)
+	if os.getenv("MPFEVER_PINGS") == "0" or type(p) ~= "table" or not G.PING_KINDS[p.k] then return end
+	G.pingArmed = { k = p.k, till = G.frames + 900 }
+	log("map signal armed: " .. p.k .. " (the next click on the map places it)")
+end
+G.pingClick = function(name, param)
+	local a = G.pingArmed
+	G.pingArmed = nil
+	if not a or G.frames > a.till then return end
+	local pos = nil
+	if name == "select-world" and type(param) == "table" and type(param.pos) == "table" then pos = param.pos end
+	if not pos then
+		local m = api.gui.mouse
+		if m and m.hasTerrainPosition and m.hasTerrainPosition() then pos = m.getTerrainPosition() end
+	end
+	local x, y, z = tonumber(pos and pos.x), tonumber(pos and pos.y), tonumber(pos and pos.z)
+	if not (x and y) then log("map signal: no ground under the click"); return end
+	-- (one signal every 2 s at most)
+	if G.pingLast and G.frames - G.pingLast < 120 and G.frames >= G.pingLast then return end
+	G.pingLast = G.frames
+	local p = { x = x, y = y, z = z or 0, k = a.k, c = G.coMyColor and G.coMyColor() or nil, r = 60 }
+	send("ping", p)
+	H.ping(G.me, p, true)
+end
+H.ping = function(from, p, mine)
+	if os.getenv("MPFEVER_PINGS") == "0" or C.SERVER or type(p) ~= "table" then return end
+	if from == G.me and not mine then return end
+	local x, y, z = tonumber(p.x), tonumber(p.y), tonumber(p.z) or 0
+	local kind = G.PING_KINDS[p.k]
+	-- (a number of the map: no NaN, no infinity)
+	if not (kind and x and y and x == x and y == y and math.abs(x) < 1e6 and math.abs(y) < 1e6 and z == z and math.abs(z) < 1e5) then return end
+	local who = tostring(from or "?"):gsub("%c", " ")
+	-- (three signals of one player at most at a time: its oldest one goes)
+	local mineN, oldest = 0, nil
+	for key, s in pairs(G.pings) do
+		if s.who == who then mineN = mineN + 1; if not oldest or s.till < G.pings[oldest].till then oldest = key end end
+	end
+	if mineN >= 3 and oldest then pcall(api.gui.mission.removeZone, oldest); pcall(api.gui.mission.removeZone, oldest .. "_c"); G.pings[oldest] = nil end
+	G.pingN = (G.pingN or 0) + 1
+	local key = "mpfever_ping_" .. G.pingN
+	local r = math.max(25, math.min(200, tonumber(p.r) or 60))
+	pcall(api.gui.mission.setZoneCircle, key, api.type.Vec2f.new(x, y), r, true, api.type.Vec4f.new(kind[1], kind[2], kind[3], 0.45), false, false)
+	if type(p.c) == "number" then
+		local cr, cg, cb = CO.rgb(p.c)
+		pcall(api.gui.mission.setZoneCircle, key .. "_c", api.type.Vec2f.new(x, y), r / 3, true, api.type.Vec4f.new(cr, cg, cb, 0.7), false, false)
+	end
+	G.pings[key] = { till = G.frames + 720, who = who }
+	C.appendFile(C.DIR .. BS .. "ping_journal.txt", table.concat({ tostring(os.time()), who, p.k, string.format("%.1f", x), string.format("%.1f", y), string.format("%.1f", z) }, "\t") .. NL)
+	log("map signal of " .. who .. " (" .. p.k .. ") shown at " .. math.floor(x) .. "," .. math.floor(y))
+end
+-- Map signal scenario (MPFEVER_SCENARIO=pingtest): the host places a "watch out" signal at the middle of the map as a click
+-- would; the client's mod.log must say "map signal of ... shown", and the circle goes after 12 s on both games
+H.pingtest = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	if C.ROLE ~= "host" then AUTO.results[1] = "nothing placed here (the host places it)"; return autoFinish() end
+	G.pingArm({ k = "warn" })
+	local okc, errc = pcall(G.pingClick, "select-world", { pos = { x = 0, y = 0, z = 0 } })
+	AUTO.results[1] = "signal placed at 0,0: " .. (okc and "sent" or tostring(errc))
+	G.waits[#G.waits + 1] = { at = G.frames + 60 * 15, fn = function()
+		local n = 0
+		for _ in pairs(G.pings) do n = n + 1 end
+		AUTO.results[#AUTO.results + 1] = n .. " signal(s) still drawn after 15 s (0 expected)"
+		autoFinish()
+	end }
+end
+
+G.pingTick = function()
+	for key, s in pairs(G.pings) do
+		if G.frames > s.till or G.frames < s.till - 2000 then
+			pcall(api.gui.mission.removeZone, key)
+			pcall(api.gui.mission.removeZone, key .. "_c")
+			G.pings[key] = nil
+		end
+	end
+	if G.pingArmed and G.frames > G.pingArmed.till then G.pingArmed = nil; log("map signal: no click within 15 s") end
+end
+
 H.preview = function(from, p)
 	if from == G.me or not from then return end
 	if os.getenv("MPFEVER_PREVIEWS") == "0" then return end
@@ -15445,7 +15534,7 @@ local function guiUpdate(userParams, state, guiState)
 	if not C.ACTIVE then return end
 	G.frames = G.frames + 1
 	G.stateObj = state
-	if G.frames % 15 == 0 then pcall(G.previewTick) end
+	if G.frames % 15 == 0 then pcall(G.previewTick); pcall(G.pingTick) end
 	if G.frames % 30 == 7 then pcall(G.nameTick) end
 	if G.frames % 600 == 0 then
 		local ps = G.pstat
@@ -15677,6 +15766,8 @@ end
 
 local function guiHandleEvent(userParams, state, guiState, src, id, name, param)
 	if not C.ACTIVE then return end
+	-- (a map signal armed in the MPFever window: the next click on the map places it, see G.pingArm)
+	if G.pingArmed and id == "mainView" and (name == "select-world" or name == "select") then pcall(G.pingClick, name, param) end
 	-- (what this player's tool shows, for the others' games: see G.previewOut)
 	if name == "builder.proposalCreate" then pcall(G.previewOut, tostring(id), param)
 	elseif name == "builder.proposalApply" then pcall(G.previewGone); pcall(G.toolApplied, param) end

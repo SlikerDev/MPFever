@@ -2140,10 +2140,78 @@ U.TABS.session = function(K, st, ctx)
 		rows[#rows + 1] = K.gap(1, 6)
 		rows[#rows + 1] = K.row { K.btn(T("Inviter des amis Steam", "Invite Steam friends"), nil, requestInvite, true) }
 	end
+	-- the signals on the map (0.5.14): a kind, then a click on the map; every player sees it 12 s (see the bridge's H.ping)
+	if st and st.started == "1" and os.getenv("MPFEVER_PINGS") ~= "0" then
+		rows[#rows + 1] = K.gap(1, 8)
+		rows[#rows + 1] = K.section(K.ICON_PLAYERS, T("Signaux sur la carte", "Map signals"))
+		local r = {}
+		for i, k in ipairs({ "here", "warn", "build" }) do
+			if i > 1 then r[#r + 1] = K.gap(6, 1) end
+			local kind = k
+			r[#r + 1] = K.btn(U.pingName(k), nil, function() sendLine("ping_arm", { k = kind }); U.pingArmedAt = os.clock(); U.winChanged() end)
+		end
+		if U.lastPing then
+			r[#r + 1] = K.gap(12, 1)
+			r[#r + 1] = K.btn(T("Voir le dernier", "Show the last"), nil, function()
+				local x = U.lastPing
+				pcall(function() api.gui.camera.focusPosition(api.type.Vec3f.new(x.x, x.y, x.z or 0), 400) end)
+			end)
+		end
+		rows[#rows + 1] = K.row(r)
+		rows[#rows + 1] = K.muted((U.pingArmedAt and os.clock() - U.pingArmedAt < 15) and T("Cliquez sur la carte pour placer le signal (15 s).", "Click on the map to place the signal (15 s).")
+			or T("Choisissez un signal, puis cliquez sur la carte : tous les joueurs le voient 12 s.", "Pick a signal, then click on the map: every player sees it for 12 s."), W)
+	end
 	rows[#rows + 1] = K.gap(1, 12)
 	rows[#rows + 1] = K.row { K.btn(T("Réduire", "Reduce"), T("Une petite carte : la synchronisation, les joueurs et la discussion", "A small card: the sync, the players and the chat"),
 		function() U.setCompact(true) end) }
 	return rows
+end
+
+-- a map signal's kind, in this game's language
+U.pingName = function(k)
+	if k == "warn" then return T("Attention", "Watch out") end
+	if k == "build" then return T("Construire ici", "Build here") end
+	return T("Ici", "Here")
+end
+
+-- The map signals shown on this game (ping_journal.txt, written by the bridge's H.ping): told in the chat, the last one kept for
+-- the "Show the last" button. Read every second; the lines there when the game loaded are not told again.
+U.pollPings = function()
+	local now = os.clock()
+	if U.pingAt and now - U.pingAt < 1 then return end
+	U.pingAt = now
+	local first = not U.pingSeen
+	U.pingSeen = true
+	local f = C.IO.open(C.DIR .. C.BS .. "ping_journal.txt", "rb")
+	if not f then return end
+	local size = f:seek("end") or 0
+	U.pingOff = U.pingOff or 0
+	if size < U.pingOff then U.pingOff = 0 end
+	if size == U.pingOff then f:close() return end
+	f:seek("set", U.pingOff)
+	local data = f:read(size - U.pingOff) or ""
+	f:close()
+	local pos, fresh = 1, {}
+	while true do
+		local e = data:find(C.NL, pos, true)
+		if not e then break end
+		local line = data:sub(pos, e - 1):gsub(C.CR, "")
+		pos = e + 1
+		local p = {}
+		for x in (line .. C.TAB):gmatch("([^" .. C.TAB .. "]*)" .. C.TAB) do p[#p + 1] = x end
+		if #p >= 6 and tonumber(p[4]) and tonumber(p[5]) then fresh[#fresh + 1] = { who = p[2], k = p[3], x = tonumber(p[4]), y = tonumber(p[5]), z = tonumber(p[6]) } end
+	end
+	U.pingOff = U.pingOff + pos - 1
+	if #fresh == 0 or first then return end
+	U.chat = U.chat or {}
+	for _, x in ipairs(fresh) do
+		U.lastPing = x
+		U.chat[#U.chat + 1] = { id = 0, t = os.time(), kind = "ping", name = x.who, text = C.Tf("signal « %s » sur la carte", "signal « %s » on the map", U.pingName(x.k)) }
+	end
+	U.pingArmedAt = nil
+	while #U.chat > 100 do table.remove(U.chat, 1) end
+	U.chatVersion = (U.chatVersion or 0) + 1
+	U.winChanged()
 end
 
 -- The Chat tab: the newest messages that fit in about 16 lines (a long message takes several), the newest at the bottom, then
@@ -3946,6 +4014,7 @@ local function tick(pendingState)
 	local okch, errch = pcall(pollChat)
 	if not okch then log("chat poll failed: " .. tostring(errch)) end
 	local okaj, erraj = pcall(U.pollAiJournal)
+	pcall(U.pollPings)
 	if not okaj and not U.aiJFailed then U.aiJFailed = true; log("AI journal poll failed: " .. tostring(erraj)) end
 	if not U.sessionInstalled and U.react and U.builtin then
 		local oks, errs = pcall(installSession, U.react, U.builtin)
