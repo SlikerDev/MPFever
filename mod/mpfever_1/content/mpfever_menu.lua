@@ -844,8 +844,11 @@ local function setup()
 						-- (each card at the top of its row, whatever the height of the others)
 						row[#row + 1] = box(V, { featCard(g.cards[k], fv, o, cardW), vfill() })
 					end
-					-- (a row of fewer cards than columns starts at the left, as the full ones)
-					row[#row + 1] = hfill()
+					-- (a row of fewer cards than columns starts at the left, as the full ones: the missing cards' places stay empty)
+					for _ = #g.cards - r + 2, cols do
+						row[#row + 1] = gap(GAP, 1)
+						row[#row + 1] = gap(cardW, 1)
+					end
 					if r > 1 then list[#list + 1] = gap(1, GAP) end
 					list[#list + 1] = box(H, row, nil, { size = { w - 40, -1 } })
 				end
