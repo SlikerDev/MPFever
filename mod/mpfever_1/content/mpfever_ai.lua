@@ -30,7 +30,7 @@ local BUS_COST = 180000    -- a bus, until the first purchase measures it
 -- distance flown, so the short town lines earn the least)
 local LEVELS = {
 	{ name = "easy", tick = 150, reserve = 700000, maxBus = 4, maxTruck = 5, busUse = 0.85, truckUse = 0.6, waiting = 80, freightShare = 1 / 3,
-		freightMax = 4000, compete = false, townMin = 600, pause = 1200, bootstrap = 1, settle = 480000, freeCash = 3000000, maxUnproven = 1, profitFirst = false, runMonths = 6, addMargin = 1.3, giveUp = 0.4, ramp = 480000 },
+		freightMax = 4000, compete = false, townMin = 600, pause = 1200, bootstrap = 1, settle = 480000, freeCash = 3000000, maxUnproven = 1, profitFirst = true, runMonths = 6, addMargin = 1.3, giveUp = 0.4, ramp = 480000 },
 	{ name = "normal", tick = 60, reserve = 400000, maxBus = 8, maxTruck = 10, busUse = 0.75, truckUse = 0.45, waiting = 40, freightShare = 1 / 2,
 		freightMax = 5000, compete = false, townMin = 500, pause = 600, bootstrap = 2, settle = 360000, freeCash = 2000000, maxUnproven = 1, profitFirst = true, runMonths = 4, addMargin = 1.15, giveUp = 0.5, ramp = 360000 },
 	{ name = "hard", tick = 30, reserve = 350000, maxBus = 12, maxTruck = 14, busUse = 0.6, truckUse = 0.35, waiting = 25, freightShare = 2 / 3,
@@ -2452,15 +2452,20 @@ local function step(E)
 	end
 	-- (0.5.14: whether it may open something new now, see mayExpand)
 	local grow = mayExpand(E, co, lines, money)
-	-- freight: a route of trucks while the company has fewer freight lines than half its lines (one at first), then the buses
-	if os.getenv("MPFEVER_AIFREIGHT") ~= "0" and grow then
+	-- freight: a route of trucks while the company has fewer freight lines than half its lines (one at first), then the buses.
+	-- (0.5.14: only with plenty of money besides its reserve and its loans, the level's freeCash: a producer of 1972 makes 50 to
+	-- 270 a year until its cargo is carried, and no freight line of the tests of 2026-10-30 paid its truck, 160 000 a year, while
+	-- the lines between towns earned up to 350 000 in two months. MPFEVER_AIFREIGHTRICH=0: with the growth gate only, as before)
+	local freightRich = os.getenv("MPFEVER_AIFREIGHTRICH") == "0" or money - (A.loanCash or 0) >= RESERVE + (LV.freeCash or 0)
+	if os.getenv("MPFEVER_AIFREIGHT") ~= "0" and grow and freightRich then
 		local nf = 0
 		for _, l in ipairs(lines) do if freightOf(E, l) then nf = nf + 1 end end
 		-- (a path search alone builds nothing: the buses' work goes on in the same look)
 		if nf < math.max(1, math.ceil(#lines * LV.freightShare)) and freightProject(E, co, stops, lines, vehicles, money) == true then return end
 	end
-	-- (Normal and Hard, 0.5.14: the lines between towns before the towns' own lines, a fare grows with the distance flown and the
-	-- short town lines earn the least. MPFEVER_AIORDER=0: the towns first, as before)
+	-- (0.5.14, every level since the test of 2026-10-30, where Easy's town lines lost what Normal's and Hard's lines between towns
+	-- earned: the lines between towns before the towns' own lines, a fare grows with the distance flown and the short town lines
+	-- earn the least. MPFEVER_AIORDER=0: the towns first, as before)
 	local pairsFirst = LV.profitFirst and os.getenv("MPFEVER_AIORDER") ~= "0"
 	-- (a pair that only waits for money lets the towns' lines and their buses go on, see pairProject's "wait")
 	if pairsFirst and pairProject(E, co, stops, lines, vehicles, money, grow) == true then return end

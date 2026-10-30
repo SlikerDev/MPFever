@@ -53,14 +53,17 @@ MPFever - Changelog
       town is built while growth waits (MPFEVER_AIGOVERN=0: as before);
     * the money it keeps back grows with its fleet and its loans: 6, 4 or 3 months of its vehicles' running costs and of its
       loans' payments (MPFEVER_AIRESERVE=0, MPFEVER_AILOANBOOK=0);
-    * Normal and Hard open the lines between towns before the towns' own lines: a fare grows with the distance flown, the short
-      town lines earn the least (MPFEVER_AIORDER=0);
+    * every level opens the lines between towns before the towns' own lines: a fare grows with the distance flown, the short
+      town lines earn the least (in a test, Normal's and Hard's lines between towns earned up to 350 000 in two months while
+      Easy's town lines lost money; MPFEVER_AIORDER=0);
     * the next vehicle goes to the full line that earns the most per vehicle, never to a full line losing money on Normal and
       Hard (MPFEVER_AIREINVEST=0); a line losing money for six months with more than two vehicles loses one (MPFEVER_AIPRUNE=0);
     * loans: at most one, the offer of the lowest monthly payment (the first offer was taken before: 5 to 70 million, a short
       one cost more a month than the company earned; MPFEVER_AILOANPICK=0), and repaid once it has money to spare (new event
       ai_repay, decided by the simulation on every game at the same step; MPFEVER_AIREPAY=0);
-    * no freight to town stops: a full truck unloading at a town stop earned nothing, the town took none of the cargo
+    * freight only with plenty of money to spare (3, 2, 1.2 million besides its reserve and its loans): a producer of 1972 makes
+      50 to 270 a year until its cargo is carried, and no freight line of the tests paid its truck (MPFEVER_AIFREIGHTRICH=0);
+      no freight to town stops: a full truck unloading at a town stop earned nothing, the town took none of the cargo
       (MPFEVER_AITOWNFREIGHT=1: as before); one freight line per producer and cargo, the producers at work first;
     * a garage open to it within 5 km is used, another company's or the town's, instead of building its own (650 000 each, a
       company of the tests built three in its first minutes; MPFEVER_AIOWNGARAGE=1: its own first);
