@@ -1407,6 +1407,9 @@ namespace MPFever
         /// <summary>The host refused this player (wrong password, server full, other version, kicked): raised with the
         /// "denied" payload, before Closed.</summary>
         public event Action<Dictionary<object, object>> Denied;
+        /// <summary>(0.6) The host lets every arrival in by hand: this player waits for its answer ("admitwait", every 3 s
+        /// before its welcome; not a message of the session's link).</summary>
+        public event Action Waiting;
 
         /// <summary>Connects to the host. host may list several addresses (a Steam invitation gives the host's IPv4 and
         /// IPv6 addresses, "1.2.3.4:28090,[2a02:...]:28090"); each one may carry its port, else port. IPv6 is tried first:
@@ -1644,6 +1647,7 @@ namespace MPFever
                         Denied?.Invoke(LuaLit.Parse(m.Payload) as Dictionary<object, object> ?? new Dictionary<object, object>());
                         continue;
                     }
+                    if (m.Kind == "admitwait") { Waiting?.Invoke(); continue; }
                     if (m.Kind == "resumed")
                     {
                         // the host has this player's messages up to rx: the others, and those kept while the link was cut, go now

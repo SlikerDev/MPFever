@@ -128,6 +128,22 @@ namespace MPFever
         // the host's addresses shown in its lobby: public (Internet, "" while looked up, "?" when unknown) and local network
         string lobbyPublic = "", lobbyLocal = "";
         int lobbyPort;
+        // (0.6) the session's game options, as the lobby's "Game settings" set them: "id=1;id.param=v;..." (docs/FEATURES-0.6.md);
+        // MPFever.exe reads them with OptOn and OptParam (the public games: PublicGames.cs)
+        volatile string gameOptions = "";
+        bool OptOn(string id) => OptValue(gameOptions, id) == "1";
+        string OptParam(string id, string p) => OptValue(gameOptions, id + "." + p);
+
+        /// <summary>One value of an options string "id=1;id.param=v;..." (the key "id" or "id.param"), or null when absent.</summary>
+        internal static string OptValue(string opts, string key)
+        {
+            foreach (var part in (opts ?? "").Split(';'))
+            {
+                int i = part.IndexOf('=');
+                if (i > 0 && part.Substring(0, i).Trim() == key) return part.Substring(i + 1).Trim();
+            }
+            return null;
+        }
         const long Step = 200;                 // game time units per simulation step
         const double UnitsPerSecond = 1000;    // game time units per real second at x1
         const double HashEverySeconds = 10;
@@ -1055,6 +1071,8 @@ namespace MPFever
             Log.W(T("Le jeu démarre : choisissez « Multijoueur (MPFever) » dans son menu principal.", "The game is starting: choose « Multiplayer (MPFever) » in its main menu."));
             new Thread(MenuLoop) { IsBackground = true, Name = "Menu link" }.Start();
             new Thread(ServerListFetchLoop) { IsBackground = true, Name = "Server list" }.Start();
+            // (0.6: a host's game in the public list, Steam friends only; idle while those options are off, see PublicGames.cs)
+            new Thread(PublicGameLoop) { IsBackground = true, Name = "Public game" }.Start();
             if (JoinAtStart != null)
             {
                 var addr = JoinAtStart;
@@ -1230,7 +1248,7 @@ namespace MPFever
             }
             try
             {
-                menuGame.WriteMenuState(new Dictionary<string, string>
+                var ms = new Dictionary<string, string>
                 {
                     ["phase"] = menuPhase,
                     ["text"] = menuText,
@@ -1264,7 +1282,10 @@ namespace MPFever
                     ["serversOn"] = ServerMode || ServerListUrl() == "" ? "" : "1",
                     ["servers"] = serverListView,
                     ["version"] = Version,
-                });
+                };
+                // (0.6) the public games: the list's state, the arrivals waiting for the host, the ban list (PublicGames.cs)
+                try { PublicMenuState(ms); } catch (Exception e) { Log.W("public game: " + e.Message); }
+                menuGame.WriteMenuState(ms);
             }
             catch (Exception e) { Log.W("menu_state: " + e.Message); }
         }
@@ -1421,6 +1442,8 @@ namespace MPFever
             ReadGameSaveDirs();
             // a dedicated server's game: nobody hosts or joins from its menu (the console drives the server)
             if (server != null) { ServerMenuRequest(cmd); return; }
+            // (0.6) the public games: the game's name, the host's answer to an arrival, kick, ban (PublicGames.cs)
+            if (PublicMenuRequest(cmd, arg)) return;
             // the name typed in the MPFever window is kept for next time and shown in the launcher window (the other
             // requests do not send one)
             if (cmd == "host" || cmd == "join")
@@ -1770,6 +1793,8 @@ namespace MPFever
             // (the host's game no longer takes Steam connections for this session)
             if (hostGame != null && hostSteamId != null) try { SteamNet.Cmd(hostGame.Dir, "unhost"); } catch { }
             hostSteamId = null;
+            // (0.6) out of the public list, arrivals still waiting for the host refused (PublicGames.cs)
+            PublicSessionEnd();
             if (hostGame != null && hostFromGame != null) hostGame.FromGame -= hostFromGame;
             if (menuGame != null && clientFromGame != null) menuGame.FromGame -= clientFromGame;
             hostFromGame = clientFromGame = null;
@@ -2339,7 +2364,9 @@ namespace MPFever
             if (server != null) { var r = relay; relay.Admit = (p, m) => ServerAdmit(r, p, m); }
             // a player's own game lets in only the players with its version: a guest on another version replays the builds its
             // own way and the games go apart (issue #73: a host on 0.3.20, its guest on 0.3.22). MPFEVER_ANYVERSION=1 lets everybody in.
-            else if (Environment.GetEnvironmentVariable("MPFEVER_ANYVERSION") != "1") relay.Admit = (p, m) => VersionAdmit(m.Payload);
+            // (0.6: then the host's ban list, a free place in a public game and the host's answer to every arrival, when its game
+            // options ask for them: PublicGames.cs; none of them by default)
+            else if (Environment.GetEnvironmentVariable("MPFEVER_ANYVERSION") != "1") { var r = relay; relay.Admit = (p, m) => VersionAdmit(m.Payload) ?? PublicAdmit(r, p); }
             relay.Joined += p =>
             {
                 Log.Ok(F("{0} a rejoint la session", "{0} joined the session", p.Name));
@@ -2432,7 +2459,8 @@ namespace MPFever
                     steamRelay.SteamSecret = secret;
                     try
                     {
-                        SteamNet.Cmd(steamGame.Dir, "host " + listenPort + " " + secret);
+                        // (0.6: " friends" when the host keeps its private game's Steam connections to its Steam friends)
+                        SteamNet.Cmd(steamGame.Dir, SteamHostCommand(steamGame.Dir, listenPort, secret));
                         if (SteamNet.TestIpPort > 0) SteamNet.Cmd(steamGame.Dir, "ipmode listen 127.0.0.1:" + SteamNet.TestIpPort);
                     }
                     catch (Exception e) { Log.W("steamnet: " + e.Message); return; }
@@ -2526,6 +2554,12 @@ namespace MPFever
                     ClientStatus("denied", 0);
                     game.AppendChat(0, UnixNow(), "msg", "MPFever", text);
                     if (menuMode) { menuPhase = "error"; menuText = text; MenuStatus(); }
+                };
+                // (0.6) the host lets every arrival in by hand: the page says so until it answers
+                client.Waiting += () =>
+                {
+                    if (!menuMode || game.InGame) return;
+                    menuPhase = "connected"; menuText = T("En attente de l'accord de l'hôte...", "Waiting for the host to let you in..."); MenuStatus();
                 };
                 bool haveSent = false;   // resync_have: once per connection, at its first welcome
                 client.Resumed += () =>
@@ -2948,7 +2982,10 @@ namespace MPFever
         void PublishStatus()
         {
             var text = BuildStatus();
-            hostGame?.WriteStatus(text + "me=" + hostName + "\nconn=ok\nattempt=0\nt=" + UnixNow() + "\n");
+            // (0.6: the host's own lines, not sent to the players: the arrivals waiting for its answer, kick and ban)
+            string own = "";
+            try { own = PublicHostStatus(); } catch (Exception e) { Log.W("public game: " + e.Message); }
+            hostGame?.WriteStatus(text + own + "me=" + hostName + "\nconn=ok\nattempt=0\nt=" + UnixNow() + "\n");
             relay?.Broadcast(Msg.Make("mpstatus", hostName, "{[\"text\"]=" + LuaLit.Quote(text) + "}"));
         }
 
@@ -4356,6 +4393,8 @@ namespace MPFever
             foreach (var c in clients) c.Dispose();
             relay?.Dispose();
             PortMap.Close();
+            // (0.6: a public game leaves the list now, else after 90 s; the list gets 2 s at most)
+            if (pubListId != null) { var t = new Thread(PublicGameRemove) { IsBackground = true }; t.Start(); t.Join(2000); }
             base.OnFormClosed(e);
         }
     }

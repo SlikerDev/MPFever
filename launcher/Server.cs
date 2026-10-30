@@ -900,13 +900,21 @@ namespace MPFever
         internal static string DeniedText(Dictionary<object, object> d)
         {
             string S(string k) => d.TryGetValue(k, out var v) && v != null ? Convert.ToString(v, CultureInfo.InvariantCulture) : "";
+            // (0.6: a player's own game refused this player, not a dedicated server; see PublicGames.cs)
+            bool game = d.TryGetValue("game", out var gv) && gv is bool gb && gb;
             switch (S("reason"))
             {
                 case "password": return T("Mot de passe du serveur incorrect ou manquant : tapez-le dans la fenêtre MPFever, puis rejoignez à nouveau.", "Wrong or missing server password: type it in the MPFever window, then join again.");
-                case "full": return F("Le serveur est plein ({0} joueurs au maximum).", "The server is full ({0} players at most).", S("max"));
+                case "full":
+                    if (game) return F("La partie est pleine ({0} joueurs au maximum).", "The game is full ({0} players at most).", S("max"));
+                    return F("Le serveur est plein ({0} joueurs au maximum).", "The server is full ({0} players at most).", S("max"));
                 case "version": return F("L'hôte utilise MPFever {0} et vous {1} : tous les joueurs doivent installer la même version.", "The host runs MPFever {0} and you run {1}: every player needs the same version.", S("v"), Version);
-                case "kicked": return T("Vous avez été exclu du serveur.", "You were kicked from the server.");
+                case "kicked":
+                    if (game) return T("L'hôte vous a exclu de la partie.", "The host kicked you from the game.");
+                    return T("Vous avez été exclu du serveur.", "You were kicked from the server.");
                 case "stopped": return T("Le serveur a été arrêté.", "The server was stopped.");
+                case "banned": return T("L'hôte vous a banni de ses parties.", "The host banned you from their games.");
+                case "refused": return T("L'hôte n'a pas accepté votre arrivée.", "The host did not let you in.");
             }
             return F("Connexion refusée par l'hôte ({0}).", "Connection refused by the host ({0}).", S("reason"));
         }
