@@ -67,6 +67,12 @@ function M.guiVeto(id, name, param, st, env) end -- optional: THIS player's inte
 function M.allow(a, st, env) return true end     -- optional: THIS player's own action, before it is shipped; return
                                                  -- false, reason to refuse it here (a chat notice tells the reason). For
                                                  -- territories and permissions: no desync, nothing was sent. See "allow".
+function M.guiVeto(id, name, param, st, env) end -- optional: the game's interface events on THIS player's game (the
+                                                 -- bridge's guiHandleEvent); a value other than nil is the event's answer,
+                                                 -- as the game's own scripts answer: builder.proposalCreate { errorMessages =
+                                                 -- { [text] = true }, skipRender } turns a tool's build down before the click,
+                                                 -- vehicleStore / mission.buyVehicle a text puts the store's buy button off,
+                                                 -- management.line / delete true keeps the line. The first module's answer wins.
 
 -- The MPFever window (mpfever_ui.script.lua), every game (optional): a tab of its own while one of the module's options is on.
 M.TAB = { id = "stats", title = { "Classement", "Ranking" } }
@@ -115,6 +121,9 @@ player's registry key, its name in lower case, written two letters a-p per byte 
 
 Other code of a game may ask a module on with `F.moduleOn(id, st, B)` (M and its interface env, nil while its options are off):
 the computer companies ask the territories so (mpfever_ai.lua's territoryCheck, MPFEVER_AITERRITORY=0: never).
+`env.realTime()` (os.clock, the GUI may), `env.gameTime()`, `env.R`, `env.CO`, `env.T(fr, en)` (the player's language),
+`env.pvPoints(param)` (the points of a tool's route from its builder.proposalCreate param, G.pvPoints: `{ {x, y[, r]}... }`),
+`env.players()` (the other players' session names), `env.owner` (a dedicated server's game only: the session's owner).
 
 UI (`u` of M.ui, made by `U.featU` in mpfever_ui.script.lua): `u.T(fr, en)`, `u.Tf(fr, en, ...)`, `u.money(n)`, `u.W` (the
 text width), `u.isHost`, `u.me`, `u.mode`, `u.on(id)`, `u.param(id, pid)` (the session's options, as MPFever.exe sends them),
@@ -122,7 +131,8 @@ text width), `u.isHost`, `u.me`, `u.mode`, `u.on(id)`, `u.param(id, pid)` (the s
 payload)` (to M.request of the module on this game: ui.log "feat_req"), `u.send(name, param)` (an event of the module, sent as
 this player's command: stamped like the player's actions, checked by allow). Widgets, each returns its node: `u.title(t)`,
 `u.text(t, cls)` (cls: "warning", "error", "success"...), `u.muted(t)`, `u.gap(h)`, `u.button(label, fn, primary, enabled,
-tip)` (the window draws again after fn), `u.row(nodes)`, `u.table(lines, widths, header)` (lines of cells; widths in pixels,
+tip)` (the window draws again after fn), `u.input(placeholder, onValue, key, width)` (a text field; what was typed stays across
+the rebuilds; onValue(text) at every key), `u.row(nodes)`, `u.table(lines, widths, header)` (lines of cells; widths in pixels,
 else the width shared; header: the first line as titles). `u.add(node)` puts a node in the tab; M.ui may also return a list of
 nodes (they come after those added). The window draws again about once a second.
 
@@ -170,7 +180,10 @@ Every game hears the same actions at the same step (`F.simAction`):
 - a tool's build (`SIM.featNative`, at the build's step: the builder's own when it is shipped, and every replay of it):
   `a = { fn = "nativeBuild", native = true, at, proposal, data }` (the engine's proposal and its data, userdata, to read during
   the call only), `ok = true`. The simulation does not know who built it: a company's build carries its player entity in the
-  proposal (`proposal.toAdd[i].playerEntity`...); in the co-op, the builder's name is not known there.
+  proposal (`proposal.toAdd[i].playerEntity`...); in the co-op, the builder's name is not known there. When the build's cost
+  was shipped (REFUND on), `SIM.featWho` adds `a.origin` (the builder's session name), `a.cost` (what it cost its builder) and
+  `a.co` (its company, separate mode), the same on every game: the builder's own capture (its name told by its interface, the
+  local note `f_me`) and every replay (the announcement `replay_cost`, heard once per build); `a.uid` for a replay.
 Entity ids differ between games: keep positions or the references of mpfever_refs.lua in the state, never raw ids.
 
 `M.digest(a)` (optional, plain data out): the bridge translates an action's references to this game's entity ids IN PLACE when
@@ -190,7 +203,9 @@ journal sorts by the build's own game time).
   (results.log), this game's chat says the reason;
 - a tool's build held by the DLL (`pollNativeEvents`): `a = { fn = "nativeBuild", native = true, natId, proposal }` (proposal:
   the compact proposal the tool applied, `C.compactProposal`, when its event came in the last 5 frames, else nil). Refused:
-  the DLL drops it (`dropid`, the way of a build made during a resynchronisation), it is never announced.
+  the DLL drops it (`dropid`, the way of a build made during a resynchronisation), it is never announced;
+- a speed or pause request (the game's speed buttons, the window's Session speed: a "speed_req" of ui.log): `a = { fn =
+  "makeGameSetSpeedCmd", args = { n = 1, speed } }`. Refused: never asked of MPFever.exe; the same reason is said once in 3 s.
 A module whose allow fails lets the action through (logged).
 
 ## Hook points (implemented)
@@ -214,6 +229,10 @@ A module whose allow fails lets the action through (logged).
 | bridge, `runPausedActions` | `G.featPausedAct`, `G.featDigests` | the note f_act of a paused action (with the modules' copies taken before it) |
 | bridge, `shipNativeBuilds`, `shipTerrain`, `runNativeReplays` | `G.featNativeAct` | a tool's build with its builder, to the modules with `M.digest` (f_act `only`) |
 | bridge, `guiHandleEvent` (end) | `G.featGuiVeto` (`G.featVeto`, `K.FEATVETO`) | M.guiVeto's answer returned to the game; MPFEVER_FEATVETO=0: never |
+| bridge, `guiHandleEvent` (end) | `G.featVeto`, `G.featGuiVeto` | the modules' guiVeto answer, returned (none while off) |
+| bridge, `stampHeld` "speed_req" | `G.featRefuse` | allow of a speed or pause request |
+| bridge, `SIM.featNative` | `SIM.featWho`, `SIM.featBuildCo`, `SIM.featMe` (f_me from `G.featGui`) | a tool's build's builder and cost |
+| bridge, `H.session` | `G.featTestOpts` | an autotest's own options (MPFEVER_SCENARIO=permstest) |
 | bridge, `runPausedActions` | `G.featPausedAct` | the note f_act of a paused action |
 | bridge, helpers | `SIM.featBridge`, `G.featBridge`, `G.featChat` | what the env is made of |
 | window | `U.featView`, `U.featTabs`, `U.featGameTab`, `U.featGameRows`, `U.featAsk`, `U.featU`, `U.featTabRows` | Game tab, modules' tabs |
@@ -227,6 +246,8 @@ hook is logged the first 5 times, then every 100th), `F.applyOpts`, `F.simEvent`
 `F.simGameEvent`, `F.hearsGameEvents`, `F.wantsGameEvent`, `F.gui`, `F.request`, `F.allow`, `F.wantsAllow`, `F.tabs`, `F.simEnv`, `F.guiEnv`.
 `F.simGameEvent`, `F.hearsGameEvents`, `F.gui`, `F.request`, `F.allow`, `F.wantsAllow`, `F.tabs`, `F.simEnv`, `F.guiEnv`,
 `F.guiVeto`, `F.wantsVeto`, `F.moduleOn`, `F.playerPid`, `F.playerOf`.
+`F.simGameEvent`, `F.hearsGameEvents`, `F.gui`, `F.request`, `F.allow`, `F.wantsAllow`, `F.guiVeto`, `F.wantsVeto`, `F.tabs`,
+`F.simEnv`, `F.guiEnv`.
 
 ## How to integrate a module
 

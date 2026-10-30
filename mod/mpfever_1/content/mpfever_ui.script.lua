@@ -3092,6 +3092,19 @@ U.featU = function(K, st, M)
 		end, primary, enabled)
 	end
 	u.row = function(children) return K.row(children) end
+	-- (0.6: a text field; what was typed stays across the window's rebuilds (its localKey, key: the module's name for it); onValue
+	-- gets the text at every key and when it is accepted)
+	u.input = function(placeholder, onValue, key, width)
+		local function give(v)
+			local ok, err = pcall(onValue, tostring(v or ""))
+			if not ok then log("window: " .. M.ID .. ": " .. tostring(err)) end
+		end
+		return K.builtin.TextInputField {
+			meta = { class = "font-scale-body", localKey = "mpfever-feat-" .. M.ID .. "-" .. tostring(key or ""), styleSheet = K.style { size = { width or 300, -1 } } },
+			value = "", placeholderText = tostring(placeholder or ""), maxLength = 200, acceptOnFocusLoss = true,
+			onTyping = give, onValueChange = give,
+		}
+	end
 	-- (lines of cells, in columns: widths in pixels, else the width shared; header: the first line as titles)
 	u.table = function(lines, widths, header)
 		local out = {}

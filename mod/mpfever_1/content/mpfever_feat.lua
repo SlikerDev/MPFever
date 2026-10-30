@@ -563,6 +563,9 @@ local function guiEnv(M, st, B)
 	-- (this game's language: T(fr, en), the bridge's C.T)
 	-- (0.6) the texts in this player's language: the bridge's C.T when it gives it
 	e.T = B.T
+	-- (0.6: the player's language T(fr, en), the points of a tool's route (the bridge's G.pvPoints), the session's other players'
+	-- names, a dedicated server's owner (its game only); each nil when the bridge does not give it)
+	e.T, e.pvPoints, e.players, e.owner = B.T, B.pvPoints, B.players, B.owner
 	return e
 end
 F.guiEnv = guiEnv
@@ -613,6 +616,7 @@ function F.allow(a, st, B)
 end
 
 -- (0.6) some module on answers the game's interface events (M.guiVeto)
+-- some module on answers the game's interface events (M.guiVeto)
 function F.wantsVeto(text)
 	for _, M in ipairs(F.active(text)) do if type(M.guiVeto) == "function" then return true end end
 	return false
@@ -622,11 +626,16 @@ end
 -- on with M.guiVeto(id, name, param, st, env): the first answer that is a table is the bridge's answer to the game, as the game's
 -- own scripts answer (company.script: { errorMessages = { [text] = true }, skipRender }: the tool shows the text in red and does
 -- not build). nil: no module turns it down. A module that fails turns nothing down (logged).
+-- The game's interface events on THIS player's game (the bridge's guiHandleEvent: a tool's proposal, the vehicle store's buy
+-- button, the line window's delete...): the first answer a module on gives (not nil), which the bridge returns as the event's
+-- answer, as the game's own scripts veto a build (company.script's permits). nil: no module has a say. A failing module says
+-- nothing (logged).
 function F.guiVeto(id, name, param, st, B)
 	for _, M in ipairs(F.active(st.optsText)) do
 		if type(M.guiVeto) == "function" then
 			local ok, r = F.call("guiVeto", M, M.guiVeto, id, name, param, st, guiEnv(M, st, B))
 			if ok and type(r) == "table" then return r, M end
+			if ok and r ~= nil then return r, M end
 		end
 	end
 	return nil

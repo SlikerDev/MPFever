@@ -31,8 +31,8 @@
 --   f_perms_plan    {kind, name, text, pts, z, c}   a plan: a route ("x,y[,r];..." rounded to the metre) or a note (one point)
 --   f_perms_plandel {id}                 a plan taken away (its author, or a leader or lead over its author)
 --
--- The sender of an event is env.from (else param.mpfFrom, as the bridge adds it in the separate mode): its name, "#n" after it
--- for a player who joined; the host's has none (as in mpfever_eco.lua). The players are known by their key: the name in lower
+-- The sender of an event is env.from (else param.mpfFrom, which the bridge puts in every f_ event in both modes, over whatever the
+-- sender wrote there): its name, "#n" after it for a player who joined; the host's has none (as in mpfever_eco.lua). The players are known by their key: the name in lower
 -- case without "#n" (the registry's member keys, G.coMyKey).
 
 local M = {}
@@ -85,6 +85,8 @@ M.EVENTS = {
 }
 
 M.TAB = { id = "team", title = { "Équipe", "Team" } }
+-- the tab's data: feat_perms_team.txt of the session folder (env.write on the bridge's side, u.read in the window)
+M.FILE = "team"
 
 M.ALL = "bdvlms"                 -- every right, in the order they are written
 M.GRANT_MONTHS = 3               -- an approval lasts that many game months (H4)
@@ -425,7 +427,8 @@ local function refuse(env, name, why)
 	return false, why
 end
 
--- the game month now (env.month(): year * 12 + month, as Date.month: 1 to 12), else the last one M.month saw, else nil
+-- the game month now (env.month(): the game months since the game's start, floor(game time / a month's duration), as
+-- mpfever_eco.lua counts them), else the last one M.month saw, else nil
 local function monthNow(s, env)
 	if type(env.month) == "function" then
 		local ok, m = pcall(env.month)
@@ -433,9 +436,18 @@ local function monthNow(s, env)
 	end
 	return s.mon
 end
--- the game year of a month of env.month() (a host whose months count 0 to 11 replaces this)
+-- the year of a game month when the calendar is not known: twelve months of env.month() a year
 function M.yearOf(m)
-	return math.floor((m - 1) / 12)
+	return math.floor(m / 12)
+end
+-- The calendar's year now (env.date(): the date of the game time, the same on every game), so that the year's spending goes back
+-- to 0 on 1 January (H5); without the calendar, the year of the game month m
+function M.yearNow(env, m)
+	if type(env.date) == "function" then
+		local ok, d = pcall(env.date)
+		if ok and type(d) == "table" and tonumber(d.year) then return math.floor(tonumber(d.year)) end
+	end
+	return M.yearOf(m)
 end
 
 -- (who the team is: the players seen, for the co-op leader's list; the host's key, for everybody's view of the roles)
@@ -605,7 +617,7 @@ function M.month(st, env)
 	local m = monthNow(s, env)
 	if type(m) ~= "number" then return end
 	s.mon = m
-	local y = M.yearOf(m)
+	local y = M.yearNow(env, m)
 	if s.year ~= nil and s.year ~= y then
 		s.spent = nil
 		env.log("perms: a new year (" .. y .. "): the budgets start again")
@@ -652,8 +664,9 @@ function M.configPrice(tvc)
 	return sum
 end
 
--- What an action costs its player: the cost a native build carries (its builder's game read it from the tool, see
--- REFUND.costOf in the bridge: the same number on every game), the store's price of a bought vehicle. A replaced vehicle, a
+-- What an action costs its player: the cost a native build carries (a tool's build, fn "nativeBuild": its builder's game read
+-- it from the tool, REFUND.costOf, and shipped it; the bridge's SIM.featWho gives it with its builder on every game, the same
+-- number everywhere), the store's price of a bought vehicle. A replaced vehicle, a
 -- window's edit and a removal are not counted in v1 (their price is not known before the engine applies them).
 function M.costOf(a)
 	local c = tonumber(a.cost)
@@ -688,6 +701,7 @@ function M.onAction(st, a, ok, env)
 	s.spent[by] = after
 	-- (how many spendings were counted for the player: its game drops what it was waiting for, see M.pending)
 	s.cnt[by] = (tonumber(s.cnt[by]) or 0) + 1
+	env.log("feat perms: " .. by .. " spends " .. cost .. " (" .. tostring(a.fn) .. "), " .. after .. " this year")
 	local role, team = M.roleOf(st, env, s, by, host)
 	local lim = M.limitOf(s, env, by, role, team)
 	if lim then
@@ -703,7 +717,7 @@ end
 -- ------------------------------------------------------------------------------------------------- the interface's half
 -- (this game only: what it refuses, draws and writes; kept here, never in the game state)
 local GUI = { pend = {}, planMode = false, route = nil, hidden = {}, drawn = {}, sig = nil, seen = nil, ownerSent = false,
-	lastRefused = nil }
+	lastRefused = nil, vetoed = {} }
 M.GUI = GUI
 
 -- this player: its key, role, team, and the team's data
@@ -837,18 +851,23 @@ function M.guiVeto(id, name, param, st, env)
 		local cost = 0
 		pcall(function() cost = tonumber(param[2].costs) or 0 end)
 		if name == "builder.proposalApply" then
+			-- (for the in-game check: a build the game applied although its proposal was turned down here, the game did not heed
+			-- the answer alongside its own scripts' answers)
+			if GUI.vetoed[tool] then env.log("feat perms: WARNING the tool " .. tool .. " applied a build this game turned down (" .. GUI.vetoed[tool] .. ")") end
 			if cost > 0 and not M.VETO_OFF and env.on("perms") then
 				local me = M.me(st, env)
 				if restricted(me.role) then addPending(me, env, cost) end
 			end
 			return nil
 		end
+		GUI.vetoed[tool] = nil
 		if GUI.planMode and tool ~= "bulldozer" and env.on("plans") then
 			if type(env.pvPoints) == "function" then
 				local ok, pts = pcall(env.pvPoints, param)
 				local list = ok and M.simplify(pts) or {}
 				if #list >= 2 then GUI.route = { pts = M.encodePts(list), n = #list, tool = tool } end
 			end
+			GUI.vetoed[tool] = "plan mode"
 			return { errorMessages = { [tr(env.T, "plan_mode")] = true }, skipRender = false }
 		end
 		if M.VETO_OFF or not env.on("perms") then return nil end
@@ -862,7 +881,10 @@ function M.guiVeto(id, name, param, st, env)
 			local ok, w = budgetOk(me, env, cost, true)
 			if not ok then why = w end
 		end
-		if why then return { errorMessages = { [why] = true }, skipRender = false } end
+		if why then
+			GUI.vetoed[tool] = why
+			return { errorMessages = { [why] = true }, skipRender = false }
+		end
 		return nil
 	end
 	if M.VETO_OFF or not env.on("perms") then return nil end
@@ -961,7 +983,11 @@ function M.request(kind, payload, st, env)
 		return true
 	elseif kind == "note" and onPl then
 		local okC, x, y, z = pcall(M.draw.center)
-		if not (okC and tonumber(x) and tonumber(y)) then return false end
+		if not (okC and tonumber(x) and tonumber(y)) then
+			env.log("feat perms: the centre of the view is not known, no note: " .. tostring(okC and x or x))
+			return false
+		end
+		env.log("feat perms: a note at the centre of the view " .. math.floor(tonumber(x)) .. "," .. math.floor(tonumber(y)))
 		local name = clean(p[1], M.NAME_LEN)
 		if name == "" then name = tr(env.T, "note_of", select(2, keyOf(env.me))) end
 		env.send("f_perms_plan", { kind = "note", name = name, text = clean(p[2], M.TEXT_LEN),
@@ -1116,7 +1142,8 @@ end
 
 local function field(t) return clean(t, 300) end
 
--- What the window shows, written to the session folder (feat_perms.txt, only when it changed), one fact per line, tab-separated:
+-- What the window shows, written to the session folder (feat_perms_team.txt through env.write, only when it changed), one fact
+-- per line, tab-separated:
 --   opt     perms(0/1) plans(0/1) mode
 --   me      key role rights limit(-: none) spent grantLeft grantMonths avail(-: none) lastRefused askN askAmount
 --   player  key name role rights budgetCode spent grantLeft lead(0/1) canManage(0/1) canName(0/1)
@@ -1222,11 +1249,11 @@ function M.gui(st, env)
 	end
 	if onP then notices(st, env, me) end
 	if onPl then drawPlans(st, env, me) end
-	env.write("feat_perms.txt", M.lines(st, env, me))
+	env.write(M.FILE, M.lines(st, env, me))
 end
 
 -- ------------------------------------------------------------------------------------------------- the window's tab
--- The tab's data read back from feat_perms.txt (u.read), as a table
+-- The tab's data read back from feat_perms_team.txt (u.read), as a table
 function M.model(lines)
 	local m = { opt = {}, players = {}, asks = {}, plans = {} }
 	for _, line in ipairs(type(lines) == "table" and lines or {}) do
@@ -1265,10 +1292,12 @@ end
 local UIV = { amount = "", reason = "", name = "", text = "" }
 M.UIV = UIV
 
--- The tab, with the options host's helpers: u.T, u.read, u.request, and widgets u.text(t), u.button(label, fn, enabled),
--- u.row(list); optional: u.muted(t), u.section(title), u.input(placeholder, onValue, key) (a text field that keeps what was
--- typed across the window's rebuilds; without it the amounts are buttons and the plans take their author's name). Returns the
--- list of rows, top to bottom. Sentences never share a row with buttons; a row holds four buttons at most (the window's rules).
+-- The tab, with the window's helpers (U.featU in mpfever_ui.script.lua): u.T, u.read, u.request, and widgets u.text(t),
+-- u.button(label, fn, primary, enabled), u.row(list); optional: u.muted(t), u.title(t) (a section's title), u.input(placeholder,
+-- onValue, key) (a text field that keeps what was typed across the window's rebuilds; without it the amounts are buttons and the
+-- plans take their author's name). Returns the list of rows, top to bottom. Sentences never share a row with buttons; a row holds
+-- three buttons at most (the labels are long, the window is 556 pixels wide).
+M.ROW_BUTTONS = 3
 function M.ui(u)
 	local T = u.T
 	local function t(id, ...) return tr(T, id, ...) end
@@ -1276,16 +1305,17 @@ function M.ui(u)
 	local rows = {}
 	local function text(s) rows[#rows + 1] = u.text(s) end
 	local function muted(s) rows[#rows + 1] = (u.muted or u.text)(s) end
-	local function section(s) rows[#rows + 1] = (u.section or u.text)(s) end
+	local function section(s) rows[#rows + 1] = (u.title or u.text)(s) end
 	local function buttons(list)
-		for i = 1, #list, 4 do
+		local per = M.ROW_BUTTONS
+		for i = 1, #list, per do
 			local r = {}
-			for j = i, math.min(#list, i + 3) do r[#r + 1] = u.button(list[j][1], list[j][2], list[j][3]) end
+			for j = i, math.min(#list, i + per - 1) do r[#r + 1] = u.button(list[j][1], list[j][2], nil, list[j][3]) end
 			rows[#rows + 1] = u.row and u.row(r) or r[1]
 		end
 	end
 	local function req(kind, payload) return function() u.request(kind, payload) end end
-	local m = M.model(u.read("feat_perms.txt"))
+	local m = M.model(u.read(M.FILE))
 	if not m.opt.perms and not m.opt.plans then
 		muted(t("waiting"))
 		return rows
