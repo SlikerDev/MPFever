@@ -34,9 +34,11 @@ it is stable enough.
   [x] Join a session that is already running (0.2.0)
   [x] Player list and sync state inside the game, from the pause menu (0.3.4)
   [x] Chat inside the game interface (0.3.5)
-  [ ] Settings for the host (who may build, bulldoze, spend money)
+  [x] Permissions and budgets per player, plans and notes for the team (game options, 0.6.0)
   [x] Game rules chosen by the host and kept in the savegame: start money, sharing rules on or off, bankruptcy (0.5.14)
   [x] Signals on the map ("Here", "Watch out", "Build here") seen by every player (0.5.14)
+  [x] Players' journal, "built by", see a player's view (game options, 0.6.0)
+  [x] Public games: ban list, approval of arrivals, friends only, players at most (game options, 0.6.0)
   [x] Personal mods (interface only) that every player may have or not, missing mods installed from the game's Mod Hub,
       the host's local mods sent from its PC (0.5.0)
   [x] What the others are building shown on the ground before their click (0.5.0)
@@ -51,7 +53,9 @@ it is stable enough.
       a table of the companies (0.4.4)
   [x] Bankruptcy: the company's empire auctioned to the other companies, the player starts again (0.5.0)
   [x] Shared stations' fees in the finances (0.5.0)
-  [ ] Competition on cargo and passengers
+  [x] Competition on cargo and passengers: market shares, alerts (game option, 0.6.0)
+  [x] Ranking, game goal, yearly report; tenders; territories and handicaps; trade between companies; stock market
+      (game options, 0.6.0)
 
 0.5 - Mixed modes
   [x] Shared companies and separate companies in the same game (0.5.0)
@@ -67,7 +71,9 @@ it is stable enough.
   [x] A level for each one (Easy, Normal, Hard), and what they do shown to every player (0.5.13)
   [x] They stay solvent and grow: vehicles fitted to what each line earns, careful growth, lines between towns first,
       one cheap loan at a time, their own start money (0.5.14)
-  [ ] Freight that pays off in the long run (an industry grows when its cargo is carried)
+  [x] Never bankrupt; a floor of money; freight that pays off in the long run (an industry grows when its cargo is
+      carried) (0.6.0)
+  [ ] Deliveries of goods to the towns (prepared in 0.6.0, off until tested)
   [ ] Trains (tracks, stations, signals, depots) and warehouses
   [ ] Ships and planes
   [ ] Computer companies on a dedicated server
