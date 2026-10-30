@@ -62,6 +62,11 @@ E.PRIVATE_FEE = os.getenv("MPFEVER_PRIVATEFEE") ~= "0"
 -- (MPFEVER_TRACKTYPE=0: as before)
 E.TRACK_STREET = os.getenv("MPFEVER_TRACKTYPE") ~= "0"
 E.RESERVE = { line = 50000, vehicle = 50000, station = 100000, depot = 50000 }
+-- (0.6) A computer company never goes bankrupt, whatever its level (the owner's rule of 2026-10-30): its months in debt are not
+-- counted, so no bankruptcy and no "in debt" notice for it; it keeps itself solvent instead (mpfever_ai.lua: its reserve, its
+-- floor, its sales and its loan). Read once, every game is started with the same value (MPFEVER_AINOBANKRUPT=0: as before, a
+-- computer company goes bankrupt as a player's does)
+E.AI_NO_BANKRUPT = os.getenv("MPFEVER_AINOBANKRUPT") ~= "0"
 
 -- (the game time and the bridge's helpers, given by the bridge at every call: see E.event and E.tick)
 E.env = nil
@@ -103,6 +108,17 @@ local function news(reg, t)
 end
 
 local function live(c) return c and not c.gone end
+
+-- (0.6) a computer company: its key, or one of its members' keys, is "ai:<n>" (the host's module joins it under that key, see
+-- mpfever_ai.lua; a name taken twice gets "@..." after it). Read from the registry, the same on every game
+function E.isAi(c)
+	if type(c) ~= "table" then return false end
+	if tostring(c.key or ""):sub(1, 3) == "ai:" then return true end
+	for _, m in ipairs(type(c.members) == "table" and c.members or {}) do
+		if tostring(m.key or ""):sub(1, 3) == "ai:" then return true end
+	end
+	return false
+end
 
 -- (the registry's company by its number, without env: the rules are also read by the interface's half of the bridge)
 local function findCo(reg, id)
@@ -957,7 +973,8 @@ function E.event(st, name, param, env)
 		local limit = tonumber((reg.rules or {}).bankrupt) or E.BANKRUPT_DEFAULT
 		for _, c in ipairs(reg.list) do
 			if live(c) and #env.CO.members(c) > 0 then
-				if inDebt[c.id] then
+				-- (0.6: a computer company's months in debt are not counted, see E.AI_NO_BANKRUPT; a count of an earlier version goes)
+				if inDebt[c.id] and not (E.AI_NO_BANKRUPT and E.isAi(c)) then
 					c.debt = (c.debt or 0) + 1
 					news(reg, { kind = "debt", co = c.id, months = c.debt, limit = limit })
 				else
@@ -967,7 +984,7 @@ function E.event(st, name, param, env)
 		end
 		if limit > 0 and not reg.auction then
 			for _, c in ipairs(reg.list) do
-				if live(c) and (c.debt or 0) >= limit then E.bankrupt(st, c, env) break end
+				if live(c) and (c.debt or 0) >= limit and not (E.AI_NO_BANKRUPT and E.isAi(c)) then E.bankrupt(st, c, env) break end
 			end
 		end
 	elseif name == "co_test" then

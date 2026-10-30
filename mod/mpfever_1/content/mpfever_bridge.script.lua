@@ -4681,10 +4681,13 @@ local function replayNativeConstruction(a)
 		local ctx2 = api.type.Context.new()
 		ctx2.checkTerrainAlignment = true
 		ctx2.cleanupStreetGraph = false
-		ctx2.gatherBuildings = true
+		-- (0.6: a computer company's garage keeps the town buildings in its way, the build then fails on every game instead of
+		-- taking them down: a.keepBuildings, set by mpfever_ai.lua, MPFEVER_AIKEEPBUILDINGS=0 there: not set, as before)
+		ctx2.gatherBuildings = a.keepBuildings ~= true
 		ctx2.gatherFields = true
 		ctx2.player = api.engine.util.getPlayer()
 		G.refundInto(ctx2)
+		if a.keepBuildings == true then log("NATIVE REPLAY " .. tostring(a.uid) .. " native construction: the town buildings in its way are kept (a computer company's build)") end
 		local okk, cmd = false, nil
 		if withObjects then
 			C.errors = {}
@@ -5847,6 +5850,13 @@ local function replayNative(a, formIndex)
 		end
 		if hasConstructionSegments(a.args[1]) or a.ownTracks then
 			if replayNativeConstruction(a) then return end
+			-- (0.6: a computer company's garage that keeps the town buildings, a.keepBuildings: no other form, they all gather the
+			-- buildings in their way; the host's game is reloaded instead)
+			if a.keepBuildings == true then
+				log("NATIVE REPLAY " .. tostring(a.uid) .. ": a computer company's build not replayed as the tool's proposal: no other form (they take buildings down)")
+				replayFailed(a, "computer company's build not replayed")
+				return
+			end
 			if replayTwoStep(a) then return end
 			if editsConstruction(a.args[1]) or a.ownTracks then
 				log("NATIVE REPLAY " .. tostring(a.uid) .. ": the edit of an existing station could not be replayed as the tool's proposal: not rebuilt otherwise")
