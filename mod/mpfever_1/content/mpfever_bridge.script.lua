@@ -1890,6 +1890,12 @@ SIM.featBridge = function()
 				local to = type(reg) == "table" and CO.find(reg, tonumber(toId)) or nil
 				if not (from and from.ent and to and to.ent) then return nil, "a company has no player entity on this game" end
 				return E.transferLot(SIM.ecoEnv(), from, to, lot, { withStations = lot.withStations == true, frozen = lot.frozen == true, reg = reg })
+			-- (company fromId goes into company intoId, the merge of companies with the option's opts, see E.coMerge; from an event:
+			-- the same step on every game. The state is saved by handleEvent after the event)
+			coMerge = function(st, fromId, intoId, opts)
+				local E = C.eco()
+				if not (E and E.coMerge) then return false, "mpfever_eco.lua not loaded" end
+				return E.coMerge(st, fromId, intoId, SIM.ecoEnv(), opts)
 			end,
 		}
 	end
@@ -15967,6 +15973,15 @@ H.markettest = function(from, p)
 -- event gives it) and its own handicap. "AUTOTEST terrtest:" lines in mod.log; the sync check afterwards says whether both
 -- games hold the same.
 H.terrtest = function(from, p)
+-- (0.6) Stock market scenario (MPFEVER_SCENARIO=stocktest on both games, one company per player, the game option "stock" on in the
+-- host's lobby (or gameopts=stock=1 in its mpfever_settings.txt), MPFEVER_STOCKPROTECT=0 on both games for a savegame younger than
+-- 2 game years, MPFEVER_TOGETHER=1 so that both games run it at once (the launcher waits 300 s), MPFEVER_SPEED=4 advised): once
+-- the stock market opens (the game month after the option came), the client buys 2 shares of company MPFEVER_STOCKTARGET (1, the
+-- host's, by default) and sells 1 back; with MPFEVER_STOCKTAKEOVER=1 it then buys up to 5 over the next months and takes the
+-- company over (its players get a new company; a computer company is retired). Each game notes the stock market's state at every
+-- change and its companies' money at the end: the two logs must show the same states, and the checks no resynchronisation.
+-- Without MPFEVER_TOGETHER=1 the host only notes the state it has (the launcher runs the host's part first, then the client's).
+H.stocktest = function(from, p)
 	if p.role ~= C.ROLE or AUTO.running then return end
 	AUTO.running = true
 	AUTO.results = {}
@@ -16149,6 +16164,96 @@ H.terrtest = function(from, p)
 		G.waits[#G.waits + 1] = { at = G.frames + 600, fn = claimed }
 	end
 	G.waits[#G.waits + 1] = { at = G.frames + 120, fn = claim }
+	local function note(t) AUTO.results[#AUTO.results + 1] = t; log("AUTOTEST " .. t) end
+	local function S() local st = G.featSt; return st and type(st.feat) == "table" and st.feat.stock or nil end
+	if not (G.co and G.myCo) then note("stocktest: not in the companies mode"); return autoFinish() end
+	local function sorted(t) local ks = {} for k in pairs(t or {}) do ks[#ks + 1] = k end table.sort(ks, function(a, b) return tostring(a) < tostring(b) end) return ks end
+	-- (the state as both games must have it: the month, the prices, the holdings, the computer companies retired)
+	local function sig()
+		local s = S()
+		if not s then return "none" end
+		local t = { "month " .. tostring(s.month) }
+		for _, k in ipairs(sorted(s.price)) do t[#t + 1] = "price" .. k .. "=" .. tostring(s.price[k]) end
+		for _, k in ipairs(sorted(s.hold)) do
+			for _, h in ipairs(sorted(s.hold[k])) do t[#t + 1] = "hold" .. k .. "/" .. h .. "=" .. tostring(s.hold[k][h]) end
+		end
+		local r = sorted(s.retired)
+		if #r > 0 then t[#t + 1] = "retired " .. table.concat(r, ",") end
+		return table.concat(t, " ")
+	end
+	local function moneyNote()
+		for _, c in ipairs(G.co.list) do
+			local b = nil
+			if c.ent then pcall(function() b = api.engine.util.finance.getPlayersBalance(c.ent) end) end
+			note("company " .. c.id .. " " .. tostring(c.gone or "playing") .. " money " .. tostring(b))
+		end
+	end
+	local target = tonumber(os.getenv("MPFEVER_STOCKTARGET") or "") or 1
+	local takeover = os.getenv("MPFEVER_STOCKTAKEOVER") == "1"
+	local function held() local s = S(); return math.floor(tonumber(s and s.hold and s.hold[tostring(target)] and s.hold[tostring(target)][tostring(G.myCo)]) or 0) end
+	local function ask(kind, payload) local okR, errR = pcall(G.featRequest, { m = "stock", kind = kind, payload = payload }); if not okR then note(kind .. " failed: " .. tostring(errR)) end end
+	local since, lastSig, done = os.clock(), nil, false
+	local mine = G.myCo
+	local together = os.getenv("MPFEVER_TOGETHER") == "1"
+	-- (each game: the state at every change, every 2 s; the host's part ends after 270 s, the launcher waits 300 s)
+	local function watch()
+		local s = sig()
+		if s ~= lastSig then lastSig = s; note("stock state: " .. s) end
+		if done or (C.ROLE == "host" and (not together or os.clock() - since > 270)) or os.clock() - since > 290 then
+			moneyNote()
+			return autoFinish()
+		end
+		G.waits[#G.waits + 1] = { at = G.frames + 120, fn = watch }
+	end
+	local okOn = G.featSt and type(G.featSt.opts) == "table" and G.featSt.opts.stock == "1"
+	note(C.ROLE .. " plays company " .. tostring(mine) .. "; option stock " .. (okOn and "on" or "not on yet (the host's options come within 10 s)") .. ", protection " .. tostring(os.getenv("MPFEVER_STOCKPROTECT") or "24 months"))
+	watch()
+	if C.ROLE == "host" then return end
+	-- the client's steps, each waiting for its condition (at most 120 s: several game months at MPFEVER_SPEED=4)
+	local steps = {}
+	local function step(what, start, ok) steps[#steps + 1] = { what = what, start = start, ok = ok } end
+	step("the stock market opens", function() end, function() local s = S(); return s and s.month and s.price and s.price[tostring(target)] ~= nil end)
+	step("buy 2 shares of company " .. target, function() ask("buy", { co = target, n = 2 }) end, function() return held() == 2 end)
+	step("sell 1 back", function() ask("sell", { co = target, n = 1 }) end, function() return held() == 1 end)
+	if takeover then
+		-- (two shares a month at most: buy the month's, then wait for the next month, up to 5; the takeover's share is a next
+		-- month's too)
+		for _ = 1, 3 do
+			step("buy up to 5 and wait for the next month", function()
+				local s = S()
+				local n = math.min(2, 5 - held())
+				if n > 0 then ask("buy", { co = target, n = n }) end
+				AUTO.points.stockMonth = s and s.month
+			end, function() local s = S(); return s and s.month ~= AUTO.points.stockMonth end)
+		end
+		step("take company " .. target .. " over", function()
+			local s = S()
+			local P = s and s.price and tonumber(s.price[tostring(target)]) or 0
+			local prem = 25
+			pcall(function() prem = tonumber(C.feat().param(G.featSt.opts, "stock", "premium")) or 25 end)
+			ask("takeover", { co = target, n = held() > 5 and 0 or 1, max = math.floor(P * (100 + prem) / 100) * (10 - held()) })
+		end, function() local c = CO.find(G.co, target); return c and c.gone == "taken" end)
+	end
+	local i, at = 0, 0
+	local function nextStep()
+		i = i + 1
+		local s = steps[i]
+		if not s then
+			note("client plays company " .. tostring(G.myCo) .. " (first " .. tostring(mine) .. "), holds " .. held() .. " of company " .. target)
+			G.waits[#G.waits + 1] = { at = G.frames + 300, fn = function() done = true end }
+			return
+		end
+		pcall(s.start)
+		at = os.clock()
+		local function poll()
+			local okP, d = pcall(s.ok)
+			if okP and d then note("step '" .. s.what .. "': done in " .. math.floor(os.clock() - at) .. " s"); return nextStep() end
+			if os.clock() - at > 120 then note("step '" .. s.what .. "': NOT DONE within 120 s"); return nextStep() end
+			G.waits[#G.waits + 1] = { at = G.frames + 60, fn = poll }
+		end
+		G.waits[#G.waits + 1] = { at = G.frames + 60, fn = poll }
+	end
+	nextStep()
 end
 
 G.pingTick = function()
@@ -16303,6 +16408,8 @@ G.featBridge = function()
 				end)
 				return ok and d or nil
 			end,
+			-- (a company's name as the players see it, the chat's: the game's name of its player entity, else the registry's)
+			coName = function(id) return G.coName(G.co, tonumber(id)) end,
 			-- (an event of a module: stamped and applied by every game at the same step, as the host's events)
 			send = function(name, param) return G.coEvent(name, param) ~= false end,
 			chat = function(text) return G.featChat(text) end,

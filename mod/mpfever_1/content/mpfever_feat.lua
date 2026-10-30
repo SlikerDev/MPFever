@@ -354,6 +354,12 @@ local function simEnv(M, st, B)
 		-- E.lotsOf and E.transferLot through the bridge; nil when the bridge has none. Called from an event, the same on every game)
 		e.lots = function(id) local f = e._B.lots; if f then return f(e._st, id) end return nil end
 		e.transferLot = function(fromId, toId, lot) local f = e._B.transferLot; if f then return f(e._st, fromId, toId, lot) end return nil end
+		-- (company fromId goes into company intoId at this step, as the merge of companies does (mpfever_eco.lua, E.coMerge; opts:
+		-- members = "release", gone = "taken"): true, or false and why. Only from an event: the same step on every game)
+		e.coMerge = function(fromId, intoId, opts)
+			if type(e._B.coMerge) ~= "function" then return false, "no merge here" end
+			return e._B.coMerge(e._st, fromId, intoId, opts)
+		end
 		F.envs.sim[M.ID] = e
 	end
 	e._st, e._B = st, B
@@ -574,6 +580,8 @@ local function guiEnv(M, st, B)
 	e.T, e.pvPoints, e.players, e.owner = B.T, B.pvPoints, B.players, B.owner
 	-- (T(fr, en): the player's language, for the chat and the window's files)
 	e.R, e.CO, e.T = B.R, B.CO, B.T
+	-- (this game's language, T(fr, en), and a company's name as the players see it, coName(id); nil when the bridge has none)
+	e.T, e.coName = B.T, B.coName
 	return e
 end
 F.guiEnv = guiEnv
