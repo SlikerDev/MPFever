@@ -4,11 +4,15 @@
 
 [![Latest release](https://img.shields.io/github/v/release/dkdknight/MPFever?label=download)](https://github.com/dkdknight/MPFever/releases/latest)
 [![Nexus Mods](https://img.shields.io/badge/Nexus-MPFever-orange)](https://www.nexusmods.com/transportfever3/mods/4)
+[![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/qhhKfUMSJx)
+[![Discussions](https://img.shields.io/badge/feedback-Discussions-8957e5?logo=github)](https://github.com/dkdknight/MPFever/discussions)
 [![Ko-fi](https://img.shields.io/badge/support-Ko--fi-ff5e5b)](https://ko-fi.com/knighthd)
 
 ![The multiplayer page: host one of your savegames](docs/images/host-page.webp)
 
 Each player plays in their own copy of the game. MPFever replays every player's actions in every game at the same moment, checks that the games stay identical, and repairs them by itself when they don't.
+
+**Join the [MPFever Discord](https://discord.gg/qhhKfUMSJx)** to find players, get help and follow the development, and share your feedback and ideas in the [Discussions](https://github.com/dkdknight/MPFever/discussions).
 
 > **MPFever is still in active development.** Most sessions run for hours, but desyncs still happen. **Back up your savegames**, and please [report problems](#reporting-a-problem) with your logs: every report helps.
 
@@ -158,6 +162,8 @@ What's planned: [ROADMAP](docs/ROADMAP.txt). What changed: [CHANGELOG](docs/CHAN
 
 ## Reporting a problem
 
+A question, or stuck? Ask in **#help** on the [Discord](https://discord.gg/qhhKfUMSJx) or in the [Q&A](https://github.com/dkdknight/MPFever/discussions/categories/q-a).
+
 Open an [issue](https://github.com/dkdknight/MPFever/issues) with your logs. **Without logs, a desync or a crash can rarely be found.** With them, most bugs are fixed in the next version.
 
 1. **Click « Report a problem »:** in the MPFever window of the game, or in the launcher. MPFever zips every log, shows the zip and opens an issue already filled in. After a crash, it offers it by itself. Your Windows account and PC names, Steam account numbers and public IP address are taken out of the logs.
@@ -232,7 +238,9 @@ python tools\mksigs.py check "<path>\TransportFever3.exe"
   seksi1227-wq, Manocornuto, dev-andrei-v, Nassachi, Zippo1578, Shog-SC, thedevouttrout, AlexXY2, MorganJones13
   and everyone who played and gave feedback on Nexus.
 
-MPFever is free and open source, under the [GNU General Public License v3](LICENSE) (GPL-3.0-or-later): you may use, study, change and share it, and a project that includes MPFever's code must be shared under the same license. Versions up to 0.4.5 were published under the MIT License and stay so; see [NOTICE.txt](NOTICE.txt). If you enjoy it, you can support its development on [Ko-fi](https://ko-fi.com/knighthd) or leave a comment on [Nexus](https://www.nexusmods.com/transportfever3/mods/4?tab=posts).
+Written about MPFever: [PCGamesN](https://www.pcgamesn.com/transport-fever-3/multiplayer-mod), [PC Games](https://www.pcgames.de/Transport-Fever-3-Spiel-75226/News/Multiplayer-Mod-Koop-Kompetitiv-Unternehmen-1558055/) (German), [PlayNews](https://www.playnews.gg/en/news/transport-fever-3-multiplayer-mpfever-adds-co-op-and-competition-all-for-free) and an [interview on Spielemagazin.de](https://www.spielemagazin.de/spiele/interviews/mpfever-multiplayer-fuer-transport-fever-3/45494) (German).
+
+MPFever is free and open source, under the [GNU General Public License v3](LICENSE) (GPL-3.0-or-later): you may use, study, change and share it, and a project that includes MPFever's code must be shared under the same license. Versions up to 0.4.5 were published under the MIT License and stay so; see [NOTICE.txt](NOTICE.txt). Come and talk with us on the [Discord](https://discord.gg/qhhKfUMSJx), or give your feedback in the [Discussions](https://github.com/dkdknight/MPFever/discussions). If you enjoy MPFever, you can support its development on [Ko-fi](https://ko-fi.com/knighthd) or leave a comment on [Nexus](https://www.nexusmods.com/transportfever3/mods/4?tab=posts).
 
 [![Support MPFever on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/knighthd)
 
