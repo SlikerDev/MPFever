@@ -143,6 +143,17 @@ the rebuilds; onValue(text) at every key), `u.row(nodes)`, `u.table(lines, width
 else the width shared; header: the first line as titles). `u.add(node)` puts a node in the tab; M.ui may also return a list of
 nodes (they come after those added). The window draws again about once a second.
 
+The Hub (0.6, `U.hubContent`; MPFEVER_HUB=0: none) draws the modules' pages, wider (`u.W` is its page's text width) and with
+`u.rich = true`. There: every `u.title` starts a card holding what follows it up to the next title (`U.hubCards`), `u.table(lines,
+widths, header, opts)` is a real table (its head on a band, striped rows, the widths stretched to the page, a cell may be a node,
+`opts.highlight(i, line)` puts this player's row on a blue band), `u.row` gives its texts what its buttons leave, and these draw
+boxes: `u.card(title, children, opts)` (`opts.color` a company's colour swatch, `opts.tint` "warning"/"error"/"success"/"info",
+`opts.right` nodes after the title), `u.bar(fraction, colour, label, opts)` (a bar in a colour: { r, g, b }, a class name or a
+company's number; `opts.lead` a text before it), `u.stat(label, value, cls)` and `u.stats(list, width)` (figures in boxes),
+`u.section(title, sub)` (a heading over several cards); `u.coColor(id)` (a company's colour), `u.myCo` (this player's company).
+Outside the Hub (`u.rich` false: the small window of MPFEVER_HUB=0, the tests' kits) every helper draws what it drew before and the
+new ones fall back to plain rows, so a module draws its rich layout only under `if u.rich then`. Test: tests/test_hub.py.
+
 ## The options' journey
 
 1. Lobby (`mpfever_menu.lua`): the host switches an option or picks a parameter on the lobby's page of the game options (its

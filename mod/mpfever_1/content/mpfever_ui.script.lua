@@ -1741,6 +1741,8 @@ end
 -- every text gets a width (the game wraps it there), a sentence never shares a row with buttons, long lists are combo boxes or
 -- rows of six, and the long tabs scroll. It opens by itself at the start of a session and again after each load of a
 -- resynchronisation, on the tab it showed. MPFEVER_NEWWINDOW=0: the single-list window of before (no tabs).
+-- (0.6) With the Hub (see U.hubOn), this window is a quick view: Session and Chat, and a button that opens the Hub, where every
+-- other tab is a page.
 
 -- The drawing helpers, made once per interface from the game's builtin module (the bar's icon draws before the window exists)
 U.makeKit = function(builtin)
@@ -1867,6 +1869,21 @@ U.makeKit = function(builtin)
 		return builtin.Button { meta = { class = primary and "primary" or "secondary", tooltip = tip, enabled = enabled ~= false },
 			content = K.text(label), onClick = fn }
 	end
+	-- (0.6, the Hub) a box: a component with its own inline style (size, padding, background { r, g, b, a }) around a vertical
+	-- (default) or horizontal layout, as the lobby's box() draws its panels
+	function K.box(children, st, orientation)
+		return builtin.Component { meta = { styleSheet = st and K.style(st) or nil },
+			layout = builtin.BoxLayout { orientation = orientation or K.V, children = children } }
+	end
+	-- (0.6, the Hub) a plain rectangle of colour, w x h pixels (a bar's fill, a swatch), as the lobby draws its colour squares
+	function K.rect(w, h, rgba)
+		return builtin.Component { meta = { styleSheet = K.style { size = { math.max(1, math.floor(w)), math.max(1, math.floor(h)) }, background = rgba } } }
+	end
+	-- (0.6, the Hub) a button of a fixed width (the Hub's side menu)
+	function K.wbtn(label, tip, fn, primary, width)
+		return builtin.Button { meta = { class = primary and "primary" or "secondary", tooltip = tip, styleSheet = width and K.style { size = { width, -1 } } or nil },
+			content = K.text(label), onClick = fn }
+	end
 	return K
 end
 
@@ -1874,7 +1891,7 @@ end
 -- Per session (ui_prefs.txt in the session folder, kept across the loads of a resynchronisation): whether the window is open,
 -- its tab, reduced to the small card, pinned. Across launches (ui_prefs.txt in the folder above, as company_color.txt): whether
 -- the window opens by itself when a game starts.
-U.PREFS_KEYS = { "open", "tab", "compact", "pinned" }
+U.PREFS_KEYS = { "open", "tab", "compact", "pinned", "hubpage", "hubsize" }
 U.loadPrefs = function()
 	if U.prefs then return U.prefs end
 	local p = {}
@@ -1888,7 +1905,7 @@ U.loadPrefs = function()
 			if k and keys[k] then p[k] = v end
 		end
 	end
-	read(C.DIR .. C.BS .. "ui_prefs.txt", { open = true, tab = true, compact = true, pinned = true })
+	read(C.DIR .. C.BS .. "ui_prefs.txt", { open = true, tab = true, compact = true, pinned = true, hubpage = true, hubsize = true })
 	read(C.DIR .. C.BS .. ".." .. C.BS .. "ui_prefs.txt", { autoopen = true, aichat = true })
 	U.prefs = p
 	U.tab = U.tab or p.tab or "session"
@@ -1940,10 +1957,17 @@ U.tabsFor = function(st)
 	for _, tb in ipairs(U.featTabs(st)) do table.insert(t, #t, tb.key) end
 	return t
 end
--- the tab to show: the one asked, when this session has it, else Session
+-- (0.6) the small window's tabs: with the Hub, a quick view of the session and the chat only (every page is in the Hub); without it
+-- (MPFEVER_HUB=0, the single-list window, a Hub that could not be installed), every tab of the session as before
+U.QUICK_TABS = { "session", "chat" }
+U.winTabs = function(st)
+	if U.HubWindow and U.hubOn() then return U.QUICK_TABS end
+	return U.tabsFor(st)
+end
+-- the tab to show: the one asked, when this session's small window has it, else Session
 U.validTab = function(tab, st)
 	tab = U.tabName(tab)
-	for _, id in ipairs(U.tabsFor(st)) do if id == tab then return tab end end
+	for _, id in ipairs(U.winTabs(st)) do if id == tab then return tab end end
 	return "session"
 end
 U.tabLabel = function(id)
@@ -1967,6 +1991,7 @@ end
 U.winChanged = function()
 	U.winVersion = (U.winVersion or 0) + 1
 	if U.winKick then pcall(U.winKick) end
+	if U.hubKick then pcall(U.hubKick) end
 end
 U.viewKey = function()
 	return tostring(U.tab) .. "|" .. tostring(U.winVersion or 0) .. "|" .. tostring(U.ecoVersion or 0) .. "|" .. tostring(U.chatUnread or 0) .. "|" .. tostring(U.tab == "ai" and U.aiJVersion or 0)
@@ -1975,7 +2000,8 @@ end
 -- the chat counts as read while the window shows its Chat tab (no notice then, see pollChat and the toast)
 U.refreshChat = function()
 	if not U.newWindow then return end
-	U.chatOpen = U.winOpen == true and not U.compact and U.validTab(U.tab, U.status) == "chat"
+	U.chatOpen = (U.winOpen == true and not U.compact and U.validTab(U.tab, U.status) == "chat")
+		or (U.hubOpen == true and U.hubValid(U.hubPage, U.status) == "chat")
 	if U.chatOpen then
 		U.chatUnread = 0
 		if U.toastShown then
@@ -2038,6 +2064,165 @@ U.toggleWindow = function()
 	if U.winOpen then U.closeWindow(true) else U.openWindow(nil) end
 end
 
+-- ---------------------------------------------------------------- the Hub (0.6)
+-- A big window (about two thirds of the screen, measured from the game's window container) with a menu on its left in three
+-- groups: the game (Session, Chat, Rules and options, Public games, Settings), my company (Company, Sharing rules, Team, Trade,
+-- Stocks) and the competition (Ranking, Market shares, Tenders, Territories, Journal, AI companies). Only the pages this session
+-- has show, by the very rules of the small window's tabs before 0.6 (U.tabsFor): the game options' pages while one of their
+-- options is on, Company and the sharing rules with one company per player only. The small window stays as a quick view (Session
+-- and Chat) with a button that opens the Hub; the bar's icon and the pause menu's cards still open the small window. The Hub
+-- cannot be resized with the mouse (the game's windows take their content's size): three sizes, chosen with its - and + buttons
+-- and kept for the session. MPFEVER_HUB=0: no Hub, the small window with every tab as before.
+U.hubOn = function() return U.newWindow ~= false and not U.hubOff end
+U.HUB_GROUPS = {
+	{ key = "game", pages = { "session", "chat", "game", "f_public", "settings" } },
+	{ key = "company", pages = { "company", "rules", "f_team", "f_trade", "f_stock" } },
+	{ key = "competition", pages = { "f_stats", "f_market", "f_tenders", "f_territory", "f_journal", "ai" } },
+}
+U.hubGroupTitle = function(key)
+	if key == "company" then return T("Mon entreprise", "My company") end
+	if key == "competition" then return T("Compétition", "Competition") end
+	return T("Partie", "Game")
+end
+-- the menu of this session: { { key, title, pages = { id... } }... }, the groups without a page left out; a page no group names
+-- (a game option of a later version) goes with the game's pages, before Settings
+U.hubMenu = function(st)
+	local tabs = U.tabsFor(st)
+	local have, placed, out = {}, {}, {}
+	for _, id in ipairs(tabs) do have[id] = true end
+	for _, g in ipairs(U.HUB_GROUPS) do
+		local pages = {}
+		for _, id in ipairs(g.pages) do if have[id] then pages[#pages + 1] = id; placed[id] = true end end
+		out[#out + 1] = { key = g.key, title = U.hubGroupTitle(g.key), pages = pages }
+	end
+	for _, id in ipairs(tabs) do
+		if not placed[id] then
+			local gp = out[1].pages
+			local at = #gp + 1
+			for i, x in ipairs(gp) do if x == "settings" then at = i end end
+			table.insert(gp, at, id)
+		end
+	end
+	local res = {}
+	for _, g in ipairs(out) do if #g.pages > 0 then res[#res + 1] = g end end
+	return res
+end
+-- the pages of the menu, in its order
+U.hubPages = function(st)
+	local out = {}
+	for _, g in ipairs(U.hubMenu(st)) do for _, id in ipairs(g.pages) do out[#out + 1] = id end end
+	return out
+end
+-- the page to show: the one asked, when this session has it, else Session
+U.hubValid = function(page, st)
+	page = U.tabName(page)
+	for _, id in ipairs(U.tabsFor(st)) do if id == page then return page end end
+	return "session"
+end
+-- a page's name in the Hub's menu (the small window's tab names, some longer here)
+U.hubLabel = function(id)
+	if id == "game" then return T("Règles et options", "Rules and options") end
+	if id == "rules" then return T("Règles de partage", "Sharing rules") end
+	if id == "ai" then return T("Entreprises IA", "AI companies") end
+	if id == "f_market" then return T("Concurrence", "Market shares") end
+	if id == "f_public" then return T("Parties publiques", "Public games") end
+	return U.tabLabel(id)
+end
+U.hubGroupOf = function(st, page)
+	for _, g in ipairs(U.hubMenu(st)) do for _, id in ipairs(g.pages) do if id == page then return g.title end end end
+	return ""
+end
+U.hubViewKey = function()
+	return tostring(U.hubPage) .. "|" .. tostring(U.winVersion or 0) .. "|" .. tostring(U.ecoVersion or 0) .. "|" .. tostring(U.chatUnread or 0)
+		.. "|" .. tostring(U.hubPage == "ai" and U.aiJVersion or 0) .. "|" .. tostring(U.hubSize or 2)
+end
+-- the screen in the interface's own units: the game's window container (the windows' room), else the 3D view in pixels, else
+-- 1920 x 1080; measured again at each opening of the Hub (the resolution may change)
+U.hubScreen = function()
+	if U.hubScreenWH then return U.hubScreenWH[1], U.hubScreenWH[2] end
+	local w, h, how = nil, nil, "default"
+	local function size(v)
+		local x, y = nil, nil
+		pcall(function() x, y = v.x, v.y end)
+		if not tonumber(x) then pcall(function() x, y = v[1], v[2] end) end
+		x, y = tonumber(x), tonumber(y)
+		if x and y and x >= 640 and y >= 400 then return x, y end
+		return nil
+	end
+	pcall(function() w, h = size(api.gui.byId.getSize("GameUiWindowContainer")) end)
+	if w then how = "window container" else
+		pcall(function() w, h = size(api.gui.camera.getSize()) end)
+		if w then how = "3D view" end
+	end
+	w, h = w or 1920, h or 1080
+	U.hubScreenWH = { w, h }
+	log("hub: screen " .. math.floor(w) .. " x " .. math.floor(h) .. " (" .. how .. ")")
+	return w, h
+end
+-- the Hub's measures from the screen and its size (1 small, 2 about two thirds of the screen, 3 large): the window, the menu, the
+-- page (its scroll area), the page's content and its texts (a card takes the content's width, its texts the text width)
+U.HUB_SCALES = { 0.55, 0.67, 0.8 }
+U.hubMeasures = function()
+	local sw, sh = U.hubScreen()
+	local f = U.HUB_SCALES[U.hubSize or 2] or 0.67
+	local W = math.floor(math.max(900, math.min(math.max(900, sw - 40), sw * f)))
+	local H = math.floor(math.max(520, math.min(math.max(520, sh - 140), sh * f)))
+	local side = W >= 1300 and 250 or 220
+	local pageW = W - side - 14
+	local inner = pageW - 22
+	return { W = W, H = H, side = side, bodyH = H - 70, pageW = pageW, inner = inner, text = inner - 24 }
+end
+
+-- the Hub, on a page (nil: the one it showed last), in the game's window container (wapi: another one, when the game's own
+-- cannot be had); brought to the front when it is open already. Whether it is open.
+U.openHub = function(page, wapi)
+	if not U.hubOn() then return false end
+	local p = U.loadPrefs()
+	if page and page ~= "" then U.hubPage = U.tabName(page) end
+	U.hubPage = U.hubPage or p.hubpage or "session"
+	U.hubSize = U.hubSize or tonumber(p.hubsize) or 2
+	p.hubpage = U.hubPage
+	U.savePrefs()
+	if U.hubOpen then
+		local w = U.hubApi or defaultWindowApi()
+		if w then pcall(function() w.moveSingletonWindowToFront(U.HubWindow) end) end
+		U.refreshChat()
+		U.winChanged()
+		return true
+	end
+	wapi = defaultWindowApi() or wapi
+	if not (wapi and U.HubWindow) then return false end
+	U.hubScreenWH = nil
+	local ok, err = pcall(function() wapi.addSingletonWindow(U.HubWindow, { onClose = function() U.closeHub() end }) end)
+	if not ok then log("hub: not opened: " .. tostring(err)) return false end
+	U.hubOpen, U.hubApi = true, wapi
+	log("hub: opened on the " .. U.hubValid(U.hubPage, U.status) .. " page")
+	U.refreshChat()
+	U.winChanged()
+	return true
+end
+U.closeHub = function()
+	local wapi = U.hubApi or defaultWindowApi()
+	if wapi and U.HubWindow then pcall(function() wapi.removeAllWindows(U.HubWindow) end) end
+	U.hubOpen = false
+	U.refreshChat()
+end
+U.setHubPage = function(page)
+	local p = U.loadPrefs()
+	U.hubPage = U.tabName(page)
+	p.hubpage = U.hubPage
+	U.savePrefs()
+	U.refreshChat()
+	U.winChanged()
+end
+U.setHubSize = function(d)
+	local p = U.loadPrefs()
+	U.hubSize = math.max(1, math.min(#U.HUB_SCALES, (U.hubSize or 2) + d))
+	p.hubsize = tostring(U.hubSize)
+	U.savePrefs()
+	U.winChanged()
+end
+
 -- The window opens by itself at the start of a session and again after each load of a resynchronisation, on the tab it showed.
 -- It stays closed when the player closed it in this session, unticked « Open MPFever when a game starts » (Settings tab), in the
 -- autotests (MPFEVER_SCENARIO or MPFEVER_SAVE set, unless MPFEVER_SHOWWIN=1) and in a dedicated server's own game. MPFEVER_SHOWWIN=1 opens it
@@ -2065,6 +2250,12 @@ U.autoOpenTick = function()
 	if U.openWindow(os.getenv("MPFEVER_SHOWTAB") or p.tab or "session") then
 		U.autoOpenDone = true
 		log("window: opened by itself on the " .. U.validTab(U.tab, U.status) .. " tab")
+		-- (0.6, screenshots) MPFEVER_SHOWHUB=<page>: the Hub opens too, on that page; so does a tab of MPFEVER_SHOWTAB that the
+		-- small window no longer has (Company, Rules, Game, Settings, a game option's)
+		local hubPage = os.getenv("MPFEVER_SHOWHUB")
+		local showTab = os.getenv("MPFEVER_SHOWTAB")
+		if (not hubPage or hubPage == "") and showTab and U.HubWindow and U.hubOn() and U.validTab(showTab, U.status) ~= U.tabName(showTab) then hubPage = showTab end
+		if hubPage and hubPage ~= "" then pcall(U.openHub, hubPage) end
 	end
 end
 
@@ -2078,25 +2269,43 @@ U.pollTabReq = function()
 	if not f then return end
 	local s = f:read("*a") or ""
 	f:close()
-	-- (a game option's tab too: "f_<id>", 0.6)
-	local tab, seq = s:match("^([%w_]+)" .. C.TAB .. "(%d+)")
+	-- (a game option's tab too: "f_<id>", 0.6; a page of the Hub: "hub:<page>", "hub:" its first page)
+	local tab, seq = s:match("^([%w_:]+)" .. C.TAB .. "(%d+)")
 	if not tab or seq == U.tabReqSeq or not U.SessionWindow then return end
+	-- (0.6) with the Hub, a tab the small window no longer has is drawn by the Hub
+	local hubPage = tab:match("^hub:(.*)$")
+	if not hubPage and U.HubWindow and U.hubOn() then
+		local quick = false
+		for _, id in ipairs(U.QUICK_TABS) do if id == U.tabName(tab) then quick = true end end
+		if not quick then hubPage = tab end
+	end
+	if hubPage then
+		if not U.HubWindow then return end
+		if U.openHub(hubPage ~= "" and hubPage or "session") then
+			U.tabReqSeq, U.tabReqTab, U.tabReqDone, U.tabReqHub = seq, tab, nil, true
+			U.winChanged()
+			log("autotest: hub shown for the " .. tab .. " page")
+		end
+		return
+	end
 	U.compact = false
 	if U.openWindow(tab) then
-		U.tabReqSeq, U.tabReqTab, U.tabReqDone = seq, tab, nil
+		U.tabReqSeq, U.tabReqTab, U.tabReqDone, U.tabReqHub = seq, tab, nil, nil
 		U.winChanged()
 		log("autotest: window shown for the " .. tab .. " tab")
 	end
 end
-U.ackTabReq = function(shown, result, nRows)
+-- (pages: the Hub's pages of this session, "a,b,c", after the rows: the window scenario then visits each of them)
+U.ackTabReq = function(shown, result, nRows, pages)
 	if not U.tabReqSeq or U.tabReqDone == U.tabReqSeq then return end
 	U.tabReqDone = U.tabReqSeq
 	local f = C.IO.open(C.DIR .. C.BS .. "ui_tab_shown.txt", "wb")
 	if f then
-		f:write(U.tabReqSeq .. C.TAB .. tostring(U.tabReqTab) .. C.TAB .. shown .. C.TAB .. tostring(result):gsub("[%c]", " ") .. C.TAB .. tostring(nRows) .. C.NL)
+		f:write(U.tabReqSeq .. C.TAB .. tostring(U.tabReqTab) .. C.TAB .. shown .. C.TAB .. tostring(result):gsub("[%c]", " ") .. C.TAB .. tostring(nRows)
+			.. (pages and (C.TAB .. pages) or "") .. C.NL)
 		f:close()
 	end
-	log("autotest: the " .. shown .. " tab drawn (" .. tostring(U.tabReqTab) .. " asked): " .. tostring(result) .. ", " .. tostring(nRows) .. " rows")
+	log("autotest: the " .. shown .. (pages and " page of the hub" or " tab") .. " drawn (" .. tostring(U.tabReqTab) .. " asked): " .. tostring(result) .. ", " .. tostring(nRows) .. " rows")
 end
 
 -- ---------------------------------------------------------------- small helpers of the tabs
@@ -2949,6 +3158,89 @@ end
 -- the host (MPFever.exe's "opt" request, as in the lobby: the host's game then puts them into the game), and the tab of a module
 -- (M.TAB, M.ui) while one of its options is on. MPFEVER_FEAT=0: nothing of it, the window of 0.5.14.
 U.featOff = os.getenv("MPFEVER_FEAT") == "0"
+-- (0.6) MPFEVER_HUB=0: no Hub, the small window with every tab and the pages drawn as before (see U.hubOn)
+U.hubOff = os.getenv("MPFEVER_HUB") == "0"
+-- (0.6, the Hub) the backgrounds of its boxes: a card, a table's head and its rows (one in two a little lighter), this player's own
+-- row, the tinted cards (a warning, an error, a success, an information), a bar's empty part, the menu
+U.HUB_TINT = {
+	card = { 1, 1, 1, 0.06 }, head = { 1, 1, 1, 0.11 }, odd = { 1, 1, 1, 0.05 }, even = { 1, 1, 1, 0.015 }, mine = { 0.25, 0.55, 0.9, 0.24 },
+	warning = { 0.6, 0.45, 0.1, 0.25 }, error = { 0.6, 0.1, 0.1, 0.35 }, success = { 0.15, 0.5, 0.2, 0.25 }, info = { 0.1, 0.3, 0.5, 0.3 },
+	track = { 1, 1, 1, 0.1 }, side = { 0, 0, 0, 0.22 },
+}
+-- a text's length in characters (UTF-8: the bytes 128-191 continue a character)
+U.featLen = function(s)
+	local n = 0
+	for _ in tostring(s or ""):gmatch("[^" .. string.char(128) .. "-" .. string.char(191) .. "]") do n = n + 1 end
+	return n
+end
+U.HUB_COLORS = { success = { 0.42, 0.82, 0.45 }, warning = { 1, 0.76, 0.25 }, error = { 1, 0.38, 0.33 }, info = { 0.45, 0.72, 1 } }
+-- a colour as a box's background { r, g, b, a }: { r, g, b[, a] } in 0..1, a class name ("success", "warning", "error", "info"),
+-- or a company's number (its colour in the companies' palette); grey otherwise
+U.hubRgba = function(c)
+	if type(c) == "number" then
+		local ok, r, g, b = pcall(function()
+			local CO = U.coLib and U.coLib()
+			local ix = U.coColors and U.coColors[c] or c
+			return CO.rgb(ix)
+		end)
+		if ok and tonumber(r) then return { r, g, b, 1 } end
+		return { 0.7, 0.7, 0.7, 1 }
+	end
+	if type(c) == "string" and U.HUB_COLORS[c] then c = U.HUB_COLORS[c] end
+	if type(c) == "table" and tonumber(c[1]) then return { c[1], c[2] or c[1], c[3] or c[1], c[4] or 1 } end
+	return { 0.7, 0.7, 0.7, 1 }
+end
+-- (0.6, the Hub) a page's rows put into cards: a title (a node marked "title": u.title, or K.section while the Hub draws a page of
+-- the small window's) starts a card holding the rows after it, up to the next title; the rows before the first title stay as they
+-- are (an introduction); a page without any title gets one card around everything. A group that holds a card already (marked
+-- "card": K.card, u.card) keeps its title as a heading without a card around it, and the gaps (marked "gap") at the end of a
+-- group go after its card (the room between two cards: none of the page's nodes is left out, the game's react made each one in
+-- its tree). w: the cards' width (the page's content). Plain list in, list out.
+U.hubCards = function(K, rows, marks, w)
+	local lead, groups, cur = {}, {}, nil
+	for _, n in ipairs(rows or {}) do
+		local m = marks[n]
+		if m == "title" then
+			cur = { title = n, items = {} }
+			groups[#groups + 1] = cur
+		elseif cur then cur.items[#cur.items + 1] = n
+		else lead[#lead + 1] = n end
+	end
+	-- (a list's last gaps, taken out of it)
+	local function tail(list)
+		local t = {}
+		while #list > 0 and marks[list[#list]] == "gap" do table.insert(t, 1, table.remove(list)) end
+		return t
+	end
+	local function box(children) return K.box(children, { size = { w, -1 }, padding = { 10, 12, 10, 12 }, background = U.HUB_TINT.card }) end
+	local function holdsCard(list) for _, n in ipairs(list) do if marks[n] == "card" then return true end end return false end
+	local out = {}
+	local function add(list) for _, n in ipairs(list) do out[#out + 1] = n end end
+	local leadTail = tail(lead)
+	if #groups == 0 then
+		if #lead > 0 and not holdsCard(lead) then out[1] = box(lead) else add(lead) end
+		add(leadTail)
+		return out
+	end
+	add(lead)
+	add(leadTail)
+	for _, g in ipairs(groups) do
+		local after = tail(g.items)
+		if #out > 0 and marks[out[#out]] ~= "gap" then out[#out + 1] = K.gap(1, 12) end
+		if holdsCard(g.items) then
+			out[#out + 1] = g.title
+			out[#out + 1] = K.gap(1, 6)
+			add(g.items)
+		else
+			local c = { g.title }
+			if #g.items > 0 then c[#c + 1] = K.gap(1, 6) end
+			for _, n in ipairs(g.items) do c[#c + 1] = n end
+			out[#out + 1] = box(c)
+		end
+		add(after)
+	end
+	return out
+end
 U.featLib = function()
 	if U.featOff then return nil end
 	local F = C.feat()
@@ -3056,7 +3348,7 @@ U.featU = function(K, st, M)
 	local F, map, mode = U.featView(st)
 	local W = K.TEXT_W
 	local rows = {}
-	local u = { W = W, mode = mode, isHost = U.isHost(st), me = st and st.me, rows = rows, T = T, Tf = C.Tf, money = money }
+	local u = { W = W, mode = mode, isHost = U.isHost(st), me = st and st.me, rows = rows, T = T, Tf = C.Tf, money = money, myCo = U.myCo }
 	u.on = function(id) return F.on(map, id) end
 	u.param = function(id, pid) return F.param(map, id, pid) end
 	-- (the lines of feat_<module>_<name>.txt, written by the module's gui with env.write; {} when there is none)
@@ -3084,19 +3376,176 @@ U.featU = function(K, st, M)
 		if not ok then log("window: event " .. name .. " not sent: " .. tostring(err)) end
 		return ok
 	end
+	-- (0.6) u.rich: the page is drawn by the Hub (U.hubDrawing, with a kit that has boxes): the titles start cards (U.hubCards),
+	-- the tables have a head and stripes, u.card, u.bar and u.stat draw boxes. Otherwise (the small window of MPFEVER_HUB=0, the
+	-- tests' kits) every helper draws what it drew before 0.6's Hub, and the new ones fall back to plain rows.
+	local rich = U.hubDrawing == true and K.box ~= nil
+	u.rich = rich
+	-- (the nodes the page's cards are made from, see U.hubCards: the Hub's own table while it draws, else this page's)
+	local marks = (rich and U.hubMarks) or {}
+	u.marks = marks
 	u.add = function(node) if node ~= nil then rows[#rows + 1] = node end return node end
-	u.title = function(t) return K.section(K.ICON_SETTINGS, tostring(t)) end
-	u.text = function(t, cls) return K.text(t, nil, cls, W) end
-	u.muted = function(t) return K.muted(t, W) end
-	u.gap = function(h) return K.gap(1, h or 8) end
+	u.title = function(t)
+		if not rich then return K.section(K.ICON_SETTINGS, tostring(t)) end
+		local n = K.text(tostring(t), "font-scale-title-4", nil, W)
+		marks[n] = "title"
+		return n
+	end
+	-- (the Hub: the texts and buttons u made, so that a row of a text and buttons gives the text only what the buttons leave)
+	-- In the Hub a text is made only where it goes (u.row, u.card, a cell of u.table, the page: U.featTabRows), at the width it
+	-- gets there: u.text and u.muted give a token (an empty table, its text in `deferred`) that u.resolve turns into the node. No
+	-- node is made and then left out (the game's react makes each node in its tree as it is asked for).
+	local made, deferred = {}, {}
+	u.resolve = function(x, w)
+		local d = x ~= nil and deferred[x] or nil
+		if not d then return x end
+		if d.kind == "muted" then return K.muted(d.t, w or W) end
+		return K.text(d.t, nil, d.cls, w or W)
+	end
+	u.text = function(t, cls)
+		if not rich then return K.text(t, nil, cls, W) end
+		local x = {}
+		deferred[x] = { kind = "text", t = t, cls = cls }
+		return x
+	end
+	u.muted = function(t)
+		if not rich then return K.muted(t, W) end
+		local x = {}
+		deferred[x] = { kind = "muted", t = t }
+		return x
+	end
+	u.gap = function(h)
+		local n = K.gap(1, h or 8)
+		if rich then marks[n] = "gap" end
+		return n
+	end
+	-- (0.6) a heading over several cards: a bigger title, and a line under it
+	u.section = function(t, sub)
+		if not rich then
+			local n = K.section(K.ICON_SETTINGS, tostring(t))
+			if sub then return K.col { n, K.muted(sub, W) } end
+			return n
+		end
+		local list = { K.text(tostring(t), "font-scale-title-3", nil, W) }
+		if sub then list[#list + 1] = K.muted(sub, W) end
+		return K.col(list)
+	end
+	-- (0.6) a card: a box with a title (nil: none) and its children, the width of the page; opts.color: a company's colour (a
+	-- number, or { r, g, b }) as a swatch before the title, opts.tint: "warning", "error", "success" or "info" for a tinted
+	-- background, opts.right: nodes after the title (buttons, opts.rightW: their width). The children take u.W (a card's room).
+	-- Without the Hub: the title (u.title) and the children one under the other, as the pages did before.
+	u.card = function(title, children, opts)
+		opts = type(opts) == "table" and opts or {}
+		local list = {}
+		if not rich then
+			if title then list[#list + 1] = u.title(title) end
+			for _, c in ipairs(children or {}) do list[#list + 1] = c end
+			return K.col(list)
+		end
+		if title or opts.right then
+			local head = {}
+			local tw = W - (tonumber(opts.rightW) or 0)
+			if opts.color ~= nil then
+				head[#head + 1] = K.box({ K.gap(1, 5), K.rect(14, 14, U.hubRgba(opts.color)) })
+				head[#head + 1] = K.gap(8, 1)
+				tw = tw - 22
+			end
+			head[#head + 1] = K.text(tostring(title or ""), "font-scale-title-4", nil, math.max(40, tw))
+			for _, n in ipairs(opts.right or {}) do head[#head + 1] = u.resolve(n) end
+			list[#list + 1] = K.row(head)
+			list[#list + 1] = K.gap(1, 6)
+		end
+		for _, c in ipairs(children or {}) do list[#list + 1] = u.resolve(c) end
+		local n = K.box(list, { size = { W + 24, -1 }, padding = { 10, 12, 10, 12 }, background = U.HUB_TINT[opts.tint or "card"] or U.HUB_TINT.card })
+		marks[n] = "card"
+		return n
+	end
+	-- (0.6) a horizontal bar: fraction (0..1) of its length filled in colour (see U.hubRgba: { r, g, b }, a class, a company's
+	-- number), label after it (nil: none); opts.lead: a text before it (opts.leadW its width, 200 by default), opts.width: the bar's
+	-- length (else what the texts leave), opts.labelW: the label's width, opts.height (14). Without the Hub: the texts only (nil
+	-- when there are none).
+	u.bar = function(fraction, colour, label, opts)
+		opts = type(opts) == "table" and opts or {}
+		if not rich then
+			local s = (opts.lead and (tostring(opts.lead) .. "   ") or "") .. (label and tostring(label) or "")
+			return s ~= "" and K.muted(s, W) or nil
+		end
+		local f = math.max(0, math.min(1, tonumber(fraction) or 0))
+		local leadW = opts.lead and (tonumber(opts.leadW) or 200) or 0
+		local labelW = label and (tonumber(opts.labelW) or math.min(260, math.floor(W * 0.3))) or 0
+		local bw = tonumber(opts.width) or (W - leadW - labelW - (opts.lead and 10 or 0) - (label and 10 or 0))
+		bw = math.max(40, math.floor(bw))
+		local h = tonumber(opts.height) or 14
+		local fill = math.floor(bw * f + 0.5)
+		local track = K.box(fill >= 1 and { K.rect(fill, h, U.hubRgba(colour)) } or {}, { size = { bw, h }, background = U.HUB_TINT.track }, K.H)
+		-- (the bar a little lower: in the middle of the texts' line)
+		local cells = {}
+		if opts.lead then cells[#cells + 1] = K.text(tostring(opts.lead), nil, opts.leadCls, leadW); cells[#cells + 1] = K.gap(10, 1) end
+		cells[#cells + 1] = K.box({ K.gap(1, 4), track })
+		if label then cells[#cells + 1] = K.gap(10, 1); cells[#cells + 1] = K.text(tostring(label), nil, opts.labelCls, labelW) end
+		return K.row(cells)
+	end
+	-- (0.6) a figure in a small box: its name above, the figure big (cls: "success", "warning"...); opts.width (180). u.stats(list
+	-- of { label, value, cls }): the boxes side by side, as many as the page's width takes. Without the Hub: "name: figure".
+	u.stat = function(label, value, cls, opts)
+		opts = type(opts) == "table" and opts or {}
+		if not rich then return K.text(tostring(label) .. T(" : ", ": ") .. tostring(value), nil, cls, W) end
+		local w = tonumber(opts.width) or 180
+		return K.box({ K.muted(tostring(label), w - 20), K.text(tostring(value), "font-scale-title-3", cls, w - 20) },
+			{ size = { w, -1 }, padding = { 6, 10, 6, 10 }, background = U.HUB_TINT[opts.tint or "card"] or U.HUB_TINT.card })
+	end
+	u.stats = function(list, width)
+		local out = {}
+		if not rich then
+			for _, s in ipairs(list or {}) do out[#out + 1] = u.stat(s[1], s[2], s[3]) end
+			return K.col(out)
+		end
+		local w = tonumber(width) or 180
+		local per = math.max(1, math.floor((W + 24 + 10) / (w + 10)))
+		local line = {}
+		for _, s in ipairs(list or {}) do
+			if #line > 0 then line[#line + 1] = K.gap(10, 1) end
+			line[#line + 1] = u.stat(s[1], s[2], s[3], { width = w })
+			if #line >= per * 2 - 1 then out[#out + 1] = K.row(line); out[#out + 1] = K.gap(1, 8); line = {} end
+		end
+		if #line > 0 then out[#out + 1] = K.row(line) end
+		return K.col(out)
+	end
+	-- (0.6) a company's colour { r, g, b } (its number in the companies' registry), nil when it is not known here
+	u.coColor = function(id)
+		id = tonumber(id)
+		if not id or not (U.coColors and U.coColors[id]) then return nil end
+		local c = U.hubRgba(id)
+		return { c[1], c[2], c[3] }
+	end
 	u.button = function(label, fn, primary, enabled, tip)
-		return K.btn(label, tip, function()
+		local n = K.btn(label, tip, function()
 			local ok, err = pcall(fn)
 			if not ok then log("window: " .. M.ID .. ": " .. tostring(err)) end
 			U.winChanged()
 		end, primary, enabled)
+		-- (its width, about: 8 pixels a character and its padding)
+		if rich then made[n] = { kind = "button", w = 34 + 8 * U.featLen(label) } end
+		return n
 	end
-	u.row = function(children) return K.row(children) end
+	-- (0.6, the Hub) a row whose texts were made at the page's width: drawn again at what its buttons leave (else they would go out
+	-- of the card)
+	u.row = function(children)
+		if not rich then return K.row(children) end
+		local texts, others = 0, 0
+		for i, c in ipairs(children or {}) do
+			if deferred[c] then texts = texts + 1
+			elseif made[c] and made[c].w then others = others + made[c].w end
+			if i > 1 then others = others + 6 end
+		end
+		local w = texts > 0 and math.max(80, math.floor((W - others) / texts)) or W
+		local out = {}
+		for i, c in ipairs(children or {}) do
+			if i > 1 and texts > 0 and others > 0 then out[#out + 1] = K.gap(6, 1) end
+			out[#out + 1] = u.resolve(c, w)
+		end
+		return K.row(out)
+	end
 	-- (0.6: a text field; what was typed stays across the window's rebuilds (its localKey, key: the module's name for it); onValue
 	-- gets the text at every key and when it is accepted)
 	u.input = function(placeholder, onValue, key, width)
@@ -3110,17 +3559,62 @@ U.featU = function(K, st, M)
 			onTyping = give, onValueChange = give,
 		}
 	end
-	-- (lines of cells, in columns: widths in pixels, else the width shared; header: the first line as titles)
-	u.table = function(lines, widths, header)
+	-- (lines of cells, in columns: widths in pixels, else the width shared; header: the first line as titles). 0.6, the Hub: a
+	-- real table, its head on a darker band, its rows striped, the columns aligned in the page's width (the widths given are
+	-- stretched or shrunk to it); a cell may be a node (a button, a bar: u.bar(f, colour, nil, { width = ... })); opts.highlight(i,
+	-- line): true for a row of this player's own (a blue band), opts.width: the table's width (u.W).
+	u.table = function(lines, widths, header, opts)
 		local out = {}
-		for i, line in ipairs(lines or {}) do
-			local cells = {}
-			local n = math.max(1, #line)
-			for j, cell in ipairs(line) do
-				local w = (widths and widths[j]) or math.floor(W / n)
-				cells[#cells + 1] = K.text(cell, (header and i == 1) and "font-scale-title-4" or nil, nil, w)
+		if not rich then
+			for i, line in ipairs(lines or {}) do
+				local cells = {}
+				local n = math.max(1, #line)
+				for j, cell in ipairs(line) do
+					local w = (widths and widths[j]) or math.floor(W / n)
+					cells[#cells + 1] = K.text(cell, (header and i == 1) and "font-scale-title-4" or nil, nil, w)
+				end
+				out[#out + 1] = K.row(cells)
 			end
-			out[#out + 1] = K.row(cells)
+			return K.col(out)
+		end
+		opts = type(opts) == "table" and opts or {}
+		local n = 0
+		for _, line in ipairs(lines or {}) do n = math.max(n, #line) end
+		n = math.max(1, n)
+		local inner = (tonumber(opts.width) or W) - 16
+		local ws, sum = {}, 0
+		for j = 1, n do
+			ws[j] = math.max(16, tonumber(widths and widths[j]) or math.floor(inner / n))
+			sum = sum + ws[j]
+		end
+		-- (the widths a page gave for the small window, stretched to the Hub's page; the last column takes what is left)
+		local k = inner / math.max(1, sum)
+		local used = 0
+		for j = 1, n do
+			ws[j] = math.max(16, math.floor(ws[j] * k))
+			if j == n then ws[j] = math.max(16, inner - used) end
+			used = used + ws[j]
+		end
+		for i, line in ipairs(lines or {}) do
+			local head = header and i == 1
+			local cells = {}
+			for j = 1, n do
+				local cell = line[j]
+				if cell == nil then cell = "" end
+				if deferred[cell] then
+					cells[#cells + 1] = u.resolve(cell, ws[j])
+				elseif type(cell) == "string" or type(cell) == "number" then
+					cells[#cells + 1] = head and K.colored(tostring(cell), K.color("NeutralLight"), ws[j]) or K.text(tostring(cell), nil, nil, ws[j])
+				else
+					cells[#cells + 1] = K.box({ cell }, { size = { ws[j], -1 } }, K.H)
+				end
+			end
+			local bg = head and U.HUB_TINT.head or ((i % 2 == (header and 0 or 1)) and U.HUB_TINT.odd or U.HUB_TINT.even)
+			if not head and type(opts.highlight) == "function" then
+				local okH, hi = pcall(opts.highlight, header and i - 1 or i, line)
+				if okH and hi then bg = U.HUB_TINT.mine end
+			end
+			out[#out + 1] = K.box(cells, { size = { inner + 16, -1 }, padding = { 4, 8, 4, 8 }, background = bg }, K.H)
 		end
 		return K.col(out)
 	end
@@ -3138,6 +3632,8 @@ U.featTabRows = function(K, st, key)
 				return { K.text(T("Cet onglet n'a pas pu être affiché (voir ui_mod.log).", "This tab could not be drawn (see ui_mod.log)."), nil, "error", W) }
 			end
 			for _, n in ipairs(type(more) == "table" and more or {}) do u.rows[#u.rows + 1] = n end
+			-- (the Hub: the texts made where they go, see u.resolve)
+			if u.rich then for i, n in ipairs(u.rows) do u.rows[i] = u.resolve(n) end end
 			return u.rows
 		end
 	end
@@ -3220,12 +3716,15 @@ U.compactContent = function(K, st)
 	mini[#mini + 1] = K.row { K.dot(syncCls), K.gap(6, 1), K.text(sync, nil, syncCls, CW - 20) }
 	mini[#mini + 1] = K.row { K.icon(K.ICON_PLAYERS, 20), K.gap(6, 1), K.text(T("Joueurs", "Players") .. "  (" .. playerCount(st) .. ")") }
 	local unread = U.chatUnread or 0
-	mini[#mini + 1] = K.row {
+	local line = {
 		K.builtin.Button { meta = { class = unread > 0 and "primary" or "secondary", tooltip = T("Discussion", "Chat") }, content = K.icon(K.ICON_CHAT, 20),
 			onClick = function() U.compact = false; U.setTab("chat") end },
 		K.gap(6, 1),
 		K.btn(T("Agrandir", "Expand"), nil, function() U.setCompact(false) end),
 	}
+	-- (0.6) the Hub, from the small card too
+	if U.HubWindow and U.hubOn() then line[#line + 1] = K.gap(6, 1); line[#line + 1] = K.btn("Hub", U.hubTip(), function() U.openHub() end) end
+	mini[#mini + 1] = K.row(line)
 	return K.builtin.Component { meta = { styleSheet = K.style { size = { 280, -1 } } }, layout = K.col(mini) }
 end
 
@@ -3233,7 +3732,7 @@ end
 U.windowContent = function(K, st, chat, ctx)
 	local builtin = K.builtin
 	if U.compact then return U.compactContent(K, st) end
-	local tabs = U.tabsFor(st)
+	local tabs = U.winTabs(st)
 	local tab = U.validTab(U.tab, st)
 	local rows, result = nil, "ok"
 	local okB, res = pcall(function()
@@ -3247,7 +3746,7 @@ U.windowContent = function(K, st, chat, ctx)
 		if U.tabFailed ~= tab .. result then U.tabFailed = tab .. result; log("window: the " .. tab .. " tab failed: " .. result) end
 		rows = { K.text(T("Cet onglet n'a pas pu être affiché (voir ui_mod.log).", "This tab could not be drawn (see ui_mod.log)."), nil, "error", K.TEXT_W) }
 	end
-	U.ackTabReq(tab, result, #rows)
+	if not U.tabReqHub then U.ackTabReq(tab, result, #rows) end
 	local body
 	if tab == "chat" then
 		-- (the same height as the other tabs: the window kept jumping in size from one tab to the other)
@@ -3260,7 +3759,111 @@ U.windowContent = function(K, st, chat, ctx)
 			verticalPolicy = builtin.type.ScrollBarPolicy.AsNeeded,
 		}
 	end
-	return builtin.Component { meta = { styleSheet = K.style { size = { K.WIN_W, -1 } } }, layout = K.col { U.tabStrip(K, tabs, tab), K.gap(1, 8), body } }
+	local top = { U.tabStrip(K, tabs, tab), K.gap(1, 8), body }
+	-- (0.6) the quick view's way to the Hub: a clear button above the tabs
+	if U.HubWindow and U.hubOn() then
+		table.insert(top, 1, K.row { K.btn(T("Ouvrir le Hub", "Open the Hub"), U.hubTip(), function() U.openHub() end, true), K.gap(10, 1),
+			K.muted(U.hubTip(), K.TEXT_W - 170) })
+		table.insert(top, 2, K.gap(1, 8))
+	end
+	return builtin.Component { meta = { styleSheet = K.style { size = { K.WIN_W, -1 } } }, layout = K.col(top) }
+end
+-- (0.6) what the Hub holds, under its button
+U.hubTip = function()
+	if U.status and U.status.mode == "separate" then
+		return T("Toutes les pages : entreprise, règles et options, classements, commerce…", "Every page: company, rules and options, rankings, trade…")
+	end
+	return T("Toutes les pages : règles et options, réglages, classements…", "Every page: rules and options, settings, rankings…")
+end
+
+-- (0.6) the Hub's page: the page's own rows (a tab of the small window's, a game option's module, the chat), drawn in the Hub's
+-- measures (the kit's widths swapped for the Hub's while it draws, see U.hubContent) and put into cards (U.hubCards)
+U.hubPageRows = function(K, st, chat, ctx, page)
+	if page == "chat" then return U.chatBody(K, st, chat, ctx) end
+	if not U.TABS[page] and page:sub(1, 2) == "f_" then return U.featTabRows(K, st, page) end
+	return U.TABS[page](K, st, ctx)
+end
+U.HUB_KIT_KEYS = { "WIN_W", "BODY_H", "INNER_W", "TEXT_W", "CARD_W", "CARD_TEXT_W", "section", "gap", "card" }
+U.hubContent = function(K, st, chat, ctx)
+	local builtin = K.builtin
+	local m = U.hubMeasures()
+	local page = U.hubValid(U.hubPage, st)
+	local menu = U.hubMenu(st)
+	-- the menu: the groups' titles and a button per page (the page shown: the primary one)
+	local side = {}
+	for gi, g in ipairs(menu) do
+		if gi > 1 then side[#side + 1] = K.gap(1, 14) end
+		side[#side + 1] = K.colored(g.title, K.color("NeutralLight"), m.side - 24, "font-scale-title-4")
+		side[#side + 1] = K.gap(1, 4)
+		for _, id in ipairs(g.pages) do
+			local target = id
+			side[#side + 1] = K.wbtn(U.hubLabel(id), nil, function() U.setHubPage(target) end, id == page, m.side - 24)
+			side[#side + 1] = K.gap(1, 3)
+		end
+	end
+	local sideBox = builtin.ScrollArea {
+		meta = { localKey = "mpfever-hub-menu", styleSheet = K.style { size = { m.side, m.bodyH } } },
+		content = K.box(side, { size = { m.side - 6, -1 }, padding = { 10, 8, 10, 8 }, background = U.HUB_TINT.side }),
+		horizontalPolicy = builtin.type.ScrollBarPolicy.AlwaysOff,
+		verticalPolicy = builtin.type.ScrollBarPolicy.AsNeeded,
+	}
+	-- the page, drawn in the Hub's measures: the kit's widths and its section, gap and card swapped while it draws (the titles,
+	-- the gaps and the cards marked for U.hubCards), the chat's lines as many as the page's height takes
+	local marks = {}
+	local saved = {}
+	for _, k in ipairs(U.HUB_KIT_KEYS) do saved[k] = K[k] end
+	local sec, gap, card = K.section, K.gap, K.card
+	K.WIN_W, K.BODY_H, K.INNER_W, K.TEXT_W, K.CARD_W, K.CARD_TEXT_W = m.pageW, m.bodyH, m.inner, m.text, m.text, m.text - 24
+	K.section = function(...) local n = sec(...); marks[n] = "title"; return n end
+	K.gap = function(...) local n = gap(...); marks[n] = "gap"; return n end
+	K.card = function(...) local n = card(...); marks[n] = "card"; return n end
+	local chatLines = U.CHAT_LINES
+	U.CHAT_LINES = math.max(chatLines or 16, math.floor((m.bodyH - 150) / 26))
+	U.hubDrawing, U.hubMarks = true, marks
+	local okB, res = pcall(U.hubPageRows, K, st, chat, ctx, page)
+	U.hubDrawing, U.hubMarks = nil, nil
+	U.CHAT_LINES = chatLines
+	for _, k in ipairs(U.HUB_KIT_KEYS) do K[k] = saved[k] end
+	local rows, result = nil, "ok"
+	if okB and type(res) == "table" then
+		rows = res
+	else
+		result = tostring(res)
+		if U.hubFailed ~= page .. result then U.hubFailed = page .. result; log("hub: the " .. page .. " page failed: " .. result) end
+		rows = { K.text(T("Cette page n'a pas pu être affichée (voir ui_mod.log).", "This page could not be drawn (see ui_mod.log)."), nil, "error", m.text) }
+	end
+	local nRows = #rows
+	if U.tabReqHub then U.ackTabReq(page, result, nRows, table.concat(U.hubPages(st), ",")) end
+	local body
+	if page == "chat" then
+		body = builtin.Component { meta = { localKey = "mpfever-hub-chat", styleSheet = K.style { size = { m.pageW, m.bodyH } } }, layout = K.col(rows) }
+	else
+		local okC, carded = pcall(U.hubCards, K, rows, marks, m.inner)
+		if okC then rows = carded else log("hub: the " .. page .. " page's cards: " .. tostring(carded)) end
+		body = builtin.ScrollArea {
+			meta = { localKey = "mpfever-hub-page-" .. page, styleSheet = K.style { size = { m.pageW, m.bodyH } } },
+			content = builtin.Component { meta = { styleSheet = K.style { size = { m.inner, -1 } } }, layout = K.col(rows) },
+			horizontalPolicy = builtin.type.ScrollBarPolicy.AlwaysOff,
+			verticalPolicy = builtin.type.ScrollBarPolicy.AsNeeded,
+		}
+	end
+	-- the head: the page's name and its group, the session's state, the size, the quick view
+	local sync, syncCls = syncLine(st)
+	local headW = m.W - 330
+	local head = K.row {
+		K.box({
+			K.text(U.hubLabel(page), "font-scale-title-2", nil, headW),
+			K.row { K.muted(U.hubGroupOf(st, page) .. "   ·   ", nil), K.dot(syncCls, 12), K.gap(6, 1), K.text(sync, nil, syncCls, math.max(80, headW - 220)) },
+		}, { size = { headW, -1 } }),
+		K.gap(12, 1),
+		K.btn("  -  ", T("Plus petit", "Smaller"), function() U.setHubSize(-1) end, false, (U.hubSize or 2) > 1),
+		K.gap(4, 1),
+		K.btn("  +  ", T("Plus grand", "Larger"), function() U.setHubSize(1) end, false, (U.hubSize or 2) < #U.HUB_SCALES),
+		K.gap(12, 1),
+		K.btn(T("Vue rapide", "Quick view"), T("La petite fenêtre : la session et la discussion", "The small window: the session and the chat"), function() U.openWindow(nil) end),
+	}
+	return builtin.Component { meta = { styleSheet = K.style { size = { m.W, -1 } } },
+		layout = K.col { head, K.gap(1, 10), K.row { sideBox, K.gap(14, 1), body } } }
 end
 
 U.installNewWindow = function(react, builtin)
@@ -3312,6 +3915,52 @@ U.installNewWindow = function(react, builtin)
 			end,
 			-- (it opens by itself: it must not take the keyboard from the game)
 			autoFocusOnBecomingVisible = false,
+			onClose = wp.onClose,
+			content = content,
+		}
+	end)
+end
+
+-- (0.6) the Hub's window: the same hooks as the small window's (its own states: what is typed in its chat and its gift's amount)
+U.installHub = function(react, builtin)
+	local K = U.kit
+	U.HubWindow = react.RegisterWrapperRecipe("MPFeverHubWindow", builtin.Window, function(wp)
+		local st = useStatus(react)
+		local chat = useChat(react)
+		local view = react.useState(U.hubViewKey())
+		react.onStepTimer(function()
+			local k = U.hubViewKey()
+			if view:old() ~= k then view:set(k) end
+		end, 0.25)
+		local ctx = {}
+		ctx.draft = react.useState("")
+		ctx.chatGen = react.useState(0)
+		ctx.amount = react.useState("")
+		ctx.giveGen = react.useState(0)
+		ctx.giveTo = react.useState(0)
+		react.onUnmount(function()
+			U.hubOpen = false
+			U.hubKick = nil
+			pcall(U.refreshChat)
+		end)
+		U.hubKick = function()
+			local k = U.hubViewKey()
+			if view:old() ~= k then view:set(k) end
+		end
+		local okC, content = pcall(U.hubContent, K, st, chat, ctx)
+		if not okC then
+			if U.hubDrawFailed ~= tostring(content) then U.hubDrawFailed = tostring(content); log("hub: not drawn: " .. tostring(content)) end
+			content = builtin.Component { meta = { styleSheet = K.style { size = { 900, -1 } } },
+				layout = K.col { K.text(T("La fenêtre n'a pas pu être affichée (voir ui_mod.log).", "The window could not be drawn (see ui_mod.log)."), nil, "error", 860) } }
+		end
+		return builtin.Window {
+			title = "MPFever Hub",
+			id = "window.mpfever.hub",
+			initialX = 0.5,
+			initialY = 0.45,
+			movable = true,
+			closable = true,
+			pinnable = false,
 			onClose = wp.onClose,
 			content = content,
 		}
@@ -3534,6 +4183,13 @@ local function installSession(react, builtin)
 	end)
 	if U.newWindow then U.installNewWindow(react, builtin) else U.SessionWindow = U.ListWindow end
 	log("session: MPFever's window " .. (U.newWindow and "with tabs" or "as a single list (MPFEVER_NEWWINDOW=0)"))
+	-- (0.6) the Hub, with the tabbed window only; MPFEVER_HUB=0: none
+	if U.newWindow and U.hubOn() then
+		local okH, errH = pcall(U.installHub, react, builtin)
+		log("session: " .. (okH and "the Hub installed (the small window is a quick view)" or ("the Hub not installed: " .. tostring(errH))))
+	else
+		log("session: no Hub" .. (U.hubOff and " (MPFEVER_HUB=0)" or ""))
+	end
 
 	-- ------------------------------------------------ the chat window and the short notice of new messages
 	-- (the chat window: the single-list window's; the tabbed window has a Chat tab instead)

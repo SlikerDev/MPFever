@@ -1196,9 +1196,32 @@ end
 -- the rows of M.view put in the tab with u.add. A "Show" button moves this window's camera itself (the window's Lua state has
 -- the camera, as its computer companies' journal), else asks the module on this game's interface half (u.request, M.request).
 -- Returns nothing: every node is added.
+-- (0.6) In the Hub (u.rich): each tender's card (its title starts it), every company's progress as a bar in its colour (this
+-- player's in green), the « Show » buttons side by side.
 function M.ui(u)
 	local rows = M.view((u.read and u.read(M.FILE)) or {}, u.T)
 	local add = u.add or function(n) return n end
+	if u.rich and u.bar and u.row then
+		local btns = nil
+		local function flush() if btns then add(u.row(btns)); btns = nil end end
+		for _, r in ipairs(rows) do
+			if r.kind ~= "button" then flush() end
+			if r.kind == "button" then
+				btns = btns or {}
+				btns[#btns + 1] = u.button(r.text, function()
+					if not (r.x and r.y and W.focus({ x = r.x, y = r.y })) and u.request then u.request(r.request, r.payload) end
+				end)
+			elseif r.kind == "title" then add(u.title(r.text))
+			elseif r.kind == "muted" then add(u.muted(r.text))
+			elseif r.kind == "progress" then
+				local colour = r.mine and "success" or ((u.coColor and u.coColor(r.co)) or r.co)
+				add(u.bar(r.value, colour, math.floor((tonumber(r.value) or 0) * 100 + 0.5) .. " %", { lead = r.text, leadW = math.floor((tonumber(u.W) or 556) * 0.4),
+					labelW = 60, leadCls = r.mine and "success" or nil }))
+			else add(u.text(r.text)) end
+		end
+		flush()
+		return
+	end
 	local lastTender = nil
 	for _, r in ipairs(rows) do
 		-- (a little space between two tenders' cards)

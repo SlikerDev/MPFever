@@ -1127,6 +1127,11 @@ function M.ui(u)
 		return ok and n or nil
 	end
 	local function add(n) if n ~= nil then nodes[#nodes + 1] = n end end
+	local latest = md.m[#md.m]
+	local function rowsOf(id)
+		for _, r in ipairs(latest and latest.rows or {}) do if r.id == id then return r end end
+		return nil
+	end
 	local function textNode(kind, text)
 		local n = nil
 		if kind == "title" then n = call("title", text)
@@ -1134,11 +1139,36 @@ function M.ui(u)
 		elseif kind == "good" then n = call("text", text, "success") end
 		return n or call("text", text)
 	end
+	-- (0.6, the Hub) the companies' figures as bars in their colours: one a company, the longest the biggest (a figure under 0: no
+	-- bar); pairs { id, value, label }
+	local function bars(list)
+		local top = 0
+		for _, x in ipairs(list) do if x[2] > top then top = x[2] end end
+		for _, x in ipairs(list) do
+			local c = md.cos[x[1]]
+			add(call("bar", top > 0 and math.max(0, x[2]) / top or 0, c and c.rgb or { 0.7, 0.7, 0.7 }, M.fmt(x[2]),
+				{ lead = x[3], leadW = math.floor(W * 0.3), labelW = 120 }))
+		end
+	end
 	local function tableNode(t)
 		local lines = { t.head }
 		for _, r in ipairs(t.rows) do lines[#lines + 1] = r end
-		local n = call("table", lines, M.widths(t.head, W), true)
-		if n then return n end
+		-- (the Hub: this player's company on a band of its own)
+		local opts = nil
+		if u.rich and t.ids then opts = { highlight = function(i) return md.me ~= 0 and t.ids[i] == md.me end } end
+		local n = call("table", lines, M.widths(t.head, W), true, opts)
+		if n then
+			-- (the Hub: the ranking's values as bars under its table)
+			if u.rich and t.ids and u.bar then
+				local list = {}
+				for _, id in ipairs(t.ids) do
+					local r = rowsOf(id)
+					if r then list[#list + 1] = { id, M.value(r), coLabel(md, id, T) } end
+				end
+				if #list > 0 then add(n); add(call("gap", 6)); bars(list); return nil end
+			end
+			return n
+		end
 		-- (no table in the window: one text a row)
 		add(textNode("muted", table.concat(t.head, "   ")))
 		for _, r in ipairs(t.rows) do add(textNode("text", table.concat(r, "   "))) end
@@ -1163,7 +1193,15 @@ function M.ui(u)
 		elseif it.kind == "chart" then
 			local n = nil
 			if #it.series > 0 then n = call("chart", it) end
-			if n then add(n) else add(tableNode(it.table)) end
+			if n then add(n)
+			elseif u.rich and u.bar and #it.series > 0 then
+				-- (the Hub: each company's last figure as a bar in its colour, then the figures over time as a table)
+				local list = {}
+				for _, s in ipairs(it.series) do list[#list + 1] = { s.id, s.y[#s.y] or 0, s.label } end
+				bars(list)
+				add(call("gap", 8))
+				add(tableNode(it.table))
+			else add(tableNode(it.table)) end
 		else
 			add(textNode(it.kind, it.text))
 		end
