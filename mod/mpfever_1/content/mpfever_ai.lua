@@ -1330,7 +1330,8 @@ local function manageLines(E, co, lines, vehicles, money)
 		local used = {}
 		for _, l in ipairs(lines) do for _, g in ipairs(l.groups) do used[g] = true end end
 		for _, s in ipairs(myStops(E, co.ent)) do
-			if A.deadGroups[s.group] and not used[s.group] then
+			-- (0.6: its removal is paid too: never under the floor, see spendOk)
+			if A.deadGroups[s.group] and not used[s.group] and spendOk(E, co, 20000, "demolition of stop " .. s.station) then
 				local api = E.api
 				local sp = api.type.SimpleProposal.new()
 				local ssp = sp.streetProposal
@@ -2261,7 +2262,12 @@ local function townDropPoint(E, town, cargo)
 	if c and E.G.frames - c.at < 36000 and E.G.frames >= c.at then return c.p, c.n end
 	local pts = {}
 	pcall(function()
-		for _, b in ipairs(api.engine.system.townBuildingSystem.getTown2BuildingMap()[town] or {}) do
+		-- (the map of every town's buildings, read once a minute for all the towns and cargos)
+		local T = E.G.AIT or {}
+		if not (T.tbMap and T.tbAt and E.G.frames - T.tbAt < 3600 and E.G.frames >= T.tbAt) then
+			T.tbMap, T.tbAt = api.engine.system.townBuildingSystem.getTown2BuildingMap(), E.G.frames
+		end
+		for _, b in ipairs(T.tbMap[town] or {}) do
 			local tb = api.engine.getComponent(b, api.type.ComponentType.TOWN_BUILDING)
 			if tb and (stockTakes(E, tb.stockList, cargo) or stockTakes(E, b, cargo)) then
 				local con = api.engine.getComponent(tb.construction, api.type.ComponentType.CONSTRUCTION)
