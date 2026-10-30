@@ -48,6 +48,12 @@ function M.onAction(st, a, ok, env) end      -- optional: after every player act
 function M.onGameEvent(st, id, name, param, env, src) return changed end  -- optional: the game's own script events the
                                              -- bridge sees (id: the event's id, e.g. "apply_command"; src: its source), every
                                              -- game; return true when it changed st
+M.GAME_EVENTS = { OnCalcTicketPrice = true } -- optional: the only game events (by name) the module hears; the bridge does not
+                                             -- even read the state for the others (the game sends many: a ticket price event
+                                             -- at every vehicle's arrival, id "SimEntityAtVehicleSystem" for passengers,
+                                             -- "TransportVehicleSystem" for cargo, as the game's subsidy scripts read it)
+function M.hearsNow(st) return bool end      -- optional, once a step (the top of update): false = nothing to hear now (the
+                                             -- bridge then reads no state for the game's events until the next step)
 
 -- GUI half of the bridge, every game, about once a second (optional). st is the game script state as the GUI sees it
 -- (read only). Decisions that need one decider are taken by the host only (env.isHost) and sent as events, stamped and
@@ -75,8 +81,8 @@ Simulation half (`env` of M.event / M.tick / M.month / M.onAction / M.onGameEven
   created empty; st optional), `env.mode` ("separate" / "shared": the mode f_opts came with), `env.co` (the companies
   registry st.co in the separate mode, else nil), `env.CO` (mpfever_co.lua), `env.R` (references), `env.companies()`
   ({ id, ent, name, ai, members = { keys } } sorted by id; the co-op: one, id 1), `env.money(ent)` (a company's balance on
-  this game), `env.book(ent, amount)` (money added or taken: a journal entry OTHER; the same on every game when called from an
-  event), `env.every(steps)` (true once every that many steps, from the game time: the same step on every game),
+  this game), `env.book(ent, amount, kind)` (money added or taken: a journal entry OTHER, or SUBSIDY with kind "subsidy" as the
+  game's own subsidies book theirs; the same on every game when called from an event), `env.every(steps)` (true once every that many steps, from the game time: the same step on every game),
   `env.month()` (the game month's number), `env.date()` ({ year, month, day } of the calendar at this game time, or nil:
   decide with env.month(), the calendar follows the game's calendar speed), `env.module(id)` (another feature module loaded
   in this Lua state, e.g. `env.module("tenders").wins`; nil when it is not there).
@@ -93,6 +99,8 @@ player's language, e.g. a chat notice), `env.players()` (the names of the other 
 `env.realTime()` (os.clock, the GUI may), `env.gameTime()`, `env.date(t)` (the calendar's { year, month, day } at game time
 t, now by default; a date the simulation needs is read by the host here and sent in an event), `env.T(fr, en)` (this game's
 language), `env.module(id)`, `env.R`, `env.CO`.
+`env.realTime()` (os.clock, the GUI may), `env.gameTime()`, `env.T(fr, en)` (this game's language, the bridge's C.T), `env.R`,
+`env.CO`.
 
 UI (`u` of M.ui, made by `U.featU` in mpfever_ui.script.lua): `u.T(fr, en)`, `u.Tf(fr, en, ...)`, `u.money(n)`, `u.W` (the
 text width), `u.isHost`, `u.me`, `u.mode`, `u.on(id)`, `u.param(id, pid)` (the session's options, as MPFever.exe sends them),
@@ -182,7 +190,7 @@ A module whose allow fails lets the action through (logged).
 | bridge, `update` (top) | `SIM.featOn`, `SIM.featHears`, `SIM.featHearing` | an option on (st.optsText), a module hears game events |
 | bridge, `update` (end) | `SIM.featTick` | month and tick |
 | bridge, `handleEvent` onPreBuildProposal | `SIM.featSeq`, `SIM.featNative` | onAction of a tool's build |
-| bridge, `handleEvent` other ids | `SIM.featGameEvent` | onGameEvent |
+| bridge, `handleEvent` other ids | `SIM.featGameEvent` | onGameEvent (the state read only for a name some module on hears, `F.wantsGameEvent`, `SIM.featText`) |
 | bridge, `handleEvent` "mpfever" chain | `SIM.featEvent` | f_opts, f_act, the modules' events (`F.simEvent`) |
 | bridge, `H.session` | `G.featOpts` | the session's options |
 | bridge, `guiUpdate` (after coGui) | `G.featGui` | f_opts from the host's game, the modules' gui |
@@ -200,6 +208,7 @@ The options host (mpfever_feat.lua): `F.MODULES`, `F.loader` (tests), `F.load`, 
 `F.param`, `F.modOn`, `F.active`, `F.offered`, `F.summary`, `F.text`, `F.showValue`, `F.call` (every call protected; a failing
 hook is logged the first 5 times, then every 100th), `F.applyOpts`, `F.simEvent`, `F.simTick`, `F.simAction`,
 `F.simGameEvent`, `F.hearsGameEvents`, `F.digests`, `F.gui`, `F.request`, `F.allow`, `F.wantsAllow`, `F.tabs`, `F.simEnv`, `F.guiEnv`.
+`F.simGameEvent`, `F.hearsGameEvents`, `F.wantsGameEvent`, `F.gui`, `F.request`, `F.allow`, `F.wantsAllow`, `F.tabs`, `F.simEnv`, `F.guiEnv`.
 
 ## How to integrate a module
 

@@ -58,7 +58,8 @@ M.EVENTS = { f_tenders_new = true, f_tenders_win = true, f_tenders_expire = true
 -- the engine events the module counts with: the options host may leave the others out before it reads the state
 M.GAME_EVENTS = { OnCalcTicketPrice = true }
 M.TAB = { id = "tenders", title = { "Appels d'offres", "Tenders" } }
-M.FILE = "tenders.txt"
+-- the window's file: env.write("list") writes feat_tenders_list.txt in the session folder, u.read("list") reads it back
+M.FILE = "list"
 
 M.MAX_OPEN = 2           -- tenders open at a time (B5)
 M.KEEP_DONE = 20         -- closed tenders kept for the history (the engine walks the whole state at every state:get())
@@ -398,6 +399,14 @@ function W.focus(place)
 	return ok
 end
 
+-- (0.6) the game's own multiplier of the subsidies' money (its advanced options, as the game's subsidy scripts read it); 1 when
+-- it cannot be read or is not above 0 (the host switched the tenders on with a bonus level of its own)
+function W.rewardMultiplier()
+	local ok, v = pcall(function() return api.res.getBaseConfig().advancedOptions.subventionFinancialRewardMultiplier end)
+	if ok and type(v) == "number" and v > 0 and v <= 100 then return v end
+	return 1
+end
+
 -- ----------------------------------------------------------------------------------------------------------------- the state
 local function peek(st)
 	local f = type(st) == "table" and st.feat or nil
@@ -543,7 +552,12 @@ function M.event(st, name, param, env)
 		-- (a company gone meanwhile wins nothing: the same on every game, the registry is; the host then decides again)
 		if not c or isGone(env, c) then env.log("tenders: tender " .. id .. " refused to company " .. tostring(param.co) .. ": no such company"); return end
 		-- the bonus is created as the game's subsidies are (B1): booked to the company, taken from nobody
-		if c.ent then env.book(c.ent, t.prize, "subsidy") else env.log("tenders: company " .. co .. " has no entity here: bonus not booked") end
+		if c.ent then
+			env.book(c.ent, t.prize, "subsidy")
+			env.log("feat tenders: bonus " .. t.prize .. " of tender " .. id .. " booked to company " .. co .. " (player entity " .. tostring(c.ent) .. ") as a subsidy")
+		else
+			env.log("tenders: company " .. co .. " has no entity here: bonus not booked")
+		end
 		local k = tostring(co)
 		S.wins[k] = (S.wins[k] or 0) + 1
 		close(S, i, "won", month, co, nil)
@@ -645,8 +659,19 @@ end
 -- The engine's ticket price event (every game): one entry per passenger or unit of cargo at the end of its ride on a line.
 -- Returns true when the state changed (the options host writes it back then). The options host must never return anything
 -- for this event from the bridge's handleEvent: a table returned there changes the ticket prices.
--- id: the engine's system that sent it (the bridge's handleEvent has it; without it, each entry tells what it carries).
-function M.onGameEvent(st, src, name, param, env, id)
+-- id: the engine's system that sent it, as the game's subsidy scripts read it (handleEvent(src, id, name, param): id
+-- "SimEntityAtVehicleSystem" for passengers, "TransportVehicleSystem" for cargo); src: the event's source. The options host gives
+-- them in that order (F.simGameEvent: st, id, name, param, env, src); either one naming a system is taken, and without one each
+-- entry tells what it carries.
+-- (this Lua state's first ticket price events and first counts are logged, "feat tenders: ...", for the in-game checks)
+M._seen = { sys = {}, counted = {} }
+
+-- (the options host asks once a step: no tender open, nothing to count, the bridge reads no state for the game's events)
+function M.hearsNow(st)
+	local S = peek(st)
+	return (S and type(S.open) == "table" and S.open[1] ~= nil) and true or false
+end
+function M.onGameEvent(st, id, name, param, env, src)
 	if name ~= "OnCalcTicketPrice" or param == nil then return false end
 	local S = peek(st)
 	if not (S and type(S.open) == "table" and S.open[1]) then return false end
@@ -658,6 +683,12 @@ function M.onGameEvent(st, src, name, param, env, id)
 	if (sys == "pax" and not wantPax) or (sys == "cargo" and not wantCargo) then return false end
 	local okn, n = pcall(function() return #param end)
 	if not okn or type(n) ~= "number" or n == 0 then return false end
+	local seenKey = tostring(id) .. "/" .. tostring(src)
+	local seenN = M._seen.sys[seenKey] or 0
+	if seenN < 3 then
+		M._seen.sys[seenKey] = seenN + 1
+		env.log("feat tenders: ticket price event id " .. tostring(id) .. ", src " .. tostring(src) .. ": " .. n .. " entries, read as " .. tostring(sys or "unknown (each entry tells)"))
+	end
 	local c = stepCache(env)
 	if not c.coOf then
 		-- (the live companies by their player entity on this game: a gone company's lines count for nobody)
@@ -686,7 +717,15 @@ function M.onGameEvent(st, src, name, param, env, id)
 							t.prog = t.prog or {}
 							t.reached = t.reached or {}
 							t.prog[k] = (t.prog[k] or 0) + 1
-							if t.prog[k] >= t.goal and not t.reached[k] then t.reached[k] = env.gameTime() end
+							if t.prog[k] >= t.goal and not t.reached[k] then
+								t.reached[k] = env.gameTime()
+								env.log("feat tenders: company " .. k .. " reached the goal of tender " .. t.id .. " (" .. t.prog[k] .. ") at t=" .. tostring(t.reached[k]))
+							end
+							if not M._seen.counted[t.id .. ":" .. k] then
+								M._seen.counted[t.id .. ":" .. k] = true
+								env.log("feat tenders: tender " .. t.id .. " (" .. t.kind .. ") counts for company " .. k .. " (line " .. tostring(field(p, "lineEntity"))
+									.. ", " .. (isCargo and "cargo" or "passengers") .. "), now " .. t.prog[k] .. " / " .. t.goal)
+							end
 							changed = true
 						end
 					end
@@ -864,14 +903,19 @@ function M.propose(S, env)
 	local id = (S.seq or 0) + 1
 	local rnd = M.rng(id * 7919 + month * 31 + 17)
 	local level = paramOf(env, "prize", M.PRIZE_VALUES, M.PRIZE_DEFAULT)
+	-- (and the game's own subsidy money multiplier, as its subsidies: the host's game reads it, the bonus travels in the event)
+	local mult = W.rewardMultiplier()
 	local first = (id - 1) % #M.KIND_ORDER
 	for k = 0, #M.KIND_ORDER - 1 do
 		local kind = M.KIND_ORDER[(first + k) % #M.KIND_ORDER + 1]
 		local ok, p = pcall(M.pick[kind], S, rnd, month)
 		if ok and p then
 			p.id, p.kind = id, kind
-			p.prize = math.floor(W.inflation(p.prize * level / 100) / 10000 + 0.5) * 10000
+			p.prize = math.floor(W.inflation(p.prize * level / 100 * mult) / 10000 + 0.5) * 10000
 			p.goal = testGoal() or p.goal
+			env.log("feat tenders: the host proposes tender " .. id .. " (" .. kind .. ", " .. tostring(p.a and p.a.name) .. (p.b and (" - " .. tostring(p.b.name)) or "")
+				.. (p.cargo and (", " .. p.cargo) or "") .. "), goal " .. p.goal .. ", until month " .. p.deadline .. ", bonus " .. p.prize
+				.. " (level " .. level .. " %, game multiplier " .. mult .. ")")
 			return p
 		elseif not ok then
 			env.log("tenders: no " .. kind .. " tender: " .. tostring(p))
@@ -924,6 +968,7 @@ function M.decide(S, cos, env)
 	end
 	local function send(key, name, param)
 		g.pending[#g.pending + 1] = { key = key, name = name, param = param, id = param.id, at = now, sends = 1 }
+		env.log("feat tenders: the host sends " .. name .. " for tender " .. tostring(param.id) .. (param.co and (", company " .. tostring(param.co)) or ""))
 		env.send(name, param)
 	end
 	local month = S.month
@@ -983,7 +1028,7 @@ function M.notices(S, cos, env, T)
 	end
 end
 
--- the window's file (tenders.txt, tab-separated; written by env.write only when it changed):
+-- the window's file (env.write(M.FILE): feat_tenders_list.txt, tab-separated; written only when it changed):
 --   month <m>            me <this player's company>
 --   co <id> <name> <colour> <gone 0/1> <ai 0/1>
 --   open <id> <kind> <goal> <months left> <prize> <a> <b> <cargo label> <ax> <ay> <bx> <by>
@@ -1024,7 +1069,13 @@ function M.gui(st, env)
 	local S = peek(st)
 	if not S or type(S.open) ~= "table" or type(S.done) ~= "table" then return end
 	local cos = guiCompanies(st, env)
-	if env.write then env.write(M.FILE, M.lines(S, cos, env)) end
+	if env.write then
+		local okW = env.write(M.FILE, M.lines(S, cos, env))
+		if not M._g.wrote then
+			M._g.wrote = true
+			env.log("feat tenders: the window's file " .. M.FILE .. (okW == false and " NOT written" or " written") .. " (" .. #S.open .. " open, " .. #S.done .. " closed, last " .. tostring(S.seq) .. ")")
+		end
+	end
 	if env.chat then M.notices(S, cos, env, env.T) end
 	if env.isHost then M.decide(S, cos, env) end
 end
@@ -1114,8 +1165,8 @@ function M.view(lines, T)
 				text = M.say(T, "progress", name(p.co), p.n, t.goal) }
 		end
 		if #t.prog == 0 then rows[#rows + 1] = { kind = "muted", tender = t.id, text = M.say(T, "nobody") } end
-		rows[#rows + 1] = { kind = "button", tender = t.id, text = M.say(T, "see", t.a.name), request = "focus", payload = t.id .. ":a" }
-		if t.b then rows[#rows + 1] = { kind = "button", tender = t.id, text = M.say(T, "see", t.b.name), request = "focus", payload = t.id .. ":b" } end
+		rows[#rows + 1] = { kind = "button", tender = t.id, text = M.say(T, "see", t.a.name), request = "focus", payload = t.id .. ":a", x = t.a.x, y = t.a.y }
+		if t.b then rows[#rows + 1] = { kind = "button", tender = t.id, text = M.say(T, "see", t.b.name), request = "focus", payload = t.id .. ":b", x = t.b.x, y = t.b.y } end
 	end
 	if #D.done > 0 then
 		rows[#rows + 1] = { kind = "title", text = M.say(T, "history") }
@@ -1136,22 +1187,39 @@ function M.view(lines, T)
 	return rows
 end
 
--- the tab, with the helpers the options host gives (u.T, u.read, u.request and the window's widgets): the rows of M.view, a
--- button calls M.request on this game. Returns the rows.
+-- a progress as the window shows it: "Bob Co: 30 / 200  (15 %)"
+local function percent(r)
+	return r.text .. "  (" .. math.floor((tonumber(r.value) or 0) * 100 + 0.5) .. " %)"
+end
+
+-- The tab, with the window's helpers (U.featU: u.T, u.read, u.request, u.add and the widgets, each of which returns its node):
+-- the rows of M.view put in the tab with u.add. A "Show" button moves this window's camera itself (the window's Lua state has
+-- the camera, as its computer companies' journal), else asks the module on this game's interface half (u.request, M.request).
+-- Returns nothing: every node is added.
 function M.ui(u)
 	local rows = M.view((u.read and u.read(M.FILE)) or {}, u.T)
+	local add = u.add or function(n) return n end
+	local lastTender = nil
 	for _, r in ipairs(rows) do
+		-- (a little space between two tenders' cards)
+		if r.tender and r.tender ~= lastTender and lastTender ~= nil and u.gap and r.kind == "title" then add(u.gap(6)) end
+		lastTender = r.tender or lastTender
 		if r.kind == "button" then
-			if u.button then u.button(r.text, function() if u.request then u.request(r.request, r.payload) end end) end
+			if u.button then
+				add(u.button(r.text, function()
+					if not (r.x and r.y and W.focus({ x = r.x, y = r.y })) and u.request then u.request(r.request, r.payload) end
+				end))
+			end
 		elseif r.kind == "title" and u.title then
-			u.title(r.text)
+			add(u.title(r.text))
 		elseif r.kind == "muted" and u.muted then
-			u.muted(r.text)
+			add(u.muted(r.text))
+		elseif r.kind == "progress" and u.text then
+			add(u.text(percent(r), r.mine and "success" or nil))
 		elseif u.text then
-			u.text(r.text)
+			add(u.text(r.text))
 		end
 	end
-	return rows
 end
 
 return M

@@ -280,7 +280,8 @@ local function simEnv(M, st, B)
 		end
 		e.companies = function() return e._B.companies(e._st) end
 		e.money = function(ent) return e._B.money(ent) end
-		e.book = function(ent, amount) return e._B.book(ent, amount, M.ID) end
+		-- (kind: nil, a journal entry OTHER; "subsidy", a SUBSIDY entry as the game's own subsidies book their money)
+		e.book = function(ent, amount, kind) return e._B.book(ent, amount, M.ID, kind) end
 		-- (true once every that many steps, at the same steps on every game: from the game time, as the station fees count)
 		e.every = function(steps)
 			steps = math.max(1, math.floor(tonumber(steps) or 1))
@@ -419,6 +420,29 @@ end
 -- the modules that hear the game's own script events (onGameEvent), while their options are on
 function F.hearsGameEvents(text)
 	for _, M in ipairs(F.active(text)) do if type(M.onGameEvent) == "function" then return true end end
+-- the modules that hear the game's own script events (onGameEvent), while their options are on; with the game's state st (the
+-- bridge, once a step), a module whose M.hearsNow(st) says false does not count (nothing to hear now: the tenders while none is
+-- open), so the bridge reads no state for the game's events at all
+function F.hearsGameEvents(text, st)
+	for _, M in ipairs(F.active(text)) do
+		if type(M.onGameEvent) == "function" then
+			if st == nil or type(M.hearsNow) ~= "function" then return true end
+			local ok, r = F.call("hearsNow", M, M.hearsNow, st)
+			if not ok or r then return true end
+		end
+	end
+	return false
+end
+
+-- a module hears a game event of that name: every one, or (M.GAME_EVENTS = { name = true }) only those it lists
+local function hearsName(M, name)
+	return type(M.onGameEvent) == "function" and (type(M.GAME_EVENTS) ~= "table" or M.GAME_EVENTS[name] == true)
+end
+
+-- (0.6) some module on hears a game event of that name: the bridge reads the state for it only then (the game sends its script
+-- events many times a step, a ticket price event at every arrival of a vehicle)
+function F.wantsGameEvent(text, name)
+	for _, M in ipairs(F.active(text)) do if hearsName(M, name) then return true end end
 	return false
 end
 
@@ -427,7 +451,7 @@ end
 function F.simGameEvent(st, id, name, param, B, src)
 	local changed = false
 	for _, M in ipairs(F.active(st.optsText)) do
-		if type(M.onGameEvent) == "function" then
+		if hearsName(M, name) then
 			local ok, r = F.call("onGameEvent", M, M.onGameEvent, st, id, name, param, simEnv(M, st, B), src)
 			if ok and r then changed = true end
 		end
@@ -462,6 +486,12 @@ local function guiEnv(M, st, B)
 		-- (the calendar's { year, month, day } at a game time, now by default; nil when it cannot be read)
 		e.date = function(t) if type(e._B.date) == "function" then return e._B.date(t) end return nil end
 		e.module = function(id) return F.byId and F.byId[tostring(id)] or nil end
+		-- (a text in this game's language, as C.T: the French, the English or lang.txt's translation of the English; English
+		-- without the bridge's)
+		e.T = function(fr, en)
+			if e._B.T then return e._B.T(fr, en) end
+			return en
+		end
 		F.envs.gui[M.ID] = e
 	end
 	e._st, e._B = st, B

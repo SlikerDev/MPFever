@@ -9,6 +9,10 @@ both games, the winner and its bonus (a subsidy, once), the tie rules, a compute
 rhythm and the two tenders at most, expiry (and a host's look that came too early), a place gone (cancel), the history kept to
 20, the option switched off and on again, a savegame reload (plain data, nothing announced again), the window's file, rows
 and camera button, the chat notices in each game's language, the options' texts.
+Integrated (stage 2): the module behind the real options host (mpfever_feat.lua) and the bridge's real hooks (extracted from
+mpfever_bridge.script.lua: SIM.featBridge's SUBSIDY booking, the top of update, handleEvent's game events with M.GAME_EVENTS and
+M.hearsNow, G.featGui's f_opts, G.featChat in each language, the window's file, G.featRequest, the autotest scenario H.tenders,
+MPFEVER_FEAT=0), and the window's real U.featTabRows drawing the tab from that file.
 Needs lupa (pip install lupa). Run: python tests/test_feat_tenders.py
 """
 import os
@@ -232,7 +236,7 @@ function takeSent()
 end
 
 -- passengers at the end of their ride: { line, from town, to town, "cargo" for a cargo sim entity }
-function pax(spec, sys)
+function paxParam(spec)
   local param = {}
   for _, x in ipairs(spec) do
     SIMN = SIMN + 1
@@ -247,11 +251,12 @@ function pax(spec, sys)
     if x[4] == "cargo" then add(sim, "SC", { cargoType = 1 }) else add(sim, "SP", {}) end
     param[#param + 1] = { vehicleEntity = OFF + 6000, lineEntity = l, simEntity = sim, basePrice = 10, distance = 5000 }
   end
-  return M.onGameEvent(st, "", "OnCalcTicketPrice", param, simEnv(), sys)
+  return param
 end
+function pax(spec, sys) return M.onGameEvent(st, sys, "OnCalcTicketPrice", paxParam(spec), simEnv(), "") end
 
 -- cargo delivered: { line, cargo, stock list ("mill", "tbB"...) }
-function cargo(spec, sys)
+function cargoParam(spec)
   local param = {}
   for _, x in ipairs(spec) do
     SIMN = SIMN + 1
@@ -260,15 +265,16 @@ function cargo(spec, sys)
     param[#param + 1] = { vehicleEntity = OFF + 6000, lineEntity = LINE[x[1]], simEntity = sim, stockListEntity = STOCK[x[3]],
       basePrice = 10, distance = 5000 }
   end
-  return M.onGameEvent(st, "", "OnCalcTicketPrice", param, simEnv(), sys)
+  return param
 end
+function cargo(spec, sys) return M.onGameEvent(st, sys, "OnCalcTicketPrice", cargoParam(spec), simEnv(), "") end
 
 function balance(id) return BAL[COENT[id]] or 0 end
 function prog(id, co) for _, t in ipairs(S().open) do if t.id == id then return t.prog[tostring(co)] or 0 end end return -1 end
 function reached(id, co) for _, t in ipairs(S().open) do if t.id == id then return t.reached[tostring(co)] end end return -1 end
 function logHas(s) for _, l in ipairs(LOG) do if l:find(s, 1, true) then return true end end return false end
 function chatText() return table.concat(CHAT, "\n") end
-function fileText() return FILES["tenders.txt"] and table.concat(FILES["tenders.txt"], "\n") or "" end
+function fileText() return FILES[M.FILE] and table.concat(FILES[M.FILE], "\n") or "" end
 '''
 
 failures = []
@@ -305,6 +311,301 @@ def lua_list(rows):
             return '"' + x + '"'
         return str(x)
     return item(rows)
+
+
+# ------------------------------------------------------------------------------------------------ integrated (the real hooks)
+# The module behind the real options host (mpfever_feat.lua: its loader, env, dispatch) and the bridge's real hooks, extracted
+# from mpfever_bridge.script.lua: SIM.featBridge (its book: a SUBSIDY entry), SIM.featTick / featEvent / featHearing /
+# featGameEvent, the top of update (SIM.featOn, featHears, featText), handleEvent's branch of the game's own events, G.featBridge
+# (its T, its files), G.featChat, G.featGui (f_opts from the host's game), G.featRequest and the autotest scenario H.tenders. The
+# window's tab is drawn by the real U.featTabRows of mpfever_ui.script.lua.
+CONTENT = os.path.join(HERE, "..", "mod", "mpfever_1", "content")
+
+
+def read_content(name):
+    with open(os.path.join(CONTENT, name), encoding="utf-8") as f:
+        return f.read()
+
+
+def extract(src, pattern, what):
+    m = re.search(pattern, src, re.S | re.M)
+    if not m:
+        raise SystemExit(f"FAIL: {what} not found")
+    return m.group(0)
+
+
+BRIDGE = read_content("mpfever_bridge.script.lua")
+BRIDGE_PARTS = [
+    extract(BRIDGE, r"^SIM\.featBridge = function\(\)\n.*?^end\n", "SIM.featBridge"),
+    extract(BRIDGE, r"^SIM\.featTick = function\(state\)\n.*?^end\n", "SIM.featTick"),
+    extract(BRIDGE, r"^SIM\.featEvent = function\(st, name, param\)\n.*?^end\n", "SIM.featEvent"),
+    extract(BRIDGE, r"^SIM\.featHearing = function\(text, st\)\n.*?^end\n", "SIM.featHearing"),
+    extract(BRIDGE, r"^SIM\.featGameEvent = function\(state, src, id, name, param\)\n.*?^end\n", "SIM.featGameEvent"),
+    extract(BRIDGE, r"^G\.featBridge = function\(\)\n.*?^end\n", "G.featBridge"),
+    extract(BRIDGE, r"^G\.featChat = function\(text\)\n.*?^end\n", "G.featChat"),
+    extract(BRIDGE, r"^G\.featGui = function\(st\)\n.*?^end\n", "G.featGui"),
+    extract(BRIDGE, r"^G\.featRequest = function\(p\)\n.*?^end\n", "G.featRequest"),
+    extract(BRIDGE, r"^H\.tenders = function\(from, p\)\n.*?^end\n", "H.tenders"),
+    # (the top of update: whether an option is on, a module hears the game's events, and the options' text)
+    "function updateTop()\n  local st0 = state:get()\n"
+    + extract(BRIDGE, r"^\t\tSIM\.featOn = K\.FEAT .*?\n\t\tSIM\.featText = [^\n]*\n", "update: SIM.featOn ... SIM.featText")
+    + "  if SIM.featOn then pcall(SIM.featTick, state) end\nend\n",
+    # (handleEvent: the game's own events, every id but MPFever's)
+    "function engineEvent(src, id, name, param)\n"
+    + extract(BRIDGE, r"^\tif id ~= \"mpfever\" then\n.*?^\tend\n", "handleEvent: the game's own events")
+    + "end\n",
+]
+FEAT_SRC = read_content("mpfever_feat.lua")
+
+INTEG = r'''
+K = { FEAT = true }
+STEP, R, BS, NL, TAB = 200, {}, "/", "\n", "\t"
+CO = { members = function(c) return {} end }
+MONTHD = 5000
+TIME = 23400 * MONTHD
+api.util = { getDefaultMonthDuration = function() return MONTHD end }
+api.engine.util.finance = { getPlayersBalance = function(e) return BAL[e] or 0 end }
+api.engine.util.getCalendarDate = function(t) return { year = 1900, month = 1, day = 1 } end
+api.type.JournalEntry = { new = function() return { category = {} } end, Type = { OTHER = 9, SUBSIDY = 7 } }
+JOURNAL, DISK, OUT = {}, {}, {}
+GETS, SETS = 0, 0
+function coBook(ent, e) JOURNAL[#JOURNAL + 1] = { ent = ent, amount = e.amount, type = e.category.type, time = e.time }; BAL[ent] = (BAL[ent] or 0) + e.amount end
+function log(s) LOG[#LOG + 1] = tostring(s) end
+function gameTime() return TIME end
+os.clock = function() return REAL end
+C = { ROLE = HOST and "host" or "client", T = function(fr, en) if FR then return fr end return en end, DIR = "D",
+  appendFile = function(path, text) DISK[path] = (DISK[path] or "") .. text return true end,
+  IO = { open = function(path, mode)
+    if mode == "wb" then
+      local buf = {}
+      return { write = function(self, s) buf[#buf + 1] = s end, close = function() DISK[path] = table.concat(buf) end }
+    end
+    if DISK[path] == nil then return nil end
+    return { read = function() return DISK[path] end, close = function() end }
+  end } }
+C.feat = function() return F end
+G = { frames = 1000, session = { started = true, resync = false }, connected = true, cmode = "separate", me = ME, myCo = MYCO, waits = {}, featOpts = "" }
+G.coEvent = function(name, param) if G.session.resync then return false end OUT[#OUT + 1] = { name = name, param = ser(param) } end
+SIM, H = {}, {}
+AUTO = { running = false, results = {}, points = {} }
+DONE = nil
+function autoFinish() AUTO.running = false; DONE = table.concat(AUTO.results, "\n") end
+state = { get = function() GETS = GETS + 1 return st end, set = function(self, t) SETS = SETS + 1; st = t end }
+function gui(dt) REAL = REAL + (dt or 2); G.frames = G.frames + 120; G.featGui(st) end
+function takeOut() local out = {} for i, x in ipairs(OUT) do out[i] = x.name .. "\t" .. x.param end OUT = {} return table.concat(out, "\n") end
+-- an event every game applies (the bridge's executeActionOnce adds its sender; handleEvent saves the state after it)
+function applyF(name, s, from, co) local p = deser(s); p.mpfFrom = from; p.mpfCo = co; SIM.featEvent(st, name, p); state:set(st) end
+function runWaits()
+  for _ = 1, 400 do
+    G.frames = G.frames + 60
+    local due = nil
+    for i, w in ipairs(G.waits) do if w.at <= G.frames then due = i break end end
+    if due then local w = table.remove(G.waits, due); w.fn() end
+    if DONE then return end
+  end
+end
+function chatText() return DISK["D/chat.txt"] or "" end
+function tenders() return st.feat and st.feat.tenders end
+'''
+
+
+class IGame:
+    def __init__(self, off, host, me, myco, fr):
+        self.L = lua52.LuaRuntime(unpack_returned_tuples=True)
+        self.L.execute(HARNESS)
+        g = self.g = self.L.globals()
+        g.setup(off, host, me, myco, fr)
+        g.REAL = 0
+        self.L.execute(INTEG)
+        g.F = self.L.execute(FEAT_SRC)
+        g.TSRC = SRC
+        self.L.execute('F.loader = function(id) if id == "tenders" then return load(TSRC, "=tenders")() end return nil end; F.load(log); M = F.byId.tenders')
+        for part in BRIDGE_PARTS:
+            self.L.execute(part)
+
+    def run(self, code):
+        return self.L.execute(code)
+
+
+def integrated():
+    print("integrated: the options host, the bridge's hooks, the scenario and the window")
+    h = IGame(0, True, "Host", 1, True)      # the host's game, in French
+    c = IGame(1, False, "Bob", 2, False)     # Bob's game (company 2), in English, other entity ids
+    games = [h, c]
+
+    def deliver(sender=h, frm="Host", co=1):
+        out = sender.g.takeOut()
+        sent = [l.split("\t", 1) for l in out.split("\n") if l]
+        for name, s in sent:
+            for g in games:
+                g.g.applyF(name, s, frm, co)
+        return [n for n, _ in sent]
+
+    def pax(g, rows, sys=SYS_PAX, name="OnCalcTicketPrice"):
+        g.run(f'engineEvent("", "{sys}", "{name}", paxParam({lua_list(rows)}))')
+
+    # every option off: nothing at all
+    for g in games:
+        g.run('updateTop()')
+        gets = g.run('return GETS')
+        pax(g, [["L1", "A", "B"]])
+        g.run('gui(); gui()')
+        check(g.run('return SIM.featOn') is False and g.run('return GETS') == gets and g.run('return st.feat == nil and #OUT == 0 and #JOURNAL == 0 and next(DISK) == nil'),
+              "all off: no game event read, no state, no event, no money, no file")
+    check(h.run('return F.wantsGameEvent("", "OnCalcTicketPrice")') is False, "all off: no module wants a game event")
+
+    # the scenario switches the option on, as the host's lobby would
+    h.run('ENVV.MPFEVER_TDGOAL = "2"; ENVV.MPFEVER_TDWAIT = "5"; H.tenders("Host", { role = "host" })')
+    check(h.run('return AUTO.running and G.featOpts == "tenders=1;tenders.freq=3"'), "scenario (host): the session's options ask for the tenders")
+    h.run('gui()')
+    sent = deliver()
+    check(sent == ["f_opts"], f"the host's game sends f_opts: {sent}")
+    check(all(g.run('return st.optsText == "tenders=1;tenders.freq=3" and st.optsMode == "separate"') for g in games), "both games apply the options")
+    for g in games:
+        g.run('updateTop()')
+    check(all(g.run('return SIM.featOn == true and SIM.featHears == false and SIM.featText == st.optsText') for g in games),
+          "update: the option on, but no tender open: the game's events not heard (M.hearsNow)")
+    for g in games:
+        gets = g.run('return GETS')
+        pax(g, [["L1", "A", "B"]])
+        check(g.run('return GETS') == gets, "no tender open: a ticket price event does not even read the state")
+    check(all(g.run('return tenders() ~= nil and tenders().month == 23400 and #tenders().open == 0') for g in games), "the simulation's tick keeps the month (env.every, env.month of the bridge)")
+
+    # the host publishes tender 1
+    c.run('gui()')
+    check(c.run('return #OUT') == 0, "the client's game decides nothing")
+    h.run('gui()')
+    sent = deliver()
+    check(sent == ["f_tenders_new"], f"the host's game publishes: {sent}")
+    check(all(g.run('local t = tenders().open[1]; return tenders().seq == 1 and t.kind == "pax" and t.goal == 2 and t.a.name == "Aville" and t.b.name == "Bville"') for g in games),
+          "tender 1 open on both games: passengers Aville - Bville, goal 2 (MPFEVER_TDGOAL)")
+    check(h.g.logHas("feat tenders: the host proposes tender 1"), "logged: the host's proposal")
+    for g in games:
+        g.run('updateTop()')
+    check(all(g.run('return SIM.featHears == true') for g in games), "a tender open: the next step's update hears the game's events")
+    for g in games:
+        g.run('gui()')
+    check("Nouvel appel d'offres n°1" in h.g.chatText() and "New tender #1: Carry 2 passengers between Aville and Bville" in c.g.chatText(),
+          "the chat notice through G.featChat, in each game's language (env.T = the bridge's C.T)")
+    check(all(g.run('return DISK["D/feat_tenders_list.txt"] ~= nil') for g in games) and "open\t1\tpax\t2\t" in c.run('return DISK["D/feat_tenders_list.txt"]'),
+          "the window's file feat_tenders_list.txt (env.write(\"list\")) on both games")
+
+    # counting through the bridge's handleEvent branch
+    for g in games:
+        gets = g.run('return GETS')
+        pax(g, [["L1", "A", "B"]], SYS_PAX, "OnStartedLineUsage")
+        check(g.run('return GETS') == gets, "another game event (not in M.GAME_EVENTS): the state is not even read")
+        pax(g, [["L1", "A", "B"], ["L2", "A", "C"]])
+        check(g.run('return GETS') == gets + 1, "the ticket price event: the state read once")
+        pax(g, [["L1", "B", "A"], ["L4", "A", "B"]])
+    check(all(g.run('local t = tenders().open[1]; return t.prog["2"] == 2 and t.prog["3"] == nil and t.prog["4"] == nil and t.reached["2"] == TIME') for g in games),
+          "counted on both games: Bob's company 2 (both ways), not A-C, not the bankrupt company")
+    check(c.g.logHas("feat tenders: ticket price event id SimEntityAtVehicleSystem") and c.g.logHas("feat tenders: tender 1 (pax) counts for company 2")
+          and c.g.logHas("feat tenders: company 2 reached the goal of tender 1"), "logged: the engine's event, the first count, the goal reached")
+    check(all(g.run('local n = 0 for _ in pairs(SIM.featB) do n = n + 1 end return n > 0') for g in games), "the env made of SIM.featBridge")
+
+    # the winner and the bonus, a subsidy
+    h.run('gui()')
+    sent = deliver()
+    check(sent == ["f_tenders_win"], f"the host names the winner: {sent}")
+    prize = h.run('return tenders().done[1].prize')
+    for g, name in ((h, "host"), (c, "client")):
+        got = g.run('local j = JOURNAL[1]; return #JOURNAL, j and j.ent == COENT[2], j and j.amount, j and j.type, j and j.time')
+        check(tuple(got) == (1, True, prize, 7, -1), f"{name}: one journal entry to Bob's company, the bonus, type SUBSIDY, time -1: {got}")
+    check(h.g.logHas("booked to player entity 902 (subsidy)") and h.g.logHas("feat tenders: bonus " + str(prize)), "logged: the bonus booked as a subsidy")
+    for g in games:
+        g.run('gui()')
+    check("Bob Co wins tender #1" in c.g.chatText() and "Bob Co remporte l'appel d'offres n°1" in h.g.chatText(), "the win told on both games")
+    check(h.run('return F.byId.tenders.signature(st)') == c.run('return F.byId.tenders.signature(st)') == "1,1:won:2", "the same signature on both games")
+
+    # the scenario's results
+    h.run('runWaits()')
+    res = h.run('return DONE') or ""
+    check("tender 1 published after" in res and "signature 1,1:won:2" in res and "window file feat_tenders_list.txt:" in res
+          and "MISSING" not in res and "chat notice of a tender: yes" in res, "scenario (host): its results\n      " + res.replace("\n", "\n      "))
+    c.run('H.tenders("Host", { role = "client" })')
+    res = c.run('return DONE') or ""
+    check("signature 1,1:won:2" in res and "chat notice of a tender: yes" in res and "options 'tenders=1;tenders.freq=3' (separate)" in res,
+          "scenario (client): what its game holds\n      " + res.replace("\n", "\n      "))
+    co = IGame(2, True, "Host", 1, False)
+    co.run('G.cmode = "shared"; H.tenders("Host", { role = "host" })')
+    check("one company per player" in (co.run('return DONE') or ""), "scenario: the co-op says it needs one company per player")
+
+    # the window's request through the bridge
+    c.run('FOCUS = nil; G.featRequest({ m = "tenders", kind = "focus", payload = "1:b" })')
+    check(c.run('return FOCUS and FOCUS.x == 6000 and FOCUS.y == 0'), "a request of the window (feat_req) moves the camera to Bville")
+
+    # MPFEVER_FEAT=0: nothing, even with the options in the state
+    for g in games:
+        g.run('K.FEAT = false; updateTop()')
+        gets = g.run('return GETS')
+        pax(g, [["L1", "A", "B"]])
+        check(g.run('return SIM.featOn == false and GETS') == gets, "MPFEVER_FEAT=0: the game's events never reach the modules")
+
+    # the window: the real U.featTabRows over the client's file
+    ui = read_content("mpfever_ui.script.lua")
+    win_src = extract(ui, r"^U\.featOff = .*?^U\.featTabRows = function\(K, st, key\)\n.*?^end\n", "the window's game options")
+    W = lua52.LuaRuntime(unpack_returned_tuples=True)
+    W.globals().FILEDATA = W.table_from({"D/feat_tenders_list.txt": c.run('return DISK["D/feat_tenders_list.txt"]')})
+    W.globals().TSRC = SRC
+    W.execute(r'''
+LOGS = {}
+function log(s) LOGS[#LOGS + 1] = tostring(s) end
+function T(fr, en) return en end
+U = { isHost = function(st) return st and st.host == true end, winChanged = function() end }
+LINES = {}
+function sendLine(kind, p) LINES[#LINES + 1] = kind .. " " .. tostring(p.m) .. " " .. tostring(p.kind) .. " " .. tostring(p.payload) end
+function money(n) return tostring(n) end
+C = { DIR = "D", BS = "/", NL = "\n", CR = "\r", Tf = function(fr, en) return en end,
+  IO = { open = function(path) local s = FILEDATA[path] if not s then return nil end
+    return { read = function() return s end, close = function() end } end } }
+os.getenv = function() return nil end
+FOCUS = nil
+api = { cmd = { sendCommand = function() end, makeScriptingSendEventCmd = function() return {} end },
+  type = { Vec3f = { new = function(x, y, z) return { x = x, y = y, z = z } end } },
+  gui = { camera = { focusPosition = function(p, d) FOCUS = { x = p.x, y = p.y, d = d } end } } }
+K = { TEXT_W = 556, ICON_SETTINGS = "i" }
+function K.text(t, class, cls, w) return { kind = "text", t = tostring(t), cls = cls } end
+function K.muted(t, w) return { kind = "muted", t = tostring(t) } end
+function K.section(icon, t) return { kind = "section", t = t } end
+function K.gap() return { kind = "gap" } end
+function K.row(c) return { kind = "row", c = c } end
+function K.col(c) return { kind = "col", c = c } end
+function K.btn(label, tip, fn, primary, enabled) return { kind = "btn", t = label, fn = fn } end
+''')
+    F2 = W.execute(FEAT_SRC)
+    W.globals().F = F2
+    W.execute('F.loader = function(id) if id == "tenders" then return load(TSRC, "=tenders")() end return nil end; C.feat = function() return F end')
+    W.execute(win_src)
+    shown = W.execute(r'''
+local stS = { mode = "separate", opts = "tenders=1;tenders.freq=3" }
+local tabs = U.featTabs(stS)
+local rows = U.featTabRows(K, stS, "f_tenders")
+local out = {}
+for _, r in ipairs(rows) do out[#out + 1] = r.kind .. ":" .. tostring(r.t) .. (r.cls and ("[" .. r.cls .. "]") or "") end
+SHOWN = rows
+return #tabs .. "|" .. tostring(tabs[1] and tabs[1].key) .. "\n" .. table.concat(out, "\n")
+''')
+    check(shown.startswith("1|f_tenders"), "window: the Tenders tab while the option is on")
+    check("muted:The first company to reach the goal" in shown and "section:Tender #1" not in shown, "window: the rule; tender 1 closed, no card")
+    check("section:Closed" in shown and "muted:#1, Carry 2 passengers between Aville and Bville, without a transfer: won by Bob Co (you) ($" in shown
+          and "section:Tenders won" in shown and "text:Bob Co (you): 1" in shown, "window: the history and the tenders won, drawn with u.add\n      " + shown.replace("\n", "\n      "))
+    check("window: the tab failed" not in "\n".join(W.globals().LOGS.values()), "window: the tab drew without an error")
+    # a card with a Show button (a tender open in the file)
+    W.globals().FILEDATA["D/feat_tenders_list.txt"] = "v\t1\nmonth\t23400\nme\t2\nco\t2\tBob Co\t2\t0\t0\nopen\t5\tpax\t10\t12\t300000\tAville\tBville\t\t0\t0\t6000\t0\nprog\t5\t2\t4"
+    shown = W.execute(r'''
+local rows = U.featTabRows(K, { mode = "separate", opts = "tenders=1" }, "f_tenders")
+local out, btn = {}, nil
+for _, r in ipairs(rows) do
+  out[#out + 1] = r.kind .. ":" .. tostring(r.t) .. (r.cls and ("[" .. r.cls .. "]") or "")
+  if r.kind == "btn" and r.t == "Show Bville" then btn = r end
+end
+if btn then btn.fn() end
+return table.concat(out, "\n")
+''')
+    check("section:Tender #5" in shown and "text:Bob Co (you): 4 / 10  (40 %)[success]" in shown and "btn:Show Aville" in shown,
+          "window: a card, this player's progress in green, Show buttons\n      " + shown.replace("\n", "\n      "))
+    check(W.execute('return FOCUS and FOCUS.x == 6000 and FOCUS.y == 0') and len(W.globals().LINES) == 0, "window: Show moves the window's own camera")
 
 
 def main():
@@ -540,18 +841,26 @@ def main():
     text = g2.g.fileText()
     check("open\t2\tind\t6\t" in text and "open\t3\ttown\t4\t" in text and "prog\t2\t2\t3" in text and "prog\t3\t2\t2" in text
           and "done\t1\tpax\twon\t2\t" in text and "wins\t2\t1" in text and "Iron ore" in text, "its file: the open tenders, the progress, the history, the wins")
-    rows = g2.run('local rows = M.view(FILES["tenders.txt"], function(fr, en) return en end); local out = {} for i, r in ipairs(rows) do out[i] = r.kind .. "|" .. r.text .. "|" .. tostring(r.payload) end return table.concat(out, "\\n")')
+    rows = g2.run('local rows = M.view(FILES[M.FILE], function(fr, en) return en end); local out = {} for i, r in ipairs(rows) do out[i] = r.kind .. "|" .. r.text .. "|" .. tostring(r.payload) end return table.concat(out, "\\n")')
     check("title|Tender #2|nil" in rows and "text|Deliver 6 Iron ore to Aville Steel Mill|nil" in rows, "a card per tender: its number and what to do")
     check(rows.index("progress|Bob Co (you): 3 / 6") < rows.index("progress|Host Co: 2 / 6"), "this player's company first")
     check("button|Show Bville|3:a" in rows and "muted|#1, Carry 6 passengers between Aville and Bville, without a transfer: won by Bob Co (you) (" in rows,
           "a Show button per place; the history")
     check(g2.run('return M.request("focus", "3:a", st, guiEnv())') and g2.run('return FOCUS.x == 6000 and FOCUS.y == 0'), "Show: the camera on Bville")
-    shown = g2.run('local out = {} local u = { T = function(fr, en) return en end, read = function(f) return FILES[f] end,'
+    shown = g2.run('FOCUS = nil; local out = {} local u = { T = function(fr, en) return en end, read = function(f) return FILES[f] end,'
                    ' text = function(s) out[#out + 1] = "t:" .. s end, title = function(s) out[#out + 1] = "h:" .. s end,'
                    ' muted = function(s) out[#out + 1] = "m:" .. s end, button = function(s, fn) out[#out + 1] = "b:" .. s; if s == "Show Bville" then fn() end end,'
                    ' request = function(k, p) out[#out + 1] = "r:" .. k .. ":" .. p end }'
                    ' M.ui(u) return table.concat(out, "\\n")')
-    check("h:Tender #3" in shown and "b:Show Bville" in shown and "r:focus:3:a" in shown, "the tab: titles, texts, buttons that ask this game's module")
+    check("h:Tender #3" in shown and "b:Show Bville" in shown and "r:focus" not in shown, "the tab: titles, texts, buttons")
+    check(g2.run('return FOCUS.x == 6000 and FOCUS.y == 0 and FOCUS.d == 600'), "its Show button moves the window's camera itself")
+    shown = g2.run('local cam = api.gui; api.gui = nil; local out = {} local u = { T = function(fr, en) return en end, read = function(f) return FILES[f] end,'
+                   ' text = function(s, cls) out[#out + 1] = "t:" .. s .. (cls and ("[" .. cls .. "]") or "") end, title = function(s) out[#out + 1] = "h:" .. s end,'
+                   ' muted = function(s) out[#out + 1] = "m:" .. s end, button = function(s, fn) out[#out + 1] = "b:" .. s; if s == "Show Bville" then fn() end end,'
+                   ' request = function(k, p) out[#out + 1] = "r:" .. k .. ":" .. p end }'
+                   ' M.ui(u) api.gui = cam return table.concat(out, "\\n")')
+    check("r:focus:3:a" in shown, "without a camera there: the button asks this game's module (u.request)")
+    check("t:Bob Co (you): 3 / 6  (50 %)[success]" in shown and "t:Host Co: 2 / 6  (33 %)" in shown, "the progress: this player's in green, a percentage")
 
     print("the option switched off, then on again")
     both('st.opts.tenders = false; TIME = 3100')
@@ -624,6 +933,8 @@ def main():
     check(g3.run('return #S().done == 20 and S().done[1].id == 6 and S().seq == 25'), "the last 20 closed tenders kept")
     g3.run('st.opts["tenders.freq"] = 3; apply("f_tenders_new", ser({ id = 26, kind = "town", a = { name = "Bville", x = 6000, y = 0 }, cargo = "food.lua", goal = 5, deadline = MONTH + 1, prize = 10 }), "Host")')
     check(g3.run('return S().next == MONTH + 3'), "frequent: every 3 months")
+
+    integrated()
 
     print()
     if failures:
