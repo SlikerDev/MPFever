@@ -1,7 +1,17 @@
 MPFever - Changelog
 ===================
 
-0.6.4 - the host's company ranks with its own work
+0.6.4 - computer companies build railways, the host's company ranks with its own work
+  - NEW (computer companies, experimental): railways. A producer far from the industry that takes its cargo (2.5 to 15 km,
+    beyond the trucks' reach) gets a railway once the company has the money for all of it (about 11 million for 8 km in
+    1972): a cargo station near each industry (the game's modular station, one track, 160 m, within reach of the industry),
+    the track between them, a depot behind the first station, a line and a train (the cheapest locomotive of 400 kW or more
+    that needs no catenary, the wagons that carry the most of that cargo for their price). The track goes round the towns (a
+    search over a grid of 100 m), in wide curves, at most 3 % up or down, and over every road and track in its way on a
+    bridge, as a player's track crosses a road: nothing of the others is touched. A railway whose track cannot be laid is
+    left after three tries. Each build is a build of the company, held and replayed by every game as a player's. The
+    company's trains and lines of trains are kept apart from its buses and trucks. Test: tests/test_ai_rail.py.
+    MPFEVER_AIRAIL=0: no railways, as before.
   - FIX: one company per player, the host's company (the savegame's, number 1) rose fast while the others barely moved (a
     player: the host supervisor, himself near junior). Since #63 it followed the game's own experience while that one was
     higher, and the game's own experience is the world's population: it grows with what every company carries. It now keeps

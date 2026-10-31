@@ -18473,6 +18473,71 @@
       "ko": "TransportFever3.exe 선택",
       "zh-CN": "选择 TransportFever3.exe",
       "zh-TW": "選擇 TransportFever3.exe"
+    },
+    "built a cargo station": {
+      "de": "hat einen Güterbahnhof gebaut",
+      "es": "construyó una estación de carga",
+      "it": "ha costruito una stazione merci",
+      "nl": "heeft een goederenstation gebouwd",
+      "pl": "zbudowała stację towarową",
+      "pt-BR": "construiu uma estação de carga",
+      "ru": "построила грузовую станцию",
+      "ja": "貨物駅を建設しました",
+      "ko": "화물역을 건설했습니다",
+      "zh-CN": "建造了一个货运站",
+      "zh-TW": "建造了一個貨運站"
+    },
+    "laid a railway track": {
+      "de": "hat ein Gleis verlegt",
+      "es": "tendió una vía férrea",
+      "it": "ha posato un binario",
+      "nl": "heeft een spoorlijn aangelegd",
+      "pl": "położyła tor kolejowy",
+      "pt-BR": "construiu uma via férrea",
+      "ru": "проложила железнодорожный путь",
+      "ja": "線路を敷設しました",
+      "ko": "철로를 깔았습니다",
+      "zh-CN": "铺设了一条铁路",
+      "zh-TW": "鋪設了一條鐵路"
+    },
+    "built a train depot": {
+      "de": "hat ein Zugdepot gebaut",
+      "es": "construyó un depósito de trenes",
+      "it": "ha costruito un deposito ferroviario",
+      "nl": "heeft een treindepot gebouwd",
+      "pl": "zbudowała zajezdnię kolejową",
+      "pt-BR": "construiu um depósito de trens",
+      "ru": "построила железнодорожное депо",
+      "ja": "鉄道車庫を建設しました",
+      "ko": "철도 차량기지를 건설했습니다",
+      "zh-CN": "建造了一个火车车库",
+      "zh-TW": "建造了一個火車車庫"
+    },
+    "opened the train line %s (%s)": {
+      "de": "hat die Zuglinie %s eröffnet (%s)",
+      "es": "abrió la línea de tren %s (%s)",
+      "it": "ha aperto la linea ferroviaria %s (%s)",
+      "nl": "heeft de treinlijn %s geopend (%s)",
+      "pl": "otworzyła linię kolejową %s (%s)",
+      "pt-BR": "abriu a linha de trem %s (%s)",
+      "ru": "открыла железнодорожную линию %s (%s)",
+      "ja": "列車路線 %s を開設しました（%s）",
+      "ko": "열차 노선 %s을(를) 개설했습니다 (%s)",
+      "zh-CN": "开通了火车线路 %s（%s）",
+      "zh-TW": "開通了火車路線 %s（%s）"
+    },
+    "bought a train for %s (%s)": {
+      "de": "hat einen Zug für %s gekauft (%s)",
+      "es": "compró un tren para %s (%s)",
+      "it": "ha comprato un treno per %s (%s)",
+      "nl": "heeft een trein gekocht voor %s (%s)",
+      "pl": "kupiła pociąg do przewozu: %s (%s)",
+      "pt-BR": "comprou um trem para %s (%s)",
+      "ru": "купила поезд для перевозки: %s (%s)",
+      "ja": "%s 用の列車を購入しました（%s）",
+      "ko": "%s용 열차를 구입했습니다 (%s)",
+      "zh-CN": "为%s购买了一列火车（%s）",
+      "zh-TW": "為%s購買了一列火車（%s）"
     }
   }
 }

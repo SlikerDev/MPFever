@@ -44,6 +44,11 @@ local LEVELS = {
 		freightMax = 6500, compete = true, townMin = 300, pause = 300, bootstrap = 3, settle = 240000, freeCash = 1200000, maxUnproven = 2, profitFirst = true, runMonths = 3, addMargin = 1.05, giveUp = 0.6, ramp = 300000 },
 }
 local LV = LEVELS[2]
+-- (0.6.4) the computer companies' railways, see "trains" below
+local RL = { MIN = 2500, MAX = 15000, LEN = 3, STEP = 60, GRADE = 0.03, STATION = "::/stations/rail/modular_station/modular_station.con",
+	DEPOT = "::/depots/rail/rail_depot.con", DEPOT_EXIT = { x = -12.2, y = -90 }, POWER = 400, WAGONS = 6,
+	OFFSETS = { 0, 0.12, -0.12, 0.25, -0.25, 0.4, -0.4 }, CELL = 100, CROSS = 300, ALONG = 150, LEG = 600, LEAD = 500, RADIUS = 80, TRIES = 3, SPAN = 50, CLEAR = 8, WATER = 300, WET = 400,
+	RAMP = 0.06 }
 
 local function L(E, s) E.log("AI" .. (AINUM ~= 1 and tostring(AINUM) or "") .. " " .. s) end
 
@@ -302,7 +307,8 @@ local function depotLinked(E, depot)
 	return ok and n and n > 0
 end
 
-local function myLines(E, ent)
+-- (0.6.4) without its lines of trains (all: with them): the buses and trucks' rules never see them, the railways run them (RL)
+local function myLines(E, ent, all)
 	local api, R = E.api, E.R
 	local out = {}
 	for _, l in ipairs(R.entitiesWith("LINE")) do
@@ -310,19 +316,20 @@ local function myLines(E, ent)
 			local lc = api.engine.getComponent(l, api.type.ComponentType.LINE)
 			local groups = {}
 			for k = 1, #lc.stops do groups[#groups + 1] = lc.stops[k].stationGroup end
-			out[#out + 1] = { e = l, groups = groups }
+			if all or not (groups[1] and RL.on() and RL.isRailGroup(E, groups[1])) then out[#out + 1] = { e = l, groups = groups } end
 		end
 	end
 	return out
 end
 
+-- (0.6.4) without its trains (see myLines)
 local function myVehicles(E, ent)
 	local api, R = E.api, E.R
 	local out = {}
 	for _, v in ipairs(R.entitiesWith("TRANSPORT_VEHICLE")) do
 		if ownerOf(E, v) == ent then
 			local tv = api.engine.getComponent(v, api.type.ComponentType.TRANSPORT_VEHICLE)
-			out[#out + 1] = { e = v, line = tv and tv.line or -1 }
+			if not (tv and RL.on() and RL.isTrain(E, tv)) then out[#out + 1] = { e = v, line = tv and tv.line or -1 } end
 		end
 	end
 	return out
@@ -478,6 +485,11 @@ local function build(E, coId, cmd, what, ctxBits, jr)
 	E.deferredSend(cmd, function(res, success)
 		local why = ""
 		if not success then pcall(function() why = " " .. E.C.ser(E.C.marshal(res.resultProposalData.errorState.messages)) end) end
+		-- (0.6.4: refused with no message: the whole error state, and what it collided with)
+		if not success and (why == "" or why == " {}") then
+			pcall(function() why = why .. " " .. E.C.ser(E.C.marshal(res.resultProposalData.errorState)):sub(1, 300) end)
+			pcall(function() why = why .. " collision " .. E.C.ser(E.C.marshal(res.resultProposalData.collisionInfo)):sub(1, 300) end)
+		end
 		E.log("AI" .. (num ~= 1 and tostring(num) or "") .. " " .. what .. ": " .. (success and "built" or ("refused" .. why)))
 		A.busy = nil
 		A.stopsCache = nil
@@ -2981,6 +2993,1262 @@ local function ltProject(E, co, stops, lines, vehicles, money)
 	return r
 end
 
+-- ------------------------------------------------------------------ trains (0.6.4)
+-- A producer far from the industry that takes its cargo (RL.MIN to RL.MAX, beyond the trucks' reach) gets a railway: a cargo
+-- station near each of the two industries (the modular station of the game, one track, its platforms within reach of the
+-- industry), a track between the two stations, a depot behind the first one joined to it, a line, a train (the strongest
+-- locomotive that needs no catenary and the wagons that carry the most of that cargo). As everything else here, it keeps no
+-- knowledge of its own: each look reads the company's stations, tracks, depots and lines from the world and does the next thing
+-- missing (a load or a resynchronisation in the middle leaves nothing behind). Each build is a build of the company, as a
+-- player's: held, shipped, replayed by every game. Only with plenty of money: a line costs about 4 million in 1970.
+-- MPFEVER_AIRAIL=0: no trains, as before.
+function RL.on() return os.getenv("MPFEVER_AIRAIL") ~= "0" end
+
+-- the open track of a year (simple before 1930), its style, and the station's own track module
+function RL.track(year)
+	local kind = year >= 1930 and "standard" or "simple"
+	return "::/infrastructure/track/" .. kind .. "/" .. kind .. ".street_template", "::/infrastructure/track/" .. kind .. "/" .. kind .. ".street",
+		"::/trainstation___/infrastructure/track/" .. kind .. "/" .. kind .. ".street_template"
+end
+
+-- the station's parameters as the game's own template makes them (modular_station.script's createTemplateFn: a cargo station,
+-- one track, `length` platforms of 40 m less one, its main building)
+function RL.stationParams(year, length)
+	local era = year >= 1990 and "c" or year >= 1950 and "b" or "a"
+	local _, _, module = RL.track(year)
+	local s, e = -math.floor(length / 2), math.ceil(length / 2)
+	local mods = {}
+	local k = (e - s) % 2 == 0 and 0 or 2
+	mods[3400000 + 10 * k] = { name = "::/stations/rail/modular_station/main_building_1_cargo.module", variant = 0 }
+	-- (its two side buildings from 3 platforms on, as the template's level 1 has them)
+	if length > 2 then
+		mods[3400000 + 10 * (k + 1) + 5] = { name = "::/stations/rail/modular_station/side_building_1_cargo.module", variant = 0 }
+		mods[3400000 + 10 * (k - 2) + 5] = { name = "::/stations/rail/modular_station/side_building_1_cargo.module", variant = 0 }
+	end
+	for j = s, e do
+		mods[6400000 + 10 * j] = { name = "::/stations/rail/modular_station/platform_cargo_era_" .. era .. ".module", variant = 0 }
+		mods[8402000 + 10 * j] = { name = module, variant = 0 }
+	end
+	return { length = length, seed = 0, specialization = 1, trackType = year >= 1930 and 2 or 1, catenary = 1, tracks = 1, year = year, modules = mods }
+end
+
+function RL.transf(E, x, y, z, a)
+	local V = E.api.type.Vec4f.new
+	local c, s = math.cos(a), math.sin(a)
+	return E.api.type.Mat4f.new(V(c, s, 0, 0), V(-s, c, 0, 0), V(0, 0, 1, 0), V(x, y, z, 1))
+end
+
+-- a dry run of a construction of the company at x, y turned by a: free (no error), its proposal and context, its price, why not
+function RL.dry(E, co, file, params, x, y, a)
+	local api = E.api
+	local z = E.groundZ(x, y, 0)
+	local sp = api.type.SimpleProposal.new()
+	local ce = api.type.SimpleProposal.ConstructionEntity.new()
+	ce.fileName = file
+	ce.params = params
+	ce.transf = RL.transf(E, x, y, z, a)
+	ce.playerEntity = co.ent
+	pcall(function() ce.name = "" end)
+	sp.constructionsToAdd = { ce }
+	local bits = keepBuildings() and withoutBuildings(CTX_DEPOT) or CTX_DEPOT
+	local ctx = context(E, co.ent, bits)
+	local okd, pd = pcall(function() return api.engine.util.proposal.makeProposalData(sp, ctx) end)
+	if not (okd and pd) then return false, nil, nil, nil, "dry run failed: " .. tostring(pd), bits end
+	local why, cost = "", nil
+	pcall(function() why = E.C.ser(E.C.marshal(pd.errorState.messages)) .. RL.collides(E, pd) end)
+	pcall(function() cost = tonumber(pd.costs) end)
+	local free = #pd.errorState.messages == 0 and not pd.errorState.critical
+	if free and keepBuildings() and buildingsHit(E, pd) > 0 then free, why = false, "town buildings in its way" end
+	return free, sp, ctx, cost, why, bits
+end
+
+-- what a dry run collides with, for the logs: " with <kind> <entity>" for its first colliding entity, "" when none
+function RL.collides(E, pd)
+	local api = E.api
+	local out = ""
+	pcall(function()
+		local x = pd.collisionInfo.collisionEntities[1]
+		if x then
+			local ce = x.entity
+			local kind = api.engine.getComponent(ce, api.type.ComponentType.BASE_EDGE_STREET) and "street" or api.engine.getComponent(ce, api.type.ComponentType.BASE_EDGE) and "track"
+				or api.engine.getComponent(ce, api.type.ComponentType.BASE_NODE) and "node" or api.engine.getComponent(ce, api.type.ComponentType.CONSTRUCTION) and "construction"
+				or api.engine.getComponent(ce, api.type.ComponentType.TOWN_BUILDING) and "house" or "entity"
+			out = " with " .. kind .. " " .. tostring(ce)
+		end
+	end)
+	return out
+end
+
+-- the company's constructions of a file (part of its name), with their place
+function RL.mine(E, co, part)
+	local api = E.api
+	local out = {}
+	for _, e in ipairs(E.R.entitiesWith("CONSTRUCTION")) do
+		local c = api.engine.getComponent(e, api.type.ComponentType.CONSTRUCTION)
+		if c and tostring(c.fileName):find(part, 1, true) and ownerOf(E, e) == co.ent then
+			local m = E.C.marshal(c.transf)
+			out[#out + 1] = { con = e, c = c, pos = { x = m[13], y = m[14], z = m[15] } }
+		end
+	end
+	return out
+end
+
+-- the free ends of a construction's tracks: the node, where it is, the way out (from the track into the open)
+function RL.ends(E, con)
+	local api = E.api
+	local c = api.engine.getComponent(con, api.type.ComponentType.CONSTRUCTION)
+	local segmap = api.engine.system.streetSystem.getNode2SegmentMap()
+	local out = {}
+	for k = 1, #(c and c.frozenEdges or {}) do
+		local e = c.frozenEdges[k]
+		local be = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
+		-- (a track: a segment without a street component, TF3 has no track component)
+		if be and not api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE_STREET) then
+			for i, nd in ipairs({ be.node0, be.node1 }) do
+				if #(segmap[nd] or {}) == 1 then
+					local p, q = E.nodePosition(nd), E.nodePosition(i == 1 and be.node1 or be.node0)
+					local l = p and q and math.sqrt((p.x - q.x) ^ 2 + (p.y - q.y) ^ 2) or 0
+					if l > 0 then out[#out + 1] = { node = nd, p = p, d = { x = (p.x - q.x) / l, y = (p.y - q.y) / l } } end
+				end
+			end
+		end
+	end
+	table.sort(out, function(a, b) return a.node < b.node end)
+	return out
+end
+
+-- A depot for a station's free end `back`: its exit gap m out along the station's axis and lat m to its side, the depot turned so
+-- that its exit (its own -y end, RL.DEPOT_EXIT from its origin) faces that end; a dry run of the depot together with its approach
+-- (RL.trackProposal from the station's end to 5 m short of the exit, round nothing), so that the approach is clear and not too
+-- tight too. Returns as RL.dry (the proposal of the depot alone) and the depot's origin
+function RL.dryDepot(E, co, back, gap, lat)
+	local api = E.api
+	local d = back.d
+	local X = { x = back.p.x + d.x * gap - d.y * lat, y = back.p.y + d.y * gap + d.x * lat }
+	-- (its exit faces the station's end: its own -y towards it)
+	local fx, fy = back.p.x - X.x, back.p.y - X.y
+	local fl = math.sqrt(fx * fx + fy * fy)
+	local yx, yy = -fx / fl, -fy / fl
+	local ang = math.atan2(-yx, yy)
+	local ex, ey = RL.DEPOT_EXIT.x, RL.DEPOT_EXIT.y
+	local xa, ya = { x = math.cos(ang), y = math.sin(ang) }, { x = -math.sin(ang), y = math.cos(ang) }
+	local O = { x = X.x - (xa.x * ex + ya.x * ey), y = X.y - (xa.y * ex + ya.y * ey) }
+	local params = { seed = 0, year = currentYear(E), modules = {} }
+	local free, sp, ctx, cost, why, bits = RL.dry(E, co, RL.DEPOT, params, O.x, O.y, ang)
+	if not free then return false, sp, ctx, cost, why, bits, O end
+	-- (the depot and its approach together)
+	local q = { x = X.x - yx * 5, y = X.y - yy * 5 }
+	q.z = E.groundZ(q.x, q.y, back.p.z)
+	local tsp, _, refused = RL.trackProposal(E, co, back.node, back.p, back.d, -9001, q, { x = yx, y = yy }, currentYear(E), {}, nil)
+	if not tsp then return false, sp, ctx, cost, "its approach: " .. tostring(refused), bits, O end
+	local ssp = tsp.streetProposal
+	local nodes = ssp.nodesToAdd or {}
+	local ne = api.type.NodeAndEntity.new()
+	ne.entity = -9001
+	local bn = ne.comp
+	bn.position = api.type.Vec3f.new(q.x, q.y, q.z)
+	ne.comp = bn
+	nodes[#nodes + 1] = ne
+	ssp.nodesToAdd = nodes
+	tsp.streetProposal = ssp
+	tsp.constructionsToAdd = sp.constructionsToAdd
+	local okd, pd = pcall(function() return api.engine.util.proposal.makeProposalData(tsp, ctx) end)
+	if not (okd and pd) then return false, sp, ctx, cost, "dry run with its approach failed: " .. tostring(pd), bits, O end
+	local why2 = ""
+	pcall(function() why2 = E.C.ser(E.C.marshal(pd.errorState.messages)) end)
+	if #pd.errorState.messages > 0 or pd.errorState.critical then return false, sp, ctx, cost, "its approach: " .. why2, bits, O end
+	return true, sp, ctx, cost, why, bits, O
+end
+
+-- the exit of a depot: its free track end farthest along its own -y axis (the others are its sidings, inside)
+function RL.depotExit(E, con)
+	local c = E.api.engine.getComponent(con, E.api.type.ComponentType.CONSTRUCTION)
+	local m = E.C.marshal(c.transf)
+	local best, bv
+	for _, f in ipairs(RL.ends(E, con)) do
+		local v = (f.p.x - m[13]) * m[5] + (f.p.y - m[14]) * m[6]
+		if not bv or v < bv then best, bv = f, v end
+	end
+	return best
+end
+
+-- the train terminals of a station construction, as a line's stop takes them ({ group, list = { { station, terminal, node } } })
+function RL.terminals(E, con)
+	local api = E.api
+	local c = api.engine.getComponent(con, api.type.ComponentType.CONSTRUCTION)
+	local out
+	for k = 1, #(c and c.stations or {}) do
+		local st = c.stations[k]
+		local okg, group = pcall(function() return api.engine.system.stationGroupSystem.getStationGroup(st) end)
+		local sg = okg and group and api.engine.getComponent(group, api.type.ComponentType.STATION_GROUP)
+		local sc = api.engine.getComponent(st, api.type.ComponentType.STATION)
+		if sg and sc then
+			local si
+			for i = 1, #sg.stations do if sg.stations[i] == st then si = i - 1 end end
+			for t = 1, #sc.terminals do
+				out = out or { group = group, list = {} }
+				if si and out.group == group then out.list[#out.list + 1] = { station = si, terminal = t - 1, node = sc.terminals[t].vehicleNodeId } end
+			end
+		end
+	end
+	return out
+end
+
+-- whether a station reaches an industry (its stock list is among the station's catchables)
+function RL.reaches(E, con, ind)
+	local api = E.api
+	local c = api.engine.getComponent(con, api.type.ComponentType.CONSTRUCTION)
+	local yes = false
+	for k = 1, #(c and c.stations or {}) do
+		pcall(function()
+			for _, x in ipairs(api.engine.system.catchmentAreaSystem.getStationCatchables(c.stations[k], true)) do
+				if x == ind.stockList then yes = true end
+			end
+		end)
+	end
+	return yes
+end
+
+-- a train can run from one set of nodes to the other (the engine's path finding)
+function RL.path(E, na, nb)
+	local api = E.api
+	local ok, p = pcall(function() return api.engine.util.pathfinding.findPathNodeToNode(na, nb, { api.type.enum.TransportMode.TRAIN }) end)
+	return ok and type(p) == "table" and #p > 0
+end
+
+-- the cheapest locomotive on sale strong enough that needs no catenary, and the wagon that carries the most of a cargo for its price: { loco, wagon, n,
+-- seats, price }, nil when there is none (n: wagons, as many as the station's platforms take after the locomotive)
+function RL.train(E, cargo)
+	local api = E.api
+	local year = currentYear(E)
+	local loco, wagon
+	for id, name in pairs(api.res.modelRep.getAll()) do
+		local s = tostring(name)
+		local isLoco, isWagon = s:find("vehicle/train/", 1, true), s:find("vehicle/waggon/", 1, true)
+		if isLoco or isWagon then
+			pcall(function()
+				local md = api.res.modelRep.get(id).metadata
+				local av = md.availability
+				local from, to = av and av.yearFrom or 0, av and av.yearTo or 0
+				if not (from <= year and (to == 0 or to > year)) then return end
+				local len = 10
+				pcall(function() len = md.boundingInfo.bbMax.x - md.boundingInfo.bbMin.x end)
+				local price = 0
+				pcall(function() price = tonumber(md.cost.price) or 0 end)
+				if isLoco then
+					-- (a locomotive: engines and no room for any load (its one compartment holds 0); not electric: engine type 2, or
+					-- named so. The cheapest one strong enough (RL.POWER kW), else the strongest: a Big Boy costs 18.7 million in 1972, an
+					-- Alco HH600 of 450 kW 1.1 million)
+					local power, electric, cap = 0, false, 0
+					for _, en in ipairs(md.landVehicle and md.landVehicle.engines or {}) do
+						power = power + (en.power or 0)
+						if en.type == 2 or tostring(en.type):upper():find("ELECTRIC", 1, true) then electric = true end
+					end
+					pcall(function()
+						for _, comp in ipairs(md.transportVehicle.compartments) do
+							for _, lc in ipairs(comp.loadConfigs) do cap = cap + (lc.cargoEntry.capacity or 0) end
+						end
+					end)
+					if power > 0 and not electric and cap == 0 then
+						local strong, best = power >= RL.POWER, loco and loco.power >= RL.POWER
+						if not loco or (strong and (not best or price < loco.price)) or (not strong and not best and power > loco.power) then
+							loco = { id = id, name = s, power = power, len = len, price = price }
+						end
+					end
+				else
+					local cap = 0
+					for _, comp in ipairs(md.transportVehicle.compartments) do
+						for _, lc in ipairs(comp.loadConfigs) do
+							if api.res.cargoTypeRep.hasCargoType(lc.cargoEntry.cargoTypeSet, cargo) then cap = math.max(cap, lc.cargoEntry.capacity or 0) end
+						end
+					end
+					-- (the most of it for the money: a wagon of 1971 carries 20 grain for 900 000, one of 1915 10 for 300 000)
+					local worth = cap / math.max(1, price)
+					if cap > 0 and (not wagon or worth > wagon.worth or (worth == wagon.worth and cap > wagon.cap)) then
+						wagon = { id = id, name = s, cap = cap, len = len, price = price, from = from, worth = worth }
+					end
+				end
+			end)
+		end
+	end
+	if not (loco and wagon) then return nil, year end
+	local room = (RL.LEN + 1) * 40 - 15 - loco.len
+	local n = math.max(2, math.min(RL.WAGONS, math.floor(room / math.max(6, wagon.len))))
+	return { loco = loco, wagon = wagon, n = n, seats = n * wagon.cap, price = loco.price + n * wagon.price }, year
+end
+
+-- the best railway not built yet: a producer and an industry that takes its cargo RL.MIN to RL.MAX apart, neither served by
+-- another company (PvE, as the trucks), the producer not served by this one, the most cargo times the distance
+function RL.route(E, co, lines, stations)
+	local inds = industries(E)
+	local others = servedByOthers(E, co.ent)
+	local mine = {}
+	for _, l in ipairs(lines) do for _, g in ipairs(l.groups) do mine[g] = true end end
+	local best
+	for _, a in ipairs(inds) do
+		-- (not a producer one of its train stations already serves)
+		local near = false
+		for _, s in ipairs(stations or {}) do if dist(s.pos, a.pos) < 500 then near = true end end
+		if not near and not others[a.road.group] and not mine[a.road.group] and not ((E.G.AI.railTried or {})[a.e]) then
+			for _, c in ipairs(a.outputs) do
+				local made = producedOf(E, a, c)
+				if made and made > 0 then
+					for _, b in ipairs(inds) do
+						if b.e ~= a.e and not others[b.road.group] and takes(E, b, c) then
+							local d = dist(a.pos, b.pos)
+							if d >= RL.MIN and d <= RL.MAX then
+								local score = made * d
+								if not best or score > best.score then best = { from = a, to = b, cargo = c, d = d, score = score } end
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+	return best
+end
+
+-- A station of the company near an industry, its tracks along the way to the other end of the railway (axis a): the first
+-- free place on rings around the industry, the side facing the other end first; built. True when asked for, "dear" when
+-- refused for its price, false when no place is free
+function RL.buildStation(E, co, ind, a, tag)
+	local year = currentYear(E)
+	local params = RL.stationParams(year, RL.LEN)
+	local tried, fallback = 0, nil
+	-- (beside the industry first, its tracks along the way (sides 2 and -2): then neither end faces the industry, and a depot
+	-- fits behind it; a place where no depot would fit behind (RL.depotRoom) is taken last)
+	for _, r in ipairs({ 150, 200, 260, 330 }) do
+		for _, side in ipairs({ 2, -2, 1, -1, 3, -3, 0, 4 }) do
+			local b = a + side * math.pi / 4
+			local x, y = ind.pos.x + math.cos(b) * r, ind.pos.y + math.sin(b) * r
+			tried = tried + 1
+			-- (the station's tracks run along its own y axis: turned a quarter less)
+			local free, sp, ctx, cost, why, bits = RL.dry(E, co, RL.STATION, params, x, y, a - math.pi / 2)
+			if free then
+				local place = { sp = sp, ctx = ctx, cost = cost, bits = bits, x = x, y = y, r = r }
+				if RL.depotRoom(E, co, x, y, a) then
+					fallback = place
+					goto chosen
+				end
+				fallback = fallback or place
+			elseif tried <= 3 then L(E, "train station " .. tag .. " at " .. math.floor(r) .. " m: " .. tostring(why):sub(1, 160)) end
+		end
+	end
+	::chosen::
+	if not fallback then return false end
+	if not spendOk(E, co, (fallback.cost or 600000) + 50000, "train station " .. tag) then return "dear" end
+	L(E, string.format("train station %s near industry %d: %.0f m from it, %s", tag, ind.e, fallback.r, fallback.cost and ("cost " .. math.floor(fallback.cost)) or "cost unknown"))
+	build(E, co.id, E.api.cmd.makeWorldBuildProposalCmd(fallback.sp, fallback.ctx, false, true, true), "train station " .. tag, fallback.bits, { kind = "railstation", pos = { x = fallback.x, y = fallback.y, z = 0 } })
+	return true
+end
+
+-- whether a depot would fit behind a station at x, y whose tracks run along a (its back end 80 m behind its centre): a dry run
+-- of the depot alone, 120 m out of that end, on its axis or 80 m to either side
+function RL.depotRoom(E, co, x, y, a)
+	local dx, dy = -math.cos(a), -math.sin(a)
+	local back = { p = { x = x + dx * 80, y = y + dy * 80 }, d = { x = dx, y = dy } }
+	for _, lat in ipairs({ 0, 80, -80 }) do
+		local X = { x = back.p.x + dx * 120 - dy * lat, y = back.p.y + dy * 120 + dx * lat }
+		local fx, fy = back.p.x - X.x, back.p.y - X.y
+		local fl = math.sqrt(fx * fx + fy * fy)
+		local yx, yy = -fx / fl, -fy / fl
+		local ang = math.atan2(-yx, yy)
+		local xa, ya = { x = math.cos(ang), y = math.sin(ang) }, { x = -math.sin(ang), y = math.cos(ang) }
+		local ox = X.x - (xa.x * RL.DEPOT_EXIT.x + ya.x * RL.DEPOT_EXIT.y)
+		local oy = X.y - (xa.y * RL.DEPOT_EXIT.x + ya.y * RL.DEPOT_EXIT.y)
+		if RL.dry(E, co, RL.DEPOT, { seed = 0, year = currentYear(E), modules = {} }, ox, oy, ang) then return true end
+	end
+	return false
+end
+
+-- the curve at t of a cubic Bézier B: its point and its derivative
+function RL.bez(B, t)
+	local u = 1 - t
+	return u * u * u * B[1].x + 3 * u * u * t * B[2].x + 3 * u * t * t * B[3].x + t * t * t * B[4].x,
+		u * u * u * B[1].y + 3 * u * u * t * B[2].y + 3 * u * t * t * B[3].y + t * t * t * B[4].y,
+		3 * u * u * (B[2].x - B[1].x) + 6 * u * t * (B[3].x - B[2].x) + 3 * t * t * (B[4].x - B[3].x),
+		3 * u * u * (B[2].y - B[1].y) + 6 * u * t * (B[3].y - B[2].y) + 3 * t * t * (B[4].y - B[3].y)
+end
+
+-- The curve of a track through points P (P[1] its start, P[#P] its end), leaving P[1] along d0 and reaching P[#P] along -d1
+-- (d1: the way out of the far end, towards the start): one cubic Bézier per span, each point's direction the one from its
+-- neighbour before to its neighbour after (Catmull-Rom), each span's inner points a third of its length out. t from 0 to 1 over
+-- the whole curve: { at(t) -> x, y, dx, dy (per unit of t), L (its length, about) }
+function RL.spline(P, d0, d1)
+	local n = #P - 1
+	local dirs = {}
+	for i = 1, #P do
+		local dx, dy
+		if i == 1 then dx, dy = d0.x, d0.y
+		elseif i == #P then dx, dy = -d1.x, -d1.y
+		else dx, dy = P[i + 1].x - P[i - 1].x, P[i + 1].y - P[i - 1].y end
+		local l = math.sqrt(dx * dx + dy * dy)
+		dirs[i] = l > 0 and { x = dx / l, y = dy / l } or { x = 0, y = 0 }
+	end
+	local spans, L = {}, 0
+	for i = 1, n do
+		local a, b = P[i], P[i + 1]
+		local h = math.sqrt((b.x - a.x) ^ 2 + (b.y - a.y) ^ 2) / 3
+		spans[i] = { { x = a.x, y = a.y }, { x = a.x + dirs[i].x * h, y = a.y + dirs[i].y * h }, { x = b.x - dirs[i + 1].x * h, y = b.y - dirs[i + 1].y * h }, { x = b.x, y = b.y } }
+		L = L + 3 * h
+	end
+	local S = { spans = spans, L = L }
+	function S.at(t)
+		local k = math.min(n, math.floor(t * n) + 1)
+		local x, y, dx, dy = RL.bez(spans[k], t * n - (k - 1))
+		return x, y, dx * n, dy * n
+	end
+	return S
+end
+
+-- a segment's curve (Hermite, as the engine draws it) at t: its point and its derivative
+function RL.herm(c, t)
+	local P0, P1, T0, T1 = c.position0, c.position1, c.tangent0, c.tangent1
+	local t2, t3 = t * t, t * t * t
+	local h00, h10, h01, h11 = 2 * t3 - 3 * t2 + 1, t3 - 2 * t2 + t, -2 * t3 + 3 * t2, t3 - t2
+	local d00, d10, d01, d11 = 6 * t2 - 6 * t, 3 * t2 - 4 * t + 1, -6 * t2 + 6 * t, 3 * t2 - 2 * t
+	local function f(k) return h00 * P0[k] + h10 * T0[k] + h01 * P1[k] + h11 * T1[k], d00 * P0[k] + d10 * T0[k] + d01 * P1[k] + d11 * T1[k] end
+	local x, dx = f("x")
+	local y, dy = f("y")
+	local z, dz = f("z")
+	return { x = x, y = y, z = z }, { x = dx, y = dy, z = dz }
+end
+
+-- where two pieces a-b and c-d cross: the share along each, or nil
+function RL.crossAt(a, b, c, d)
+	local rx, ry, sx, sy = b.x - a.x, b.y - a.y, d.x - c.x, d.y - c.y
+	local den = rx * sy - ry * sx
+	if math.abs(den) < 1e-9 then return nil end
+	local u = ((c.x - a.x) * sy - (c.y - a.y) * sx) / den
+	local v = ((c.x - a.x) * ry - (c.y - a.y) * rx) / den
+	if u >= 0 and u <= 1 and v >= 0 and v <= 1 then return u, v end
+	return nil
+end
+
+-- What is in a track's way, read once per railway step: within the box, the segments (their curve every ~10 m, whether a street
+-- and whether the company may cut it: no stop on it, its own or an open company's or nobody's), the town houses, the other
+-- constructions (their place and a reach: 220 m for an industry, 90 m else)
+function RL.world(E, co, box)
+	local api = E.api
+	local W = { edges = {}, houses = {}, cons = {}, box = box, segmap = api.engine.system.streetSystem.getNode2SegmentMap() }
+	local eco = E.C.eco and E.C.eco() or nil
+	local open = {}
+	-- (another company's street or track: only when its rule for them is open, see mpfever_eco.lua)
+	local function mayCut(owner, street)
+		if not owner or owner == co.ent then return true end
+		local k = (street and "r" or "t") .. owner
+		if open[k] == nil then
+			open[k] = false
+			pcall(function()
+				local id = E.CO.idOfEntity(E.G.co, owner)
+				local c
+				for _, x in ipairs(E.G.co.list) do if x.id == id then c = x end end
+				local r = street and eco.roadRule(E.G.co, c) or eco.trackRule(E.G.co, c)
+				open[k] = eco ~= nil and c ~= nil and r.rule == "open"
+			end)
+		end
+		return open[k]
+	end
+	for _, e in ipairs(E.R.allEdges()) do
+		pcall(function()
+			local c = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
+			local m = E.C.marshal(c)
+			local p0, p1 = m.position0, m.position1
+			if math.max(p0.x, p1.x) < box.x0 or math.min(p0.x, p1.x) > box.x1 or math.max(p0.y, p1.y) < box.y0 or math.min(p0.y, p1.y) > box.y1 then return end
+			local len = math.sqrt((p1.x - p0.x) ^ 2 + (p1.y - p0.y) ^ 2)
+			local n = math.max(1, math.ceil(len / 10))
+			local pts = {}
+			for i = 0, n do pts[#pts + 1] = (RL.herm(m, i / n)) end
+			local street = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE_STREET) ~= nil
+			local owner = ownerOf(E, e)
+			W.edges[#W.edges + 1] = { e = e, m = m, pts = pts, street = street, owner = owner, cut = #c.objects == 0 and mayCut(owner, street) }
+		end)
+	end
+	for _, e in ipairs(E.R.entitiesWith("CONSTRUCTION")) do
+		pcall(function()
+			local c = api.engine.getComponent(e, api.type.ComponentType.CONSTRUCTION)
+			local m = E.C.marshal(c.transf)
+			if m[13] < box.x0 or m[13] > box.x1 or m[14] < box.y0 or m[14] > box.y1 then return end
+			if #c.townBuildings > 0 then W.houses[#W.houses + 1] = { x = m[13], y = m[14] }
+			else W.cons[#W.cons + 1] = { e = e, x = m[13], y = m[14], r = tostring(c.fileName):find("industr", 1, true) and 220 or 90 } end
+		end)
+	end
+	return W
+end
+
+-- A way for a track from p0 (leaving along d0) to p1 (reached along -d1), round what is in its way: a search (A*) over a grid of
+-- RL.CELL m, the houses (80 m round), the other constructions and the segments' nodes closed; each street or track crossed (on a
+-- bridge) costs RL.CROSS m more, each cell of water RL.WET more, each step along a street RL.ALONG more, each metre of height 20 m more. The way: the
+-- points where it turns (the cells' path pulled straight over open cells), from RL.LEAD m out of each end. nil and why when there is
+-- none within the box.
+function RL.plan(E, p0, d0, p1, d1, W)
+	local cell, box = RL.CELL, W.box
+	local nx, ny = math.max(1, math.ceil((box.x1 - box.x0) / cell)), math.max(1, math.ceil((box.y1 - box.y0) / cell))
+	local function key(i, j) return j * nx + i end
+	local function cellOf(x, y) return math.floor((x - box.x0) / cell), math.floor((y - box.y0) / cell) end
+	local function centre(i, j) return box.x0 + (i + 0.5) * cell, box.y0 + (j + 0.5) * cell end
+	local closed, road = {}, {}
+	local wl = RL.waterLevel(E)
+	local function closeRound(x, y, r)
+		local i0, j0 = cellOf(x - r, y - r)
+		local i1, j1 = cellOf(x + r, y + r)
+		for i = i0, i1 do for j = j0, j1 do
+			local cx, cy = centre(i, j)
+			if (cx - x) ^ 2 + (cy - y) ^ 2 <= (r + cell * 0.5) ^ 2 then closed[key(i, j)] = true end
+		end end
+	end
+	for _, h in ipairs(W.houses) do closeRound(h.x, h.y, 80) end
+	for _, c in ipairs(W.cons) do
+		-- (not the stations at the two ends)
+		if (c.x - p0.x) ^ 2 + (c.y - p0.y) ^ 2 > 250 * 250 and (c.x - p1.x) ^ 2 + (c.y - p1.y) ^ 2 > 250 * 250 then closeRound(c.x, c.y, c.r) end
+	end
+	for _, w in ipairs(W.edges) do
+		for _, q in ipairs(w.pts) do
+			local i, j = cellOf(q.x, q.y)
+			-- (crossed on a bridge, see RL.trackProposal: at a cost)
+			road[key(i, j)] = true
+		end
+		-- (a segment is crossed between its nodes, not at a junction: the cells of its two ends closed)
+		do
+			for _, q in ipairs({ w.pts[1], w.pts[#w.pts] }) do local i, j = cellOf(q.x, q.y); closed[key(i, j)] = true end
+		end
+	end
+	local s = { x = p0.x + d0.x * RL.LEAD, y = p0.y + d0.y * RL.LEAD }
+	local g = { x = p1.x + d1.x * RL.LEAD, y = p1.y + d1.y * RL.LEAD }
+	local si, sj = cellOf(s.x, s.y)
+	local gi, gj = cellOf(g.x, g.y)
+	closed[key(si, sj)], closed[key(gi, gj)] = nil, nil
+	-- the search (a binary heap of open cells by cost + straight distance to the goal)
+	local heap, cost, from, zc = {}, {}, {}, {}
+	local function z(i, j)
+		local k = key(i, j)
+		if not zc[k] then local cx, cy = centre(i, j); zc[k] = E.groundZ(cx, cy, 0) end
+		return zc[k]
+	end
+	local function push(k, f)
+		heap[#heap + 1] = { k = k, f = f }
+		local n = #heap
+		while n > 1 do
+			local p = math.floor(n / 2)
+			if heap[p].f <= heap[n].f then break end
+			heap[p], heap[n] = heap[n], heap[p]
+			n = p
+		end
+	end
+	local function pop()
+		local top = heap[1]
+		heap[1] = heap[#heap]
+		heap[#heap] = nil
+		local n = 1
+		while true do
+			local l, r, m = 2 * n, 2 * n + 1, n
+			if heap[l] and heap[l].f < heap[m].f then m = l end
+			if heap[r] and heap[r].f < heap[m].f then m = r end
+			if m == n then break end
+			heap[m], heap[n] = heap[n], heap[m]
+			n = m
+		end
+		return top
+	end
+	local function h(i, j) return math.sqrt((i - gi) ^ 2 + (j - gj) ^ 2) * cell end
+	local sk, gk = key(si, sj), key(gi, gj)
+	cost[sk] = 0
+	push(sk, h(si, sj))
+	local found, visits = false, 0
+	while #heap > 0 do
+		local top = pop()
+		local k = top.k
+		if k == gk then found = true break end
+		visits = visits + 1
+		if visits > 60000 then return nil, "the search took too long" end
+		local i, j = k % nx, math.floor(k / nx)
+		for di = -1, 1 do for dj = -1, 1 do
+			if di ~= 0 or dj ~= 0 then
+				local a, b = i + di, j + dj
+				local nk = key(a, b)
+				if a >= 0 and b >= 0 and a < nx and b < ny and not closed[nk] then
+					local step = (di ~= 0 and dj ~= 0) and cell * 1.4142 or cell
+					local c = cost[k] + step + math.abs(math.max(z(a, b), wl) - math.max(z(i, j), wl)) * 20
+					-- (water: on a bridge, dear: a river is crossed where it is narrow, a lake gone round)
+					if z(a, b) < wl - 0.1 then c = c + RL.WET end
+					if road[nk] then c = c + (road[k] and RL.ALONG or RL.CROSS) end
+					if not cost[nk] or c < cost[nk] then
+						cost[nk], from[nk] = c, k
+						push(nk, c + h(a, b))
+					end
+				end
+			end
+		end end
+	end
+	if not found then return nil, "no way round within " .. math.floor((box.x1 - box.x0) / 1000) .. " km" end
+	local path = {}
+	local k = gk
+	while k do
+		local i, j = k % nx, math.floor(k / nx)
+		local cx, cy = centre(i, j)
+		table.insert(path, 1, { x = cx, y = cy })
+		k = from[k]
+	end
+	path[1], path[#path] = s, g
+	-- (made straight: from each point, on to the farthest point of the path seen in a straight line over no closed cell - pulling
+	-- the string - so that the track has long straight runs and few wide curves; then no two points closer than RL.LEG)
+	local function clearLine(a, b)
+		local l = math.sqrt((b.x - a.x) ^ 2 + (b.y - a.y) ^ 2)
+		local n = math.max(1, math.ceil(l / (cell / 4)))
+		for q = 1, n - 1 do
+			local i, j = cellOf(a.x + (b.x - a.x) * q / n, a.y + (b.y - a.y) * q / n)
+			if closed[key(i, j)] then return false end
+		end
+		return true
+	end
+	local way, at = { path[1] }, 1
+	while at < #path do
+		local nxt = at + 1
+		for j = #path, at + 2, -1 do
+			if clearLine(path[at], path[j]) then nxt = j break end
+		end
+		way[#way + 1] = path[nxt]
+		at = nxt
+	end
+	local merged = { way[1] }
+	for i = 2, #way - 1 do
+		local last = merged[#merged]
+		if (way[i].x - last.x) ^ 2 + (way[i].y - last.y) ^ 2 >= RL.LEG * RL.LEG then merged[#merged + 1] = way[i] end
+	end
+	merged[#merged + 1] = way[#way]
+	way = merged
+	return way
+end
+
+-- The track from node n0 (at p0, leaving along d0) to node n1 (at p1, leaving along d1, towards the first) through the points of
+-- way (none: one curve straight from end to end), in pieces of about RL.STEP m. Over every street and track it crosses it runs on
+-- a bridge (the game's concrete bridge, RL.SPAN m long, RL.CLEAR m over the segment), as a player's track crosses a road: nothing
+-- of the others is touched; over water too (a river or a lake no wider than RL.WATER). Refused (nil, length, why) when it curves
+-- tighter than RL.RADIUS, passes within 45 m of a town house,
+-- crosses a segment twice or runs along it, crosses one too slantwise (under 14 degrees), or needs more than RL.GRADE (twice that between two fixed
+-- points closer than 200 m, RL.RAMP on the ramps of a bridge) between its ends and its bridges. Its heights follow the ground, averaged,
+-- within the grade. Owned by the company. W: what is in its way (RL.world), none when nil.
+function RL.trackProposal(E, co, n0, p0, d0, n1, p1, d1, year, way, W)
+	local api, C = E.api, E.C
+	local tpl, style = RL.track(year)
+	local lanes = C.templateLanes(tpl)
+	if not lanes then return nil, 0, "no lanes for " .. tpl end
+	local P = { { x = p0.x, y = p0.y } }
+	for _, q in ipairs(way or {}) do P[#P + 1] = q end
+	P[#P + 1] = { x = p1.x, y = p1.y }
+	local S = RL.spline(P, d0, d1)
+	local L0 = S.L
+	-- (no curve tighter than RL.RADIUS: the engine refuses them, "excessive curvature", and trains crawl through them)
+	do
+		local n = math.max(50, math.ceil(L0 / 5))
+		for i = 1, n - 1 do
+			local t = i / n
+			local _, _, dx1, dy1 = S.at(t - 0.5 / n)
+			local _, _, dx2, dy2 = S.at(t + 0.5 / n)
+			local _, _, dx, dy = S.at(t)
+			local v = math.sqrt(dx * dx + dy * dy)
+			local k = v > 0 and math.abs(dx * (dy2 - dy1) * n - dy * (dx2 - dx1) * n) / (v * v * v) or 0
+			if k * RL.RADIUS > 1 then return nil, L0, string.format("a curve of %.0f m radius", 1 / k) end
+		end
+	end
+	-- (the curve every ~10 m, for the obstacles)
+	local fine = math.max(8, math.ceil(L0 / 10))
+	local poly = {}
+	for i = 0, fine do local x, y = S.at(i / fine); poly[#poly + 1] = { x = x, y = y, t = i / fine } end
+	W = W or { edges = {}, houses = {}, cons = {} }
+	for _, h in ipairs(W.houses) do
+		for i = 1, #poly, 2 do
+			if (poly[i].x - h.x) ^ 2 + (poly[i].y - h.y) ^ 2 < 45 * 45 then return nil, L0, "town houses in its way" end
+		end
+	end
+	local crossings = {}
+	for _, w in ipairs(W.edges) do
+		local hit
+		-- (not the segments at its two ends: the stations' own tracks it starts from)
+		local own = w.m.node0 == n0 or w.m.node1 == n0 or w.m.node0 == n1 or w.m.node1 == n1
+		for i = 1, own and 0 or #poly - 1 do
+			for j = 1, #w.pts - 1 do
+				local u, v = RL.crossAt(poly[i], poly[i + 1], w.pts[j], w.pts[j + 1])
+				if u then
+					local t = poly[i].t + u * (poly[i + 1].t - poly[i].t)
+					-- (the same crossing found on two pieces when it falls on a point between them: kept once)
+					if hit and math.abs(t - hit.t) * L0 > 2 then return nil, L0, "it crosses segment " .. w.e .. " twice or runs along it" end
+					if not hit then hit = { t = t, ts = ((j - 1) + v) / (#w.pts - 1), w = w, z = w.pts[j].z + (w.pts[j + 1].z - w.pts[j].z) * v } end
+				end
+			end
+		end
+		if hit then
+			local _, dX = RL.herm(w.m, hit.ts)
+			local _, _, tx, ty = S.at(hit.t)
+			local tl, sl = math.sqrt(tx * tx + ty * ty), math.sqrt(dX.x * dX.x + dX.y * dX.y)
+			local cos = (tl > 0 and sl > 0) and math.abs((tx * dX.x + ty * dX.y) / (tl * sl)) or 0
+			if cos > 0.97 then return nil, L0, "it crosses " .. (w.street and "street " or "track ") .. w.e .. " too slantwise" end
+			-- (a slanting crossing: a longer bridge, RL.SPAN over the sine of its angle, 200 m at most)
+			hit.span = math.min(200, RL.SPAN / math.sqrt(math.max(0.0625, 1 - cos * cos)))
+			crossings[#crossings + 1] = hit
+		end
+	end
+	table.sort(crossings, function(a, b) return a.t < b.t end)
+	-- (the bridges: RL.SPAN m round each crossing (more when it slants), two bridges less than 40 m apart made one; RL.CLEAR m
+	-- over the highest segment it spans)
+	local wl = RL.waterLevel(E)
+	local over = {}
+	for _, x in ipairs(crossings) do
+		local half = (x.span or RL.SPAN) / 2 / L0
+		over[#over + 1] = { t0 = x.t - half, t1 = x.t + half, z = x.z + RL.CLEAR }
+	end
+	-- (water: where the ground is under the water level, a bridge from 20 m before to 20 m after, RL.CLEAR m over the water;
+	-- refused when wider than RL.WATER)
+	local wet
+	for _, q in ipairs(poly) do
+		local isWet = E.groundZ(q.x, q.y, wl + 1) < wl - 0.1
+		if isWet and not wet then wet = { t0 = q.t, t1 = q.t } elseif isWet then wet.t1 = q.t end
+		if wet and (not isWet or q == poly[#poly]) then
+			if (wet.t1 - wet.t0) * L0 > RL.WATER then return nil, L0, "water " .. math.floor((wet.t1 - wet.t0) * L0) .. " m wide in its way" end
+			over[#over + 1] = { t0 = wet.t0 - 20 / L0, t1 = wet.t1 + 20 / L0, z = wl + RL.CLEAR, water = true }
+			wet = nil
+		end
+	end
+	table.sort(over, function(a, b) return a.t0 < b.t0 end)
+	local spans = {}
+	for _, x in ipairs(over) do
+		local last = spans[#spans]
+		if last and (x.t0 - last.t1) * L0 < 40 then
+			last.t1 = math.max(last.t1, x.t1)
+			last.z = math.max(last.z, x.z)
+		else
+			spans[#spans + 1] = { t0 = x.t0, t1 = x.t1, z = x.z }
+		end
+	end
+	for _, b in ipairs(spans) do
+		if b.t0 * L0 < 30 or (1 - b.t1) * L0 < 30 then return nil, L0, "a bridge too near its ends" end
+	end
+	-- the track's points: every RL.STEP m outside the bridges, and the two ends of each bridge (fixed at its height)
+	local k = math.max(2, math.ceil(L0 / RL.STEP))
+	local ts = {}
+	for i = 0, k do
+		local t, inside = i / k, false
+		for _, b in ipairs(spans) do if t > b.t0 - 10 / L0 and t < b.t1 + 10 / L0 then inside = true end end
+		if not inside or i == 0 or i == k then ts[#ts + 1] = { t = t } end
+	end
+	for bi, b in ipairs(spans) do
+		ts[#ts + 1] = { t = b.t0, z = b.z, bridge = bi }
+		ts[#ts + 1] = { t = b.t1, z = b.z, bridgeEnd = bi }
+	end
+	table.sort(ts, function(a, b) return a.t < b.t end)
+	local pts = {}
+	for i, q in ipairs(ts) do
+		local x, y = S.at(q.t)
+		pts[i] = { x = x, y = y, t = q.t, z = q.z or E.groundZ(x, y, p0.z), fixed = q.z ~= nil, bridge = q.bridge, bridgeEnd = q.bridgeEnd }
+	end
+	pts[1].z, pts[1].fixed, pts[#pts].z, pts[#pts].fixed = p0.z, true, p1.z, true
+	-- (the heights: between two fixed points, the ground's averaged over five points, kept within the grade from both (their
+	-- envelope) and from one point to the next; refused when two fixed points are too far apart in height for it)
+	local s = { 0 }
+	for i = 2, #pts do s[i] = s[i - 1] + math.sqrt((pts[i].x - pts[i - 1].x) ^ 2 + (pts[i].y - pts[i - 1].y) ^ 2) end
+	local g = RL.GRADE
+	local zs, a = { pts[1].z }, 1
+	while a < #pts do
+		local b = a + 1
+		while not pts[b].fixed do b = b + 1 end
+		local za, zb, span = pts[a].z, pts[b].z, s[b] - s[a]
+		-- (a ramp to a bridge, or between two fixed points close together: up to twice the grade, the engine builds up to 8.5 %)
+		local ga = (pts[b].bridge or pts[a].bridgeEnd) and RL.RAMP or span < 200 and 2 * g or g
+		if math.abs(zb - za) > ga * span + 0.01 then return nil, L0, "too steep: " .. math.floor(math.abs(zb - za)) .. " m over " .. math.floor(span) .. " m" end
+		for i = a + 1, b - 1 do
+			local sum, n = 0, 0
+			for j = math.max(1, i - 2), math.min(#pts, i + 2) do sum = sum + pts[j].z; n = n + 1 end
+			local lo = math.max(za - ga * (s[i] - s[a]), zb - ga * (s[b] - s[i]), zs[i - 1] - ga * (s[i] - s[i - 1]))
+			local hi = math.min(za + ga * (s[i] - s[a]), zb + ga * (s[b] - s[i]), zs[i - 1] + ga * (s[i] - s[i - 1]))
+			zs[i] = math.max(lo, math.min(hi, sum / n))
+		end
+		zs[b] = zb
+		a = b
+	end
+	local bridgeType = RL.bridgeType(E)
+	if #spans > 0 and not bridgeType then return nil, L0, "no bridge type" end
+	local sp = api.type.SimpleProposal.new()
+	local ssp = sp.streetProposal
+	local nodes, edges, ids = {}, {}, { n0 }
+	for i = 2, #pts - 1 do
+		local ne = api.type.NodeAndEntity.new()
+		ne.entity = -i
+		local bn = ne.comp
+		bn.position = api.type.Vec3f.new(pts[i].x, pts[i].y, zs[i])
+		ne.comp = bn
+		nodes[#nodes + 1] = ne
+		ids[i] = -i
+	end
+	ids[#pts] = n1
+	for i = 1, #pts - 1 do
+		local a1, b1 = pts[i], pts[i + 1]
+		local dt = b1.t - a1.t
+		local _, _, ax, ay = S.at(a1.t)
+		local _, _, bx, by = S.at(math.min(b1.t, 1))
+		local dz = zs[i + 1] - zs[i]
+		local e = api.type.SegmentAndEntity.new()
+		e.entity = -1000 - i
+		e.type = 1
+		local c = e.comp
+		c.laneConfigs = lanes
+		c.node0, c.node1 = ids[i], ids[i + 1]
+		c.position0 = api.type.Vec3f.new(a1.x, a1.y, zs[i])
+		c.position1 = api.type.Vec3f.new(b1.x, b1.y, zs[i + 1])
+		c.tangent0 = api.type.Vec3f.new(ax * dt, ay * dt, dz)
+		c.tangent1 = api.type.Vec3f.new(bx * dt, by * dt, dz)
+		-- (the piece from a bridge's start to its end: the bridge)
+		if a1.bridge then c.type, c.typeIndex = 1, bridgeType else c.type, c.typeIndex = 0, -1 end
+		c.roadTemplate, c.roadStyle, c.roadType = tpl, style, 0
+		e.comp = c
+		local se = e.streetEdge
+		se.precedenceNode0, se.precedenceNode1 = 2, 2
+		e.streetEdge = se
+		local po = e.playerOwned
+		if po == nil then po = C.newOf("PlayerOwned") end
+		po.player = co.ent
+		e.playerOwned = po
+		edges[#edges + 1] = e
+	end
+	if #nodes > 0 then ssp.nodesToAdd = nodes end
+	ssp.edgesToAdd = edges
+	sp.streetProposal = ssp
+	return sp, L0, nil, #crossings
+end
+
+-- the water level of the map (the sea's; rivers and lakes lie in ground under it), 0 when it cannot be read
+function RL.waterLevel(E)
+	local wl = 0
+	pcall(function() wl = E.api.engine.getComponent(E.api.engine.util.getWorld(), E.api.type.ComponentType.TERRAIN).waterLevel or 0 end)
+	return wl
+end
+
+-- the game's concrete bridge (its index), nil when there is none
+function RL.bridgeType(E)
+	local id
+	pcall(function()
+		for i, name in pairs(E.api.res.bridgeTypeRep.getAll()) do if tostring(name):find("concrete", 1, true) then id = i end end
+	end)
+	return id
+end
+
+-- the ways to try for a track between two ends: the search's way round, then one curve pushed further and further out on either
+-- side (a single point in the middle, RL.OFFSETS of the distance off the straight line)
+function RL.ways(E, p0, d0, p1, d1, W)
+	local out = {}
+	local okP, way = pcall(RL.plan, E, p0, d0, p1, d1, W)
+	if okP and way then out[#out + 1] = { way = way, what = "way round (" .. #way .. " points)" } end
+	local L0 = dist(p0, p1)
+	local nx, ny = -(p1.y - p0.y) / L0, (p1.x - p0.x) / L0
+	for _, f in ipairs(RL.OFFSETS) do
+		if f == 0 then out[#out + 1] = { way = {}, what = "straight" }
+		else out[#out + 1] = { way = { { x = (p0.x + p1.x) / 2 + nx * f * L0, y = (p0.y + p1.y) / 2 + ny * f * L0 } }, what = string.format("curve %.2f out", f) } end
+	end
+	return out
+end
+
+-- the box round two ends that the ways may use
+function RL.box(p0, p1)
+	local L0 = dist(p0, p1)
+	return { x0 = math.min(p0.x, p1.x) - L0 * 0.5 - 300, x1 = math.max(p0.x, p1.x) + L0 * 0.5 + 300,
+		y0 = math.min(p0.y, p1.y) - L0 * 0.5 - 300, y1 = math.max(p0.y, p1.y) + L0 * 0.5 + 300 }
+end
+
+-- whether some way between two industries is clear (the stations 300 m out of each, towards the other): RL.trackProposal's
+-- checks of what is in the way, no dry run
+function RL.corridor(E, co, pa, pb)
+	local L0 = dist(pa, pb)
+	local d = { x = (pb.x - pa.x) / L0, y = (pb.y - pa.y) / L0 }
+	local p0 = { x = pa.x + d.x * 300, y = pa.y + d.y * 300, z = E.groundZ(pa.x + d.x * 300, pa.y + d.y * 300, 0) }
+	local p1 = { x = pb.x - d.x * 300, y = pb.y - d.y * 300, z = E.groundZ(pb.x - d.x * 300, pb.y - d.y * 300, 0) }
+	local W = RL.world(E, co, RL.box(p0, p1))
+	local back = { x = -d.x, y = -d.y }
+	for _, w in ipairs(RL.ways(E, p0, d, p1, back, W)) do
+		if RL.trackProposal(E, co, -1, p0, d, -2, p1, back, currentYear(E), w.way, W) then return true end
+	end
+	return false
+end
+
+-- the track between two ends: each way of RL.ways checked against what is in its way (RL.trackProposal), then a dry run; the
+-- first one free is built. True when asked for, "dear", or false and the last reason
+function RL.buildTrack(E, co, ea, eb, what)
+	local api = E.api
+	local year = currentYear(E)
+	local okW, W = pcall(RL.world, E, co, RL.box(ea.p, eb.p))
+	if not okW then return false, "the world could not be read: " .. tostring(W) end
+	local bits = keepBuildings() and withoutBuildings(CTX_ROAD) or CTX_ROAD
+	local ctx = context(E, co.ent, bits)
+	local why = ""
+	for _, w in ipairs(RL.ways(E, ea.p, ea.d, eb.p, eb.d, W)) do
+		local okp, sp, len, refused, ncross = pcall(RL.trackProposal, E, co, ea.node, ea.p, ea.d, eb.node, eb.p, eb.d, year, w.way, W)
+		if not okp then
+			why = "no proposal: " .. tostring(sp)
+		elseif not sp then
+			why = tostring(refused)
+		else
+			local okd, pd = pcall(function() return api.engine.util.proposal.makeProposalData(sp, ctx) end)
+			if not (okd and pd) then
+				why = "dry run failed: " .. tostring(pd)
+			else
+				pcall(function() why = E.C.ser(E.C.marshal(pd.errorState.messages)) end)
+				why = why .. RL.collides(E, pd)
+				if #pd.errorState.messages == 0 and not pd.errorState.critical then
+					if keepBuildings() and buildingsHit(E, pd) > 0 then
+						why = "town buildings in its way"
+					else
+						local cost = 0
+						pcall(function() cost = tonumber(pd.costs) or 0 end)
+						if not spendOk(E, co, cost, what) then return "dear" end
+						L(E, string.format("%s: %.0f m, %s, %d level crossing(s), cost %d", what, len or 0, w.what, ncross or 0, math.floor(cost)))
+						build(E, co.id, api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, true, true), what, bits,
+							{ kind = "railtrack", pos = { x = (ea.p.x + eb.p.x) / 2, y = (ea.p.y + eb.p.y) / 2, z = (ea.p.z + eb.p.z) / 2 } })
+						return true
+					end
+				end
+			end
+		end
+		L(E, string.format("%s: %s refused: %s", what, w.what, tostring(why):sub(1, 160)))
+	end
+	return false, why
+end
+
+-- the railway of the company under way, read from the world: its two stations (the one near the producer, the one near the
+-- industry that takes the cargo), else nil
+function RL.underway(E, co, lines)
+	local A = E.G.AI
+	local stations = RL.mine(E, co, "modular_station")
+	if #stations == 0 then return nil, stations end
+	local inLine = {}
+	for _, l in ipairs(lines) do for _, g in ipairs(l.groups) do inLine[g] = l end end
+	local inds = industries(E)
+	-- (not the stations of a railway left, see RL.TRIES)
+	if A.railGone then
+		local keep = {}
+		for _, s in ipairs(stations) do if not A.railGone[s.con] then keep[#keep + 1] = s end end
+		stations = keep
+	end
+	-- (each station's industry: the nearest one it reaches)
+	for _, s in ipairs(stations) do
+		local best, bd
+		for _, ind in ipairs(inds) do
+			local d = dist(s.pos, ind.pos)
+			if d < 500 and (not bd or d < bd) then best, bd = ind, d end
+		end
+		s.ind = best
+		s.term = RL.terminals(E, s.con)
+		s.line = s.term and inLine[s.term.group] or nil
+	end
+	-- (a railway running: its line has a train)
+	local running = {}
+	for _, v in ipairs(RL.trains(E, co.ent)) do if v.line >= 0 then running[v.line] = true end end
+	-- (a pair: a producer's station, and a station of an industry that takes its cargo, not running yet)
+	local paired = {}
+	for _, sa in ipairs(stations) do
+		for _, sb in ipairs(stations) do
+			if sa ~= sb and sa.ind and sb.ind then
+				for _, c in ipairs(sa.ind.outputs) do
+					if takes(E, sb.ind, c) then
+						paired[sa], paired[sb] = true, true
+						if not (sa.line and sa.line == sb.line and running[sa.line.e]) then return { a = sa, b = sb, cargo = c }, stations end
+					end
+				end
+			end
+		end
+	end
+	-- (a producer's station alone: the other end of its route, the one begun (A.rail), else the farthest industry within reach that
+	-- takes its cargo, as RL.route chose it)
+	for _, sa in ipairs(stations) do
+		if sa.ind and not paired[sa] and not sa.line then
+			local A0 = A.rail
+			if A0 and A0.from == sa.ind.e then return { a = sa, toInd = A0.to, cargo = A0.cargo }, stations end
+			local best
+			for _, c in ipairs(sa.ind.outputs) do
+				for _, b in ipairs(inds) do
+					local d = dist(sa.ind.pos, b.pos)
+					if b.e ~= sa.ind.e and d >= RL.MIN and d <= RL.MAX and takes(E, b, c) and (not best or d > best.d) then best = { toInd = b, cargo = c, d = d } end
+				end
+			end
+			if best then return { a = sa, toInd = best.toInd, cargo = best.cargo }, stations end
+		end
+	end
+	return nil, stations
+end
+
+-- One step of the company's railway. True when it acted (a build, a purchase, a line), "wait" when it waits for money, false when
+-- there is nothing to do (no railway under way, and none to begin: begin = whether it may begin a new one now)
+function RL.project(E, co, lines, money, begin)
+	if not RL.on() then return false end
+	local A = E.G.AI
+	local api = E.api
+	local u, stations = RL.underway(E, co, lines)
+	if not u then
+		-- (a new railway: only with the money for all of it, see RL.cost)
+		if not begin then return false end
+		if A.railNextAt and E.G.frames < A.railNextAt then return false end
+		local r = RL.route(E, co, lines, stations)
+		if not r then A.railNextAt = E.G.frames + 3600; return false end
+		local train = RL.train(E, r.cargo)
+		if not train then
+			A.railTried = A.railTried or {}; A.railTried[r.from.e] = true
+			L(E, "railway: no train for " .. cargoName(E, r.cargo) .. " on sale")
+			return false
+		end
+		-- (its price: two stations of 0.9 million, a depot of 1.9, about 600 a metre of track in 1972 (the first one, 7.8 km with
+		-- 8 bridges, cost 4.36 million), its way 1.3 times the distance, the train)
+		local need = 2 * 900000 + 2000000 + r.d * 1.3 * 600 + train.price
+		if money - (A.loanCash or 0) < RESERVE + need then
+			if E.G.frames - (A.railSaid or -100000) > 3600 then
+				A.railSaid = E.G.frames
+				L(E, string.format("railway %s %.1f km (industry %d -> %d) waits for %d (has %d)", cargoName(E, r.cargo), r.d / 1000, r.from.e, r.to.e, math.floor(RESERVE + need), math.floor(money)))
+			end
+			return "wait"
+		end
+		local a = math.atan2(r.to.pos.y - r.from.pos.y, r.to.pos.x - r.from.pos.x)
+		-- (a corridor first: some curve between the two industries clear of towns, tracks and streets it cannot cross, see
+		-- RL.trackProposal; else the stations would be built for nothing)
+		local okF, clear = pcall(RL.corridor, E, co, r.from.pos, r.to.pos)
+		if not (okF and clear) then
+			A.railTried = A.railTried or {}; A.railTried[r.from.e] = true
+			L(E, string.format("railway %s %.1f km (industry %d -> %d): no clear way between them (%s)", cargoName(E, r.cargo), r.d / 1000, r.from.e, r.to.e, tostring(okF and "towns, tracks or streets in the way" or clear):sub(1, 160)))
+			return false
+		end
+		A.rail = { from = r.from.e, to = r.to, cargo = r.cargo, at = E.G.frames }
+		L(E, string.format("railway begun: %s %.1f km from industry %d to %d", cargoName(E, r.cargo), r.d / 1000, r.from.e, r.to.e))
+		local ok = RL.buildStation(E, co, r.from, a, "A")
+		if ok == false then A.railTried = A.railTried or {}; A.railTried[r.from.e] = true; A.rail = nil; L(E, "railway: no place for a station near industry " .. r.from.e) end
+		return ok == true or (ok == "dear" and "wait") or false
+	end
+	-- the other station
+	if not u.b then
+		local to = u.toInd
+		local a = math.atan2(u.a.pos.y - to.pos.y, u.a.pos.x - to.pos.x)
+		local ok = RL.buildStation(E, co, to, a, "B")
+		if ok == false then
+			L(E, "railway: no place for a station near industry " .. to.e .. ": left")
+			A.railTried = A.railTried or {}; A.railTried[u.a.ind.e] = true; A.rail = nil
+		end
+		return ok == true or (ok == "dear" and "wait") or false
+	end
+	local sa, sb = u.a, u.b
+	if not (sa.term and sb.term) then return false end
+	local na, nb = {}, {}
+	for _, t in ipairs(sa.term.list) do na[#na + 1] = t.node end
+	for _, t in ipairs(sb.term.list) do nb[#nb + 1] = t.node end
+	-- the track between them (after a refusal of every curve, tried again a minute later)
+	if not RL.path(E, na, nb) then
+		local what = "railway track " .. sa.ind.e .. "-" .. sb.ind.e
+		local key = sa.con .. ":" .. sb.con
+		-- (a build the engine refused when it came, after the dry run let it through: water the dry run does not see, a vehicle
+		-- in the way; counted as a refusal of the track, see RL.TRIES)
+		local lr = A.lastResult
+		if lr and lr.what == what and not lr.ok and lr.frame ~= A.railSeen then
+			A.railSeen = lr.frame
+			A.railFails = A.railFails or {}
+			A.railFails[key] = (A.railFails[key] or 0) + 1
+			A.railTrackAt = E.G.frames + 3600
+		end
+		if A.railFails and (A.railFails[key] or 0) >= RL.TRIES then
+			A.railGone = A.railGone or {}
+			A.railGone[sa.con], A.railGone[sb.con] = true, true
+			A.railTried = A.railTried or {}; A.railTried[sa.ind.e] = true
+			A.rail, A.railTrackAt = nil, nil
+			L(E, "railway " .. sa.ind.e .. "-" .. sb.ind.e .. " left: its track was refused " .. RL.TRIES .. " times")
+			return false
+		end
+		if A.railTrackAt and E.G.frames < A.railTrackAt then return false end
+		local ea, eb = RL.ends(E, sa.con), RL.ends(E, sb.con)
+		local best
+		for _, x in ipairs(ea) do
+			for _, y in ipairs(eb) do
+				local d = dist(x.p, y.p)
+				if not best or d < best.d then best = { a = x, b = y, d = d } end
+			end
+		end
+		if not best then L(E, "railway: no free track end at its stations"); return false end
+		local ok, why = RL.buildTrack(E, co, best.a, best.b, what)
+		if ok == false then
+			A.railFails = A.railFails or {}
+			local key = sa.con .. ":" .. sb.con
+			A.railFails[key] = (A.railFails[key] or 0) + 1
+			A.railTrackAt = E.G.frames + 3600
+			L(E, "railway track refused (" .. A.railFails[key] .. "): " .. tostring(why):sub(1, 200))
+			-- (left after RL.TRIES rounds of refusals: its two stations are no railway under way any more, its producer is not
+			-- tried again in this session)
+			if A.railFails[key] >= RL.TRIES then
+				A.railGone = A.railGone or {}
+				A.railGone[sa.con], A.railGone[sb.con] = true, true
+				A.railTried = A.railTried or {}; A.railTried[sa.ind.e] = true
+				A.rail, A.railTrackAt = nil, nil
+				L(E, "railway " .. sa.ind.e .. "-" .. sb.ind.e .. " left: no track could be laid between its stations")
+			end
+			return false
+		end
+		return ok == true or "wait"
+	end
+	-- a depot of the company that reaches the first station
+	local depot
+	for _, d in ipairs(RL.mine(E, co, "rail_depot")) do
+		local outs = {}
+		pcall(function()
+			for _, dp in ipairs(d.c.depots) do
+				local vd = api.engine.getComponent(dp, api.type.ComponentType.VEHICLE_DEPOT)
+				for k = 1, #vd.outNodes do outs[#outs + 1] = vd.outNodes[k] end
+				if not depot and #outs > 0 and RL.path(E, outs, na) then depot = { con = d.con, depot = dp, pos = d.pos } end
+			end
+		end)
+	end
+	if not depot then
+		-- (one of its depots near either station, not left)
+		local near, nearSt
+		for _, d in ipairs(RL.mine(E, co, "rail_depot")) do
+			if not (A.railGone and A.railGone[d.con]) then
+				for _, st in ipairs({ sa, sb }) do if not near and dist(d.pos, st.pos) < 600 then near, nearSt = d, st end end
+			end
+		end
+		if not near then
+			if A.railDepotAt and E.G.frames < A.railDepotAt then return false end
+			-- (behind one of the stations, facing it: see RL.dryDepot; the depot and its approach dry run together, so that the
+			-- approach is clear too)
+			for _, st in ipairs({ sa, sb }) do
+				local back = RL.ends(E, st.con)[1]
+				if back then
+					local said = 0
+					for _, gap in ipairs({ 80, 140, 200, 280 }) do
+						for _, lat in ipairs({ 0, 60, -60, 120, -120, 200, -200 }) do
+							local free, sp, ctx, cost, why, bits, O = RL.dryDepot(E, co, back, gap, lat)
+							if free then
+								if not spendOk(E, co, (cost or 2000000) + 50000, "train depot") then return "wait" end
+								L(E, string.format("train depot behind station %d: its exit %.0f m out, %.0f m aside, cost %s", st.con, gap, lat, tostring(cost and math.floor(cost))))
+								build(E, co.id, api.cmd.makeWorldBuildProposalCmd(sp, ctx, false, true, true), "train depot", bits, { kind = "raildepot", pos = { x = O.x, y = O.y, z = 0 } })
+								return true
+							end
+							said = said + 1
+							if said <= 3 then L(E, "train depot behind station " .. st.con .. ", " .. gap .. " m out, " .. lat .. " aside: " .. tostring(why):sub(1, 140)) end
+						end
+					end
+				end
+			end
+			-- (its track is laid: never left for want of a depot, looked for again five minutes later)
+			A.railDepotAt = E.G.frames + 18000
+			L(E, "railway " .. sa.ind.e .. "-" .. sb.ind.e .. ": no place for a depot behind its stations, looked for again in five minutes")
+			return false
+		end
+		-- (its track to the station: from the depot's exit to the station's free end nearest to it)
+		local de, se = { RL.depotExit(E, near.con) }, RL.ends(E, nearSt.con)
+		local best
+		for _, x in ipairs(de) do for _, y in ipairs(se) do
+			local d = dist(x.p, y.p)
+			if not best or d < best.d then best = { a = x, b = y, d = d } end
+		end end
+		if not best then L(E, "railway: no free end between depot " .. near.con .. " and station " .. nearSt.con); return false end
+		-- (a depot whose track is refused RL.TRIES times is left: another one is built)
+		if A.depotTrackAt and E.G.frames < A.depotTrackAt then return false end
+		local ok, why = RL.buildTrack(E, co, best.a, best.b, "depot track " .. near.con)
+		if ok == false then
+			A.depotFails = A.depotFails or {}
+			A.depotFails[near.con] = (A.depotFails[near.con] or 0) + 1
+			A.depotTrackAt = E.G.frames + 1800
+			L(E, "railway depot track refused (" .. A.depotFails[near.con] .. "): " .. tostring(why):sub(1, 200))
+			if A.depotFails[near.con] >= RL.TRIES then
+				A.railGone = A.railGone or {}
+				A.railGone[near.con] = true
+				L(E, "train depot " .. near.con .. " left: no track joins it to its station")
+			end
+			return false
+		end
+		return ok == true or "wait"
+	end
+	-- the line
+	local line = sa.line and sa.line == sb.line and sa.line or nil
+	if not line then
+		local stop0
+		pcall(function() stop0 = E.C.marshal(api.type.Line.Stop.new()) end)
+		local template = E.C.marshal(api.type.Line.new())
+		local s1 = freightStop(E, sa.term, stop0, u.cargo)
+		pcall(function() s1.loadMode = api.type.enum.LineLoadMode and api.type.enum.LineLoadMode.FULL_LOAD_ANY or s1.loadMode end)
+		template.stops = { s1, freightStop(E, sb.term, stop0) }
+		local name = AINAME .. " " .. cargoName(E, u.cargo) .. " (train)"
+		act(E, co.id, "makeLineCreateCmd", { n = 4, [1] = name, [2] = E.C.marshal(api.type.Vec3f.new(0.8, 0.5, 0.1)), [3] = co.ent, [4] = template })
+		-- (its lines of trains are not counted with the others, see myLines: the line is looked for again at the next look instead)
+		A.busy = { what = "line " .. name, since = E.G.frames, until_ = E.G.frames + 300 }
+		journal(E, co.id, "railline", sa.pos, name, u.cargo)
+		L(E, "train line requested: " .. name)
+		return true
+	end
+	-- its train
+	local trains, idle = 0, nil
+	for _, v in ipairs(RL.trains(E, co.ent)) do
+		if v.line == line.e then trains = trains + 1 elseif v.line < 0 then idle = v.e end
+	end
+	if idle then
+		act(E, co.id, "makeVehicleSetLineCmd", { n = 3, [1] = idle, [2] = line.e, [3] = 0 })
+		A.busy = { what = "train " .. idle .. " to line " .. line.e, since = E.G.frames, until_ = E.G.frames + 120 }
+		L(E, "train " .. idle .. " sent to line " .. line.e)
+		return true
+	end
+	if trains == 0 then
+		local t = RL.train(E, u.cargo)
+		if not t then return false end
+		if not spendOk(E, co, t.price, "train") then return "wait" end
+		local parts = {}
+		local function part(id)
+			return { part = { modelId = id, reversed = false, compartment2loadConfig = { { loadConfigIndex = 0, cargoTypeId = -1, __ud = true } },
+				color = { x = -1, y = -1, z = -1, __vec = true }, __ud = true }, purchaseTime = 0, maintenanceChange = 0, maintenanceState = 1,
+				autoLoadConfig = { true }, __ud = true }
+		end
+		parts[1] = part(t.loco.id)
+		for _ = 1, t.n do parts[#parts + 1] = part(t.wagon.id) end
+		local groups, mus = {}, {}
+		for i = 1, #parts do groups[i] = 1; mus[i] = "" end
+		local cfg = { vehicles = parts, vehicleGroups = groups, muFileNames = mus, __ud = true }
+		act(E, co.id, "makeVehicleBuyCmd", { n = 3, [1] = co.ent, [2] = depot.depot, [3] = cfg })
+		A.busy = { what = "train for line " .. line.e, since = E.G.frames, until_ = E.G.frames + 600 }
+		L(E, string.format("train requested: %s + %d x %s (%d %s) at depot %d", t.loco.name, t.n, t.wagon.name, t.seats, cargoName(E, u.cargo), depot.depot))
+		journal(E, co.id, "train", depot.pos, tostring(t.loco.name):match("([^/]+)%.mdl$") or t.loco.name, u.cargo)
+		return true
+	end
+	-- done: this railway runs
+	A.rail = nil
+	return false
+end
+
+-- the company's trains: { e, line }
+function RL.trains(E, ent)
+	local api = E.api
+	local out = {}
+	for _, v in ipairs(E.R.entitiesWith("TRANSPORT_VEHICLE")) do
+		if ownerOf(E, v) == ent then
+			local tv = api.engine.getComponent(v, api.type.ComponentType.TRANSPORT_VEHICLE)
+			if tv and RL.isTrain(E, tv) then out[#out + 1] = { e = v, line = tv.line or -1 } end
+		end
+	end
+	return out
+end
+
+function RL.isTrain(E, tv)
+	local yes = false
+	pcall(function() yes = tv.carrier == E.api.type.enum.Carrier.RAIL end)
+	return yes
+end
+
+-- (a line of trains: its first stop at a train station; kept apart from the buses and trucks, see myLines)
+function RL.isRailGroup(E, group)
+	local T = E.G.AIT or {}
+	T.railGroup = T.railGroup or {}
+	local v = T.railGroup[group]
+	if v == nil then
+		v = false
+		pcall(function()
+			local sg = E.api.engine.getComponent(group, E.api.type.ComponentType.STATION_GROUP)
+			local con = E.api.engine.system.streetConnectorSystem.getConstructionEntityForStation(sg.stations[1])
+			local c = E.api.engine.getComponent(con, E.api.type.ComponentType.CONSTRUCTION)
+			v = tostring(c.fileName):find("stations/rail/", 1, true) ~= nil
+		end)
+		T.railGroup[group] = v
+	end
+	return v
+end
+
 -- ------------------------------------------------------------------ the step
 
 local function join(E)
@@ -3060,7 +4328,14 @@ local function step(E)
 		if not A.runAt or G.frames - A.runAt > 600 then
 			A.runAt = G.frames
 			local run = 0
-			for _, v in ipairs(vehicles) do
+			-- (0.6.4: its trains too, kept apart from its vehicles, see myVehicles)
+			local all = vehicles
+			if RL.on() then
+				all = {}
+				for _, v in ipairs(vehicles) do all[#all + 1] = v end
+				for _, v in ipairs(RL.trains(E, co.ent)) do all[#all + 1] = v end
+			end
+			for _, v in ipairs(all) do
 				local ok, c = pcall(function() return E.api.engine.util.vehicle.getRunningCost(v.e) end)
 				if ok and type(c) == "number" then run = run + c end
 			end
@@ -3166,6 +4441,13 @@ local function step(E)
 	end
 	-- (0.5.14: whether it may open something new now, see mayExpand)
 	local grow = mayExpand(E, co, lines, money)
+	-- (0.6.4) its railway: one under way goes on (a station, the track, the depot, the line, the train, each as soon as it has the
+	-- money); a new one only when it may grow and holds plenty besides its reserve (RL.project checks the railway's whole price)
+	if RL.on() then
+		local begin = grow and money - (A.loanCash or 0) >= RESERVE + (LV.freeCash or 0)
+		local r = RL.project(E, co, myLines(E, co.ent, true), money, begin)
+		if r == true then return end
+	end
 	-- (0.6) its long-term freight line when it has none under way and can afford one (see ltProject): before the freight of plenty of
 	-- money and the buses' new projects. A path search alone builds nothing: the look goes on
 	if grow and ltProject(E, co, stops, lines, vehicles, money) == true then return end
@@ -3321,7 +4603,7 @@ M.f = { aiCompany = aiCompany, myStops = myStops, myDepots = myDepots, myLines =
 	manageLines = manageLines, mayExpand = mayExpand, spendOk = spendOk, ltSync = ltSync, ltProject = ltProject, connectIndustry = connectIndustry, roadProject = roadProject,
 	townFreightProject = townFreightProject, industryProject = industryProject, freightProject = freightProject,
 	buildingsHit = buildingsHit, stockTakes = stockTakes, stopReaches = stopReaches, townDropPoint = townDropPoint, townGood = townGood,
-	step = step }
+	step = step, RL = RL }
 
 -- (0.6) the pure rules, and the module's state of the company under way, for the offline tests (tests/test_ai_*.py)
 M.p = { floorOf = floorOf, ltBudget = ltBudget, ltJudge = ltJudge, ltScore = ltScore, densest = densest, LT = LT, FLOOR_MIN = FLOOR_MIN,

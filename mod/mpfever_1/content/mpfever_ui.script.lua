@@ -1433,6 +1433,12 @@ U.aiText = function(x)
 	if x.kind == "truck" then return C.Tf("a acheté un camion pour %s (%s)", "bought a truck for %s (%s)", cargo(x.b), x.a) end
 	if x.kind == "sold" then return T("a vendu un véhicule", "sold a vehicle") end
 	if x.kind == "giveup" then return C.Tf("a abandonné la ligne %s", "gave up the line %s", x.a) end
+	-- (0.6.4: its railways, see mpfever_ai.lua's RL)
+	if x.kind == "railstation" then return T("a construit une gare de fret", "built a cargo station") end
+	if x.kind == "railtrack" then return T("a posé une voie ferrée", "laid a railway track") end
+	if x.kind == "raildepot" then return T("a construit un dépôt ferroviaire", "built a train depot") end
+	if x.kind == "railline" then return C.Tf("a ouvert la ligne de train %s (%s)", "opened the train line %s (%s)", x.a, cargo(x.b)) end
+	if x.kind == "train" then return C.Tf("a acheté un train pour %s (%s)", "bought a train for %s (%s)", cargo(x.b), x.a) end
 	return tostring(x.kind)
 end
 
