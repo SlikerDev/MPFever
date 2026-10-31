@@ -285,10 +285,21 @@ local function newGameTick()
 		return
 	end
 	local m = NG.read()
-	if not m or (m.state ~= "started" and m.state ~= "any") or os.time() - m.at > 7200 then NG.since = nil return end
+	if not m or (m.state ~= "started" and m.state ~= "any") or os.time() - m.at > 7200 then NG.since = nil NG.beat = nil return end
 	if not NG.since then
 		-- (the new game loaded and waiting for a key: started now)
-		if startWhenReady() then NG.since = S.frames; log("new game loaded, starting it") end
+		if startWhenReady() then NG.since = S.frames; log("new game loaded, starting it") return end
+		-- (0.6.2) a new game from the game's New Game page starts at once, without the "press a key" screen: it was never seen,
+		-- never saved, and the player stayed in it without a lobby (the user's test of 2026-10-31). It runs once MPFever's game
+		-- script beats (bridge_alive.txt, a counter it rewrites every 2 s, still on the main menu). MPFEVER_NEWGAMEBEAT=0: the
+		-- "press a key" screen only, as before
+		if os.getenv("MPFEVER_NEWGAMEBEAT") ~= "0" then
+			local f = IO.open(DIR .. BS .. "bridge_alive.txt", "rb")
+			local beat = f and f:read("*a") or ""
+			if f then f:close() end
+			if NG.beat == nil then NG.beat = beat
+			elseif beat ~= NG.beat then NG.since = S.frames; NG.beat = nil; log("new game running (MPFever's game script beats): saving it in a moment") end
+		end
 		return
 	end
 	if S.frames - NG.since < 120 then return end

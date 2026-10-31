@@ -2501,8 +2501,14 @@ U.TABS.session = function(K, st, ctx)
 			or T("Choisissez un signal, puis cliquez sur la carte : tous les joueurs le voient 12 s.", "Pick a signal, then click on the map: every player sees it for 12 s."), W)
 	end
 	rows[#rows + 1] = K.gap(1, 12)
+	-- (0.6.2, #105) the problem report here too: since 0.6 the small window shows Session and Chat only, and the button of the
+	-- Settings tab was found in the Hub only ("the in-game button to report issues seems to have disappeared").
+	-- MPFEVER_SESSIONREPORT=0: in Settings only, as before
+	local reportBtn = os.getenv("MPFEVER_SESSIONREPORT") ~= "0" and requestReport or nil
 	rows[#rows + 1] = K.row { K.btn(T("Réduire", "Reduce"), T("Une petite carte : la synchronisation, les joueurs et la discussion", "A small card: the sync, the players and the chat"),
-		function() U.setCompact(true) end) }
+		function() U.setCompact(true) end), reportBtn and K.gap(8, 1) or nil,
+		reportBtn and K.btn(T("Signaler un problème (journaux)", "Report a problem (logs)"), T("MPFever.exe rassemble les journaux dans un zip et ouvre un nouveau ticket GitHub.", "MPFever.exe gathers the logs into a zip and opens a new GitHub issue."), reportBtn) or nil }
+	if reportBtn and U.reportMsg and U.reportAsked and os.time() - U.reportAsked <= 120 then rows[#rows + 1] = K.muted(U.reportMsg, W) end
 	return rows
 end
 

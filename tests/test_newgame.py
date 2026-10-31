@@ -234,6 +234,32 @@ def main():
         A.eval("ticks(6)")
         check("a save that fails: « failed », the game stays", state()[0] == "failed" and A.eval("STOPS") == 0, state())
 
+        # (0.6.2) a new game from the New Game page starts at once: no « press a key » screen, MPFever's game script beats
+        # (bridge_alive.txt); the user's test of 2026-10-31: the game was never saved, no lobby
+        def beats(env=""):
+            clear()
+            write("newgame.txt", f"any\t{now}\tshared\tBob\t\n")
+            write("bridge_alive.txt", "41")
+            A = fresh_auto(env)
+            A.execute("WAITING, PROGRESS = false, 1")
+            A.eval("ticks(3)")
+            return A
+        A = beats()
+        check("a new game without « press a key », the game script silent (still the menu): nothing", A.eval("#SAVES") == 0 and A.eval("STARTED") == 0)
+        write("bridge_alive.txt", "1")
+        A.eval("ticks(1)")
+        write("bridge_alive.txt", "2")
+        A.eval("ticks(6)")
+        name = A.eval("SAVES[1] and SAVES[1].name")
+        check("the game script beats: saved as « MPFever <date> » about 2 s later", A.eval("#SAVES") == 1 and re.match(r"^MPFever \d{4}-\d\d-\d\d \d\dh\d\d$", name or "") is not None, name)
+        A.execute("SAVES[1].cb()")
+        A.eval("ticks(1)")
+        check("then back to the main menu for its lobby", A.eval("STOPS") == 1)
+        A = beats("MPFEVER_NEWGAMEBEAT = '0'")
+        write("bridge_alive.txt", "1")
+        A.eval("ticks(8)")
+        check("MPFEVER_NEWGAMEBEAT=0: the « press a key » screen only, as before", A.eval("#SAVES") == 0)
+
         print("the whole way")
         clear()
         M = fresh_menu()

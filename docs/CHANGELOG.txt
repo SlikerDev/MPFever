@@ -23,6 +23,16 @@ MPFever - Changelog
   - AI: computer companies deliver goods to towns again (on by default): their truck stop is placed where the town's
     buildings take the cargo (0.6). A 40-minute test at x4: 16 deliveries to towns, producers shipping 150 to 172 a year
     through them, both games in sync. MPFEVER_AITOWNFREIGHT=0: off.
+  - FIX: the new multiplayer game from the Host tab was never saved nor hosted: a game started from the game's New Game page
+    has no "press a key" screen, which was what the application script waited for; the player stayed in the new game without
+    a lobby (the user's test). The game is now seen running from MPFever's game script's heartbeat (bridge_alive.txt), saved
+    as "MPFever <date>" and hosted. MPFEVER_NEWGAMEBEAT=0: as before.
+  - FIX (#105): the "Report a problem (logs)" button is also on the Session page (the quick view and the Hub): since 0.6 the
+    small window shows Session and Chat only, and the button of the Settings tab could only be found in the Hub.
+    MPFEVER_SESSIONREPORT=0: Settings only.
+  - FIX (#105): while the names differ between games (a default name in another language, a rename), the parts "lines" and
+    "vehicleState", which compare lines by their names, are not counted either: every purchase in a game of players in two
+    languages said "OUT OF SYNC (lines, names, vehicleState)" for one check. MPFEVER_NAMESCHECK=1: counted, as before.
   - Not ours: the crash in the same report came when the game closed, in the graphics driver (D3D12, NVIDIA), right after
     the change of language.
   - Test: tests/test_menuload.py; MPFever.exe --selftest (the update's cleanup).

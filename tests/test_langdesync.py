@@ -10,7 +10,8 @@ file, and run through lupa (Lua 5.2). Cases:
     that time is the player's own and is shipped); another construction at that time is shipped;
   - valueHash: the subsidies' state hashes the same with the title in English and in German, and still differs when
     something else differs; other scripts still hash their "name" texts; MPFEVER_SUBNAMES=1: hashed as before;
-  - the launcher: "names" is a part the games correct from the host (no reload), MPFEVER_NAMESCHECK=1 keeps it a reason.
+  - the launcher: "names" is a part the games correct from the host (no reload), MPFEVER_NAMESCHECK=1 keeps it a reason;
+    while the names differ, "lines" and "vehicleState" (compared by names) are not counted either (#105).
 Run: python tests/test_langdesync.py
 """
 import os, re, sys
@@ -142,6 +143,13 @@ def main():
     check("#101: \"names\" among the parts corrected from the host", re.search(r'\{ "money", "names" \}', cp) is not None, cp)
     check("MPFEVER_NAMESCHECK=1: money only, as before",
           'GetEnvironmentVariable("MPFEVER_NAMESCHECK") == "1"' in cp and re.search(r'\? new HashSet<string> \{ "money" \}', cp) is not None, cp)
+
+    # (0.6.2, #105) lines and vehicleState (compared by names) not counted while the names differ
+    m_ln = re.search(r'if \(Environment\.GetEnvironmentVariable\("MPFEVER_NAMESCHECK"\) != "1" && diffs\.Any\(d => DiffKey\(d\) == "names"\)\)\s*\n\s*diffs = diffs\.Where\(d => DiffKey\(d\) != "lines" && DiffKey\(d\) != "vehicleState"\)\.ToList\(\);', mainform)
+    check("#105: lines and vehicleState not counted while the names differ", m_ln is not None)
+    if m_ln:
+        i_flt, i_keys, i_now = m_ln.start(), mainform.find("var diffKeys = diffs.Select"), mainform.find("var nowDiff = new HashSet<string>(diffs")
+        check("filtered before the parts' streaks and the alarm read them", 0 < i_flt < i_keys < i_now, (i_flt, i_keys, i_now))
 
     print(f"\n{len(fails)} failure(s)" if fails else "\nall passed")
     return 1 if fails else 0

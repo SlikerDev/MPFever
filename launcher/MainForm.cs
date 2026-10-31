@@ -3770,6 +3770,13 @@ namespace MPFever
                 var vals = names.Select(nm => got[nm] != null && got[nm].TryGetValue(k, out var v) ? LuaLit.Show(v) : "absent").ToList();
                 if (vals.Distinct().Count() > 1) diffs.Add($"{k}: " + string.Join(" | ", names.Select((nm, i) => nm + "=" + vals[i])));
             }
+            // (0.6.2, #105) the lines and the vehicles' lines are compared by their names: while the names differ (a default name
+            // in another language, a rename the host's names have not reached yet; corrected from the host, see CorrectedParts),
+            // so do they, and every purchase in a game of players in two languages said "OUT OF SYNC (lines, names, vehicleState)"
+            // for one check. Not counted while the names differ: once the names are equal again, a difference of theirs is one.
+            // MPFEVER_NAMESCHECK=1: counted, as before
+            if (Environment.GetEnvironmentVariable("MPFEVER_NAMESCHECK") != "1" && diffs.Any(d => DiffKey(d) == "names"))
+                diffs = diffs.Where(d => DiffKey(d) != "lines" && DiffKey(d) != "vehicleState").ToList();
             string time = got[names[0]] != null && got[names[0]].TryGetValue("time", out var tv) ? LuaLit.Show(tv) : "?";
             // right after a resynchronisation every game runs the same loaded savegame: a part that still differs is a
             // local measure (display, cache...), not game state; it is left out from then on
