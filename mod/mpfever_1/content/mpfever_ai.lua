@@ -2770,7 +2770,8 @@ local function roadProject(E, co, money)
 end
 
 -- the next freight step: deliveries to towns and routes between industries in turn (the kind the company has fewer lines of
--- first, the other one when it has nothing to do). Between industries only unless MPFEVER_AITOWNFREIGHT=1 (0.5.14).
+-- first, the other one when it has nothing to do). Between industries only with MPFEVER_AITOWNFREIGHT=0 (off by default in 0.5.14
+-- and 0.6, on again in 0.6.2).
 local function freightProject(E, co, stops, lines, vehicles, money)
 	-- (the routes left for want of a garage are tried again once their wait is over, see G_HOLD)
 	local A = E.G.AI
@@ -2786,8 +2787,11 @@ local function freightProject(E, co, stops, lines, vehicles, money)
 		if f and f.town then nTown = nTown + 1 elseif f then nInd = nInd + 1 end
 	end
 	-- (0.5.14: off unless MPFEVER_AITOWNFREIGHT=1. In the tests a town stop took none of the cargo: the trucks stayed full, earned
-	-- nothing and cost their running costs; on before)
-	local towns = os.getenv("MPFEVER_AITOWNFREIGHT") == "1"
+	-- nothing and cost their running costs; on before. 0.6.2: on again: the stop is now placed where the town's buildings take
+	-- the cargo (MPFEVER_AITOWNCATCH, 0.6), and a 40-minute test at x4 had 16 deliveries to towns, producers shipping 150 to 172 a
+	-- year through them, the company that made most of them 521k ahead over two months, both games in sync. MPFEVER_AITOWNFREIGHT=0:
+	-- off)
+	local towns = os.getenv("MPFEVER_AITOWNFREIGHT") ~= "0"
 	if towns and nTown <= nInd then
 		return townFreightProject(E, co, stops, lines, vehicles, money) or industryProject(E, co, lines, vehicles, money) or roadProject(E, co, money)
 	end
@@ -2947,7 +2951,7 @@ end
 -- (0.6) A long-term line to start when the company has none in its investment: once its first lines run (the level's bootstrap),
 -- while it may grow (see mayExpand, step) and can afford the budget (ltBudget) and a truck besides its reserve; not within
 -- LT.cooldownY of the last one given up. The best route of bestFreight's long-term rules (a raw producer that can grow, or the
--- second leg of its chain to an industry); with MPFEVER_AITOWNFREIGHT=1 also a chain's second leg to a town. Returns as
+-- second leg of its chain to an industry); also a chain's second leg to a town (not with MPFEVER_AITOWNFREIGHT=0). Returns as
 -- industryProject (true: it acted)
 local function ltProject(E, co, stops, lines, vehicles, money)
 	if not ltOn() then return false end
@@ -2971,7 +2975,7 @@ local function ltProject(E, co, stops, lines, vehicles, money)
 	end
 	A.ltBudgetNext = budget
 	local r = industryProject(E, co, lines, vehicles, money, "lt")
-	if r == false and os.getenv("MPFEVER_AITOWNFREIGHT") == "1" and os.getenv("MPFEVER_AILTCHAIN") ~= "0" then
+	if r == false and os.getenv("MPFEVER_AITOWNFREIGHT") ~= "0" and os.getenv("MPFEVER_AILTCHAIN") ~= "0" then
 		r = townFreightProject(E, co, stops, lines, vehicles, money, "lt")
 	end
 	return r
@@ -3315,7 +3319,7 @@ M.f = { aiCompany = aiCompany, myStops = myStops, myDepots = myDepots, myLines =
 	bestTownFreight = bestTownFreight, townWants = townWants, townName = townName,
 	-- (0.6)
 	manageLines = manageLines, mayExpand = mayExpand, spendOk = spendOk, ltSync = ltSync, ltProject = ltProject, connectIndustry = connectIndustry, roadProject = roadProject,
-	townFreightProject = townFreightProject, industryProject = industryProject,
+	townFreightProject = townFreightProject, industryProject = industryProject, freightProject = freightProject,
 	buildingsHit = buildingsHit, stockTakes = stockTakes, stopReaches = stopReaches, townDropPoint = townDropPoint, townGood = townGood,
 	step = step }
 

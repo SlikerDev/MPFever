@@ -20,6 +20,9 @@ MPFever - Changelog
   - NEW: a rule for each company's ROADS in the sharing rules (Hub "Sharing rules", the company tab): open (the other
     companies' street tools connect to them, the default) or private. Before, only tracks could be opened: another
     company's roads stayed closed to every street tool, with no setting to change it. MPFEVER_ROADRULE=0: private, as before.
+  - AI: computer companies deliver goods to towns again (on by default): their truck stop is placed where the town's
+    buildings take the cargo (0.6). A 40-minute test at x4: 16 deliveries to towns, producers shipping 150 to 172 a year
+    through them, both games in sync. MPFEVER_AITOWNFREIGHT=0: off.
   - Not ours: the crash in the same report came when the game closed, in the graphics driver (D3D12, NVIDIA), right after
     the change of language.
   - Test: tests/test_menuload.py; MPFever.exe --selftest (the update's cleanup).

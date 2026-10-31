@@ -1,4 +1,4 @@
-"""Deliveries of the computer companies to the towns (0.6, mpfever_ai.lua, opt-in: MPFEVER_AITOWNFREIGHT=1, off by default since
+"""Deliveries of the computer companies to the towns (0.6, mpfever_ai.lua; on by default again in 0.6.2, MPFEVER_AITOWNFREIGHT=0: off; off by default since
 0.5.14): the town buildings that take the cargo (stockTakes, the town building's stock list), the place where they stand thickest
 (densest, townDropPoint), and the check that a stop reaches some of them before its line is made (stopReaches, the engine's
 catchment of the station; townFreightProject). Offline, through lupa (Lua 5.2) with the mocked game of tests/ai_mock.py.
@@ -103,6 +103,18 @@ run('MYSTOPS[1].pos = { x = 1500, y = 1500, z = 0 }')
 r = run('return M.f.townFreightProject(E, CO1, MYSTOPS, linesList(), vehiclesList(), MONEY[700])')
 check(r is True and run('return acts("makeLineCreateCmd")') == 1, "the district's centre, no check: the line is made")
 run('ENV.MPFEVER_AITOWNCATCH = nil; ENV.MPFEVER_AITOWNFREIGHT = nil')
+
+# (0.6.2) the deliveries to towns on by default (a company without freight lines starts with one), off with MPFEVER_AITOWNFREIGHT=0
+print("MPFEVER_AITOWNFREIGHT: on by default")
+run(WORLD)
+run('ENV.MPFEVER_AITOWNFREIGHT = nil; CATCH = { [70] = { 81, 83 } }')
+run('M.f.freightProject(E, CO1, MYSTOPS, linesList(), vehiclesList(), MONEY[700])')
+check(run('return logHas("town delivery")') is True, "nothing set: a delivery to a town is looked for")
+run(WORLD)
+run('ENV.MPFEVER_AITOWNFREIGHT = "0"; CATCH = { [70] = { 81, 83 } }')
+run('M.f.freightProject(E, CO1, MYSTOPS, linesList(), vehiclesList(), MONEY[700])')
+check(run('return logHas("town delivery")') is False, "MPFEVER_AITOWNFREIGHT=0: none")
+run('ENV.MPFEVER_AITOWNFREIGHT = nil')
 
 if failures:
     print(f"FAIL: {len(failures)} check(s)")
