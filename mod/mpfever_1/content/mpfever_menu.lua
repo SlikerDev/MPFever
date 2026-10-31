@@ -1895,7 +1895,29 @@ local function setup()
 			menuUi.makeMainOuterCard(true, { content }), {})
 	end)
 
-	-- the main page, with the « Multiplayer » card in its top left corner; the MPFever page in its place once opened
+	-- (0.6.3) Where the « Multiplayer » card sits on the main page. In its top left corner (up to 0.6.2) it covered the game's
+	-- own lines there (the player's profile, the edition, the Mod Hub's state). Now beside the game's cards, left of their bottom
+	-- row (Continue / Load Game), the gap between them that of the game's cards, where it hides nothing.
+	-- The main menu is laid out in units of a 1920 x 1080 screen scaled to the window (the smaller of width / 1920 and height /
+	-- 1080, as the « Load Game » frame measures on screenshots at 1532 x 976 and 5120 x 1334): from 1280 x 720 to 2560 x 1440
+	-- the same 1920 x 1080 units, a wider screen more width, a taller one more height, never less. The game centres its logo
+	-- and cards (FloatingLayoutChild h = v = 0.5; h and v are relative: 0.5 centres the item, 0 / 1 put it against the left /
+	-- top or right / bottom edge). Their sizes come from main_menu.css.lua and main_menu_sizes.lua: cards 794 x 314 and
+	-- 391 x 151 with 5 of margin, rows 1205 wide and 324 high, the logo 676 x 272 (deluxe 676 x 297.5) with its margins
+	-- -18 / 28 (deluxe 36). The card's item is centred too, as big as the game's block and mirrored (an empty width of the
+	-- cards and of the card on its right, the space above and below), so it keeps to the cards on every screen; the empty
+	-- part lets the mouse through (mouseTransparent), the game's cards under it stay clickable. At 1920 wide the cards leave
+	-- 357 on each side: the card (316 x 181, the game's "small-rectangle-card") fits there with 36 to the screen's edge.
+	-- MPFEVER_MENUCARD=old: the top left corner as before.
+	local function cardPlace(how, deluxe)
+		if how == "old" then return { h = 0.0, v = 0.0, padding = { 96, 0, 0, 24 } } end
+		local ROWS_W, ROW_H, CARD_W, CARD_H = 1205, 324, 316 + 10, 181 + 10
+		local logo = deluxe and (-18 + 297.5 + 36) or (-18 + 272 + 28)
+		local below = (ROW_H - CARD_H) / 2
+		return { h = 0.5, v = 0.5, padding = { logo + ROW_H + below, ROWS_W + CARD_W, below, 0 } }
+	end
+
+	-- the main page, with the « Multiplayer » card beside the game's cards; the MPFever page in its place once opened
 	local CARD_IMAGES = {
 		"::/gui/menu/images/temperate_ingame.tga",
 		"::/gui/menu/images/subarctic_ingame.tga",
@@ -2006,12 +2028,17 @@ local function setup()
 			initialImageIndex = 1,
 			displayDurationSeconds = 12,
 			class = "small-rectangle-card",
+			-- (as the game's cards: the menu's background answers the mouse over it)
+			onAttention = function(x, y) pcall(function() p.commonParams.triggerBackgroundEvent(api.type.Vec2f.new(x, y)) end) end,
 		}
+		-- (the logo the main page shows: the deluxe one is taller, the cards lower)
+		local okD, dlc = pcall(function() return p.commonParams.getDLCModState() end)
+		local place = cardPlace(os.getenv("MPFEVER_MENUCARD"), okD and type(dlc) == "table" and dlc.hasDeluxeDLC and true or false)
 		-- inside the menu's box layout a page must be a layout: the original page fills it, the card floats over it
 		return builtin.FloatingLayout{
 			children = {
 				builtin.FloatingLayoutChild{ h = -1, v = -1, item = builtin.Component{ mouseTransparent = true, layout = builtin.BoxLayout{ children = { _react.originalRecipeFn[mainId](mainParams) } } } },
-				builtin.FloatingLayoutChild{ h = 0.0, v = 0.0, item = builtin.Component{ meta = { styleSheet = style{ padding = { 96, 0, 0, 24 } } }, layout = builtin.BoxLayout{ children = { card } } } },
+				builtin.FloatingLayoutChild{ h = place.h, v = place.v, item = builtin.Component{ mouseTransparent = true, meta = { styleSheet = style{ padding = place.padding } }, layout = builtin.BoxLayout{ children = { card } } } },
 			},
 		}
 	end)
