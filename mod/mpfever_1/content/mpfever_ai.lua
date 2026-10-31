@@ -3067,6 +3067,17 @@ end
 -- a dry run of a construction of the company at x, y turned by a: free (no error), its proposal and context, its price, why not
 function RL.dry(E, co, file, params, x, y, a)
 	local api = E.api
+	-- (a name of its own: the nearest town's and the company's. Built with none, it was named "" on the builder's game and after
+	-- its file on the others, a difference of the names at every station, corrected by the host's names)
+	local name = AINAME
+	pcall(function()
+		local best, bd
+		for _, t in ipairs(townsBySize(E)) do
+			local c = centre(E, t.e, E.api.type.enum.LandUseType.RESIDENTIAL)
+			if c then local d = (c.x - x) ^ 2 + (c.y - y) ^ 2; if not bd or d < bd then best, bd = t.e, d end end
+		end
+		if best then name = townName(E, best) .. " " .. AINAME end
+	end)
 	local z = E.groundZ(x, y, 0)
 	local sp = api.type.SimpleProposal.new()
 	local ce = api.type.SimpleProposal.ConstructionEntity.new()
@@ -3074,7 +3085,7 @@ function RL.dry(E, co, file, params, x, y, a)
 	ce.params = params
 	ce.transf = RL.transf(E, x, y, z, a)
 	ce.playerEntity = co.ent
-	pcall(function() ce.name = "" end)
+	pcall(function() ce.name = name end)
 	sp.constructionsToAdd = { ce }
 	local bits = keepBuildings() and withoutBuildings(CTX_DEPOT) or CTX_DEPOT
 	local ctx = context(E, co.ent, bits)
