@@ -3789,9 +3789,14 @@ local nativeReceived
 -- action arrives late.
 G.consumed = {}
 local function adaptAhead(base)
-	-- (opt-in, MPFEVER_ADAPTAHEAD=1: on a loaded PC builds already arrive up to 3 steps late with the full distance, so it is
+	-- MPFEVER_ADAPTAHEAD=1 is the launcher's "Slow PC mode", whose text says it gives builds more room on a busy PC: it did the
+	-- opposite, it shortened the distance down to 60 % (a host with it on, #104: stamp distance 7 to 10 instead of 16 at x4, 70
+	-- builds arrived with no step to spare). It now gives a third more room (the builds of this PC show a little later and
+	-- reach the others in time). MPFEVER_ADAPTAHEAD=short: shortened, as before
+	if os.getenv("MPFEVER_ADAPTAHEAD") == "1" then return base + math.ceil(base / 3) end
+	-- (opt-in, MPFEVER_ADAPTAHEAD=short: on a loaded PC builds already arrive up to 3 steps late with the full distance, so it is
 	-- not shortened by default)
-	if not os.getenv("MPFEVER_ADAPTAHEAD") or G.aheadLocked or #G.consumed < 8 then return base end
+	if os.getenv("MPFEVER_ADAPTAHEAD") ~= "short" or G.aheadLocked or #G.consumed < 8 then return base end
 	local mx = 0
 	for _, c in ipairs(G.consumed) do mx = math.max(mx, c) end
 	return math.max(math.ceil(base * 0.6), math.min(base, math.ceil(mx * 1.5) + 4))

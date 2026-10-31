@@ -14,6 +14,9 @@ MPFever - Changelog
     proposal, which keeps the old owner, while the tool's segment has an owner of its own, or none. The replay now gives the
     new segment the tool's owner, or none (owners out of sync, then a reload, twice in the report's session). Checked with a
     new autotest (upgowner: out of sync before, in sync after). MPFEVER_UPGOWNER=0: as before.
+  - FIX (#104): the launcher's "Slow PC mode" (MPFEVER_ADAPTAHEAD=1) did the opposite of its text: instead of more room for
+    the builds of a busy PC, it shortened the stamp distance down to 60 % (the report's host had it on: 7 to 10 steps instead
+    of 16 at x4, 70 builds arrived with no step to spare). It now gives a third more room. MPFEVER_ADAPTAHEAD=short: as before.
   - NEW: a rule for each company's ROADS in the sharing rules (Hub "Sharing rules", the company tab): open (the other
     companies' street tools connect to them, the default) or private. Before, only tracks could be opened: another
     company's roads stayed closed to every street tool, with no setting to change it. MPFEVER_ROADRULE=0: private, as before.
