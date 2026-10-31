@@ -292,8 +292,9 @@ handlers.menuTick = function()
 	menuLoad()
 end
 
--- (required by the menu: the handlers only, the game's application script is this file run with --script)
-if MPFEVER_AUTO_EMBED then return handlers end
+-- (required by the menu, package.loaded.mpfever_auto_embed set: the handlers only, the game's application script is this file
+-- run with --script)
+if type(package) == "table" and type(package.loaded) == "table" and package.loaded["mpfever_auto_embed"] then return handlers end
 function data()
 	return handlers
 end

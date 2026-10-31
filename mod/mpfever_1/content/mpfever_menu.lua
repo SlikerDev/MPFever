@@ -1938,7 +1938,25 @@ local function setup()
 			if not os.getenv("MPFEVER_MENU_LANGTEST") or not (DIR and IO) or readFile("menu_langtest.txt") then return end
 			writeFile("menu_langtest.txt", "1")
 			log("test: the game's language changed to " .. os.getenv("MPFEVER_MENU_LANGTEST"))
-			local ok, err = pcall(function() app.getUserProfile():changeLanguage(os.getenv("MPFEVER_MENU_LANGTEST")) end)
+			-- (the game's list of languages: { name, key }; the one whose name holds the code, else the first other than the current)
+			local ok, err = pcall(function()
+				local prof = app.getUserProfile()
+				local cur, pick, other = prof:getLanguage(), nil, nil
+				local want = os.getenv("MPFEVER_MENU_LANGTEST"):lower()
+				for _, l in ipairs(prof:getLanguageRep():getAllLanguages()) do
+					local same = false
+					pcall(function() same = l[2]:equals(cur) end)
+					if not same then
+						other = other or l
+						if not pick and tostring(l[1]):lower():find(want, 1, true) then pick = l end
+					end
+				end
+				pick = pick or other
+				log("test: language " .. tostring(pick and pick[1]))
+				prof:changeLanguage(pick[2])
+				-- (as the settings page does when it is left after a change of language)
+				app.restart()
+			end)
 			if not ok then log("test: the language change failed: " .. tostring(err)) end
 		end, 3)
 		local autoWait = react.useRef(nil)
@@ -1955,9 +1973,11 @@ local function setup()
 				if readFile("menu_loaded.txt") == w.seq then w.off = true return end
 				log("the host's game not taken by the loader within 6 s (the game's language changed?): loaded from the main page")
 			end
-			MPFEVER_AUTO_EMBED = true
+			-- (the flag in package.loaded: the main menu's scripts may not create globals, the game stops them, "creating globals by
+			-- assignment is not allowed", and the menu was built again every 6 s, in the in-game test of the language change)
+			package.loaded["mpfever_auto_embed"] = true
 			local okA, A = pcall(require, "mpfever_1::/mpfever_auto.lua")
-			MPFEVER_AUTO_EMBED = nil
+			package.loaded["mpfever_auto_embed"] = nil
 			if not okA or type(A) ~= "table" or type(A.menuTick) ~= "function" then
 				w.off = true
 				log("the loader could not be read here: " .. tostring(A))

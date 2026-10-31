@@ -8,7 +8,7 @@ script has not taken the request within 6 s.
 mpfever_auto.lua is run through lupa (Lua 5.2) with a mocked game (app, api) and a real folder for its files; the main page's
 timer is taken from the real mpfever_menu.lua. Cases:
   - mpfever_auto.lua run as the game runs it: data() gives the handlers, the chunk returns nothing (as before);
-  - required by the menu (MPFEVER_AUTO_EMBED): the handlers returned, no global data() defined;
+  - required by the menu (package.loaded.mpfever_auto_embed): the handlers returned, no global data() defined;
   - menuTick: the host's game named in menu_state.txt is loaded once (menu_loaded.txt written), not again at the next call;
     a request already taken (menu_loaded.txt) is not loaded again; a state cut in the middle (no "end=1") is not read;
   - the main page's timer: nothing for 6 s (12 calls), then nothing when the application script took the request, else the
@@ -94,7 +94,7 @@ def main():
               L.eval("type(data) == 'function' and type(data().update) == 'function' and type(data().menuTick) == 'function'"))
         # --- required by the menu
         L = fresh()
-        L.execute("MPFEVER_AUTO_EMBED = true")
+        L.execute("package.loaded.mpfever_auto_embed = true")
         A = L.execute(auto)
         check("required by the menu: the handlers returned", A is not None and L.eval("function(a) return type(a.menuTick) end")(A) == "function")
         check("required by the menu: no global data()", L.eval("data") is None)
@@ -112,7 +112,7 @@ def main():
         tick(A)
         check("not loaded twice", len(list(L.eval("LOADS").values())) == 1, list(L.eval("LOADS").values()))
 
-        L = fresh(); L.execute("MPFEVER_AUTO_EMBED = true"); A = L.execute(auto)
+        L = fresh(); L.execute("package.loaded.mpfever_auto_embed = true"); A = L.execute(auto)
         clear()
         write("menu_state.txt", "phase=loading\nload=MPFever resync Balle\nloadSeq=r1-639\nend=1\n")
         write("menu_loaded.txt", "r1-639")
@@ -120,7 +120,7 @@ def main():
         tick(A); tick(A)
         check("a request the application script took: not loaded again", len(list(L.eval("LOADS").values())) == 0)
 
-        L = fresh(); L.execute("MPFEVER_AUTO_EMBED = true"); A = L.execute(auto)
+        L = fresh(); L.execute("package.loaded.mpfever_auto_embed = true"); A = L.execute(auto)
         clear()
         L.eval("function(a) return a.menuTick() end")(A)      # (a whole state read once)
         write("menu_state.txt", "phase=idle\nend=1\n")
@@ -140,7 +140,7 @@ def main():
           function readFile(n) return FILES[n] end
           function log(s) LOGS[#LOGS + 1] = s end
           LOADER = { menuTick = function() TICKS = TICKS + 1 end }
-          require = function(name) REQS = REQS + 1; assert(MPFEVER_AUTO_EMBED == true); return LOADER end
+          require = function(name) REQS = REQS + 1; assert(package.loaded.mpfever_auto_embed == true); return LOADER end
           react = { useRef = function(v) local r = { v = v } return { get = function() return r.v end, set = function(_, x) r.v = x end } end,
                     onStepTimer = function(fn) TIMER = fn end }
         ''')
@@ -152,7 +152,8 @@ def main():
         check("the main page waits 6 s", got == 0, got)
         got = step(3)
         check("#103: then the loader at every call", got == 3, got)
-        check("the flag of the menu's require put back", T.eval("MPFEVER_AUTO_EMBED") is None)
+        check("the flag of the menu's require put back", T.eval("package.loaded.mpfever_auto_embed") is None)
+        check("no global created by the main page (the game forbids it)", not any("creating globals" in str(x) for x in T.eval("LOGS").values()))
         check("one line in the log", sum(1 for s in T.eval("LOGS").values() if "within 6 s" in s) == 1, list(T.eval("LOGS").values()))
 
         T.execute("STATE.loadSeq = 'r2'; TICKS = 0; FILES['menu_loaded.txt'] = 'r2'")
