@@ -3,6 +3,8 @@
 --   keyboard;
 -- * resynchronisation: when the mod loads the host's savegame (flag file resync_pending.txt), starts the loaded game
 --   as soon as it is ready, without the "press a key" screen.
+-- * a new multiplayer game (0.6.3): the game the host created from the MPFever page is saved and taken back to the menu's
+--   lobby (see newGameTick).
 -- No backslash characters on purpose.
 
 local IO = package.loaded.io
@@ -245,6 +247,68 @@ local function startWhenReady()
 	return false
 end
 
+-- (0.6.3) A new multiplayer game without a savegame: the host's « New game » button of the MPFever page (mpfever_menu.lua,
+-- newGame) writes newgame.txt and opens the game's own New Game page; the menu marks the file "started" when that page starts
+-- a game (app.startGame2, or a saved map loaded). Once that game is loaded, this script starts it (no "press a key" screen),
+-- saves it after about 2 s under the name "MPFever <date>", marks the file "saved" with that name and goes back to the main
+-- menu, where the MPFever page opens the lobby with that savegame (newGame.take). "any" (the menu could not watch the game's
+-- start): the next game loaded counts. A file older than 2 hours, or in another state, is left alone. MPFEVER_NEWGAME=0: never.
+-- newgame.txt: "state TAB time TAB company mode TAB player name TAB savegame name"
+local NG = { file = "newgame.txt" }
+function NG.read()
+	local f = IO.open(DIR .. BS .. NG.file, "rb")
+	if not f then return nil end
+	local s = f:read("*a") or ""
+	f:close()
+	local t = {}
+	for v in (s:gsub("[" .. string.char(10, 13) .. "]+$", "") .. string.char(9)):gmatch("([^" .. string.char(9) .. "]*)" .. string.char(9)) do t[#t + 1] = v end
+	if (t[1] or "") == "" then return nil end
+	return { state = t[1], at = tonumber(t[2]) or 0, mode = t[3] or "", player = t[4] or "", save = t[5] or "" }
+end
+function NG.write(m)
+	local f = IO.open(DIR .. BS .. NG.file, "wb")
+	if not f then return end
+	f:write(table.concat({ m.state, tostring(m.at), m.mode, m.player, m.save or "" }, string.char(9)) .. string.char(10))
+	f:close()
+end
+local function newGameTick()
+	if os.getenv("MPFEVER_NEWGAME") == "0" or not (DIR and IO) then return end
+	if NG.stop then
+		-- (saved: back to the main menu, unless the player went there already, which takes the file)
+		NG.stop = nil
+		local m = NG.read()
+		if m and m.state == "saved" then
+			log("new game saved as '" .. m.save .. "': back to the main menu for its lobby")
+			local ok, err = pcall(app.stopGame)
+			if not ok then log("new game: back to the main menu failed: " .. tostring(err)) end
+		end
+		return
+	end
+	local m = NG.read()
+	if not m or (m.state ~= "started" and m.state ~= "any") or os.time() - m.at > 7200 then NG.since = nil return end
+	if not NG.since then
+		-- (the new game loaded and waiting for a key: started now)
+		if startWhenReady() then NG.since = S.frames; log("new game loaded, starting it") end
+		return
+	end
+	if S.frames - NG.since < 120 then return end
+	NG.since = nil
+	m.state = "saving"
+	m.save = os.date("MPFever %Y-%m-%d %Hh%M")
+	NG.write(m)
+	log("new game: saving it as '" .. m.save .. "'")
+	local ok, err = pcall(app.saveGame, m.save, function()
+		m.state = "saved"
+		NG.write(m)
+		NG.stop = true
+	end, false, true)
+	if not ok then
+		log("new game: the save failed: " .. tostring(err))
+		m.state = "failed"
+		NG.write(m)
+	end
+end
+
 local handlers = {
 	handleEvent = function(id, name, param)
 		if name == "mainMenuReady" then S.menuReady = true end
@@ -271,6 +335,8 @@ local handlers = {
 			log("game loaded, starting it")
 		end
 		pcall(menuLoad)
+		local okN, errN = pcall(newGameTick)
+		if not okN then log("new game: " .. tostring(errN)) end
 		if resyncPending() and startWhenReady() then
 			clearResync()
 			log("host's game loaded (resynchronisation), starting it")
