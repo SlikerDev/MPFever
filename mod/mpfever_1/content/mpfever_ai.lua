@@ -3338,7 +3338,7 @@ end
 -- A station of the company near an industry, its tracks along the way to the other end of the railway (axis a): the first
 -- free place on rings around the industry, the side facing the other end first; built. True when asked for, "dear" when
 -- refused for its price, false when no place is free
-function RL.buildStation(E, co, ind, a, tag)
+function RL.stationPlace(E, co, ind, a, tag)
 	local year = currentYear(E)
 	local params = RL.stationParams(year, RL.LEN)
 	local tried, fallback = 0, nil
@@ -3352,20 +3352,23 @@ function RL.buildStation(E, co, ind, a, tag)
 			-- (the station's tracks run along its own y axis: turned a quarter less)
 			local free, sp, ctx, cost, why, bits = RL.dry(E, co, RL.STATION, params, x, y, a - math.pi / 2)
 			if free then
-				local place = { sp = sp, ctx = ctx, cost = cost, bits = bits, x = x, y = y, r = r }
-				if RL.depotRoom(E, co, x, y, a) then
-					fallback = place
-					goto chosen
-				end
+				local place = { sp = sp, ctx = ctx, cost = cost, bits = bits, x = x, y = y, r = r, a = a }
+				if RL.depotRoom(E, co, x, y, a) then return place end
 				fallback = fallback or place
-			elseif tried <= 3 then L(E, "train station " .. tag .. " at " .. math.floor(r) .. " m: " .. tostring(why):sub(1, 160)) end
+			elseif tried <= 3 and tag then L(E, "train station " .. tag .. " at " .. math.floor(r) .. " m: " .. tostring(why):sub(1, 160)) end
 		end
 	end
-	::chosen::
-	if not fallback then return false end
-	if not spendOk(E, co, (fallback.cost or 600000) + 50000, "train station " .. tag) then return "dear" end
-	L(E, string.format("train station %s near industry %d: %.0f m from it, %s", tag, ind.e, fallback.r, fallback.cost and ("cost " .. math.floor(fallback.cost)) or "cost unknown"))
-	build(E, co.id, E.api.cmd.makeWorldBuildProposalCmd(fallback.sp, fallback.ctx, false, true, true), "train station " .. tag, fallback.bits, { kind = "railstation", pos = { x = fallback.x, y = fallback.y, z = 0 } })
+	return fallback
+end
+
+-- A station of the company near an industry, its tracks along the way to the other end of the railway (axis a), at the first
+-- free place RL.stationPlace finds; built. True when asked for, "dear" when refused for its price, false when no place is free
+function RL.buildStation(E, co, ind, a, tag)
+	local place = RL.stationPlace(E, co, ind, a, tag)
+	if not place then return false end
+	if not spendOk(E, co, (place.cost or 600000) + 50000, "train station " .. tag) then return "dear" end
+	L(E, string.format("train station %s near industry %d: %.0f m from it, %s", tag, ind.e, place.r, place.cost and ("cost " .. math.floor(place.cost)) or "cost unknown"))
+	build(E, co.id, E.api.cmd.makeWorldBuildProposalCmd(place.sp, place.ctx, false, true, true), "train station " .. tag, place.bits, { kind = "railstation", pos = { x = place.x, y = place.y, z = 0 } })
 	return true
 end
 
@@ -3880,19 +3883,27 @@ function RL.box(p0, p1)
 		y0 = math.min(p0.y, p1.y) - L0 * 0.5 - 300, y1 = math.max(p0.y, p1.y) + L0 * 0.5 + 300 }
 end
 
--- whether some way between two industries is clear (the stations 300 m out of each, towards the other): RL.trackProposal's
--- checks of what is in the way, no dry run
-function RL.corridor(E, co, pa, pb)
-	local L0 = dist(pa, pb)
-	local d = { x = (pb.x - pa.x) / L0, y = (pb.y - pa.y) / L0 }
-	local p0 = { x = pa.x + d.x * 300, y = pa.y + d.y * 300, z = E.groundZ(pa.x + d.x * 300, pa.y + d.y * 300, 0) }
-	local p1 = { x = pb.x - d.x * 300, y = pb.y - d.y * 300, z = E.groundZ(pb.x - d.x * 300, pb.y - d.y * 300, 0) }
+-- Whether a railway between two industries can be laid, before anything is built: the places its two stations would take
+-- (RL.stationPlace, the second one turned towards the first), their ends facing each other (80 m out of each centre), and some
+-- way between those ends clear of what is in its way (RL.trackProposal: towns, slopes, bridges; no dry run). True, or false and why
+function RL.corridor(E, co, from, to, a)
+	local pa = RL.stationPlace(E, co, from, a)
+	if not pa then return false, "no place for a station near industry " .. from.e end
+	local pb = RL.stationPlace(E, co, to, a + math.pi)
+	if not pb then return false, "no place for a station near industry " .. to.e end
+	local u = { x = math.cos(a), y = math.sin(a) }
+	local back = { x = -u.x, y = -u.y }
+	local p0 = { x = pa.x + u.x * 80, y = pa.y + u.y * 80 }
+	local p1 = { x = pb.x - u.x * 80, y = pb.y - u.y * 80 }
+	p0.z, p1.z = E.groundZ(pa.x, pa.y, 0), E.groundZ(pb.x, pb.y, 0)
 	local W = RL.world(E, co, RL.box(p0, p1))
-	local back = { x = -d.x, y = -d.y }
-	for _, w in ipairs(RL.ways(E, p0, d, p1, back, W)) do
-		if RL.trackProposal(E, co, -1, p0, d, -2, p1, back, currentYear(E), w.way, W) then return true end
+	local why = "no way"
+	for _, w in ipairs(RL.ways(E, p0, u, p1, back, W)) do
+		local sp, _, refused = RL.trackProposal(E, co, -1, p0, u, -2, p1, back, currentYear(E), w.way, W)
+		if sp then return true end
+		why = tostring(refused)
 	end
-	return false
+	return false, why
 end
 
 -- the track between two ends: each way of RL.ways checked against what is in its way (RL.trackProposal), then a dry run; the
@@ -4030,15 +4041,15 @@ function RL.project(E, co, lines, money, begin)
 			return "wait"
 		end
 		local a = math.atan2(r.to.pos.y - r.from.pos.y, r.to.pos.x - r.from.pos.x)
-		-- (a corridor first: some curve between the two industries clear of towns, tracks and streets it cannot cross, see
-		-- RL.trackProposal; else the stations would be built for nothing)
-		local okF, clear = pcall(RL.corridor, E, co, r.from.pos, r.to.pos)
+		-- (a way first: both stations' places and a track between their ends, see RL.corridor; else the stations would be built
+		-- for nothing)
+		local okF, clear, why = pcall(RL.corridor, E, co, r.from, r.to, a)
 		if not (okF and clear) then
 			A.railTried = A.railTried or {}; A.railTried[r.from.e] = true
-			L(E, string.format("railway %s %.1f km (industry %d -> %d): no clear way between them (%s)", cargoName(E, r.cargo), r.d / 1000, r.from.e, r.to.e, tostring(okF and "towns, tracks or streets in the way" or clear):sub(1, 160)))
+			L(E, string.format("railway %s %.1f km (industry %d -> %d): no way for it (%s)", cargoName(E, r.cargo), r.d / 1000, r.from.e, r.to.e, tostring(okF and why or clear):sub(1, 160)))
 			return false
 		end
-		A.rail = { from = r.from.e, to = r.to, cargo = r.cargo, at = E.G.frames }
+		A.rail = { from = r.from.e, to = r.to, cargo = r.cargo, at = E.G.frames, a = a }
 		L(E, string.format("railway begun: %s %.1f km from industry %d to %d", cargoName(E, r.cargo), r.d / 1000, r.from.e, r.to.e))
 		local ok = RL.buildStation(E, co, r.from, a, "A")
 		if ok == false then A.railTried = A.railTried or {}; A.railTried[r.from.e] = true; A.rail = nil; L(E, "railway: no place for a station near industry " .. r.from.e) end
@@ -4047,7 +4058,7 @@ function RL.project(E, co, lines, money, begin)
 	-- the other station
 	if not u.b then
 		local to = u.toInd
-		local a = math.atan2(u.a.pos.y - to.pos.y, u.a.pos.x - to.pos.x)
+		local a = (A.rail and A.rail.a) and (A.rail.a + math.pi) or math.atan2(u.a.pos.y - to.pos.y, u.a.pos.x - to.pos.x)
 		local ok = RL.buildStation(E, co, to, a, "B")
 		if ok == false then
 			L(E, "railway: no place for a station near industry " .. to.e .. ": left")
