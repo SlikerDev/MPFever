@@ -4,9 +4,9 @@ tests/ai_mock.py:
     game's file on 2026-10-31: a cargo station, one track, 3 or 2 platforms, eras a/b/c, simple track before 1930);
   - the track between two stations: its ends are the two nodes, its pieces join, it leaves each end straight on, its heights
     stay within the grade over hilly ground and end at the nodes' heights, every piece a track (type 1) of the company;
-  - what is in its way: a street crossed on a 50 m concrete bridge 8 m over it, nothing of the street touched; two streets 30 m
+  - what is in its way: a street crossed on a 50 m concrete bridge 7 m over it, nothing of the street touched; two streets 30 m
     apart (even ones it may not cut) under one bridge; a bridge with no room before its end, a street crossed nearly along, a
-    town house 30 m away, a curve too tight: refused; a river crossed on a bridge 8 m over the water, a lake 500 m wide refused;
+    town house 30 m away, a curve too tight: refused; a river crossed on a bridge 7 m over the water, a lake 500 m wide refused;
     a town in the middle of a 6 km way: the straight track refused, the search's (A*) way round it taken;
   - the train: the cheapest locomotive strong enough that needs no catenary (not the electric one, not one off sale, not an 18 M
     Big Boy), the wagon that carries
@@ -134,11 +134,11 @@ def main():
       local sp, len, why, n = WAY(W)
       if not sp then return false, why end
       local b = bridges(sp)
-      local ok = n == 1 and #b == 1 and b[1].idx == 1 and math.abs(b[1].z0 - 18) < 0.01 and math.abs(b[1].z1 - 18) < 0.01 and b[1].x0 < 1500 and b[1].x1 > 1500
+      local ok = n == 1 and #b == 1 and b[1].idx == 1 and math.abs(b[1].z0 - 17) < 0.01 and math.abs(b[1].z1 - 17) < 0.01 and b[1].x0 < 1500 and b[1].x1 > 1500
         and math.abs(b[1].len - 50) < 2 and sp.streetProposal.edgesToRemove == nil
       return ok, tostring(n) .. " crossing(s), " .. #b .. " bridge(s) " .. (b[1] and string.format("%.1f m at %.1f-%.1f from x %.0f to %.0f", b[1].len, b[1].z0, b[1].z1, b[1].x0, b[1].x1) or "")
     ''')
-    check(res[0], f"a street across its way: crossed on the concrete bridge, 50 m long, 8 m over it, nothing of the street touched ({res[1]})")
+    check(res[0], f"a street across its way: crossed on the concrete bridge, 50 m long, 7 m over it, nothing of the street touched ({res[1]})")
     res = run(BRIDGE + '''
       local W = { edges = { STREET(501, { x = 1500, y = -300 }, { x = 1500, y = 300 }, 61, 62, false), STREET(502, { x = 1530, y = -300 }, { x = 1530, y = 300 }, 63, 64, false) },
         houses = {}, cons = {}, segmap = {} }
@@ -168,9 +168,9 @@ def main():
       E.groundZ = function(x, y, z) return 10 end
       if not sp then return false, why end
       local b = bridges(sp)
-      return #b == 1 and b[1].x0 <= 1445 and b[1].x1 >= 1555 and math.abs(b[1].z0 - 8) < 0.01, #b .. " bridge(s) " .. (b[1] and string.format("from x %.0f to %.0f at %.1f", b[1].x0, b[1].x1, b[1].z0) or "")
+      return #b == 1 and b[1].x0 <= 1445 and b[1].x1 >= 1555 and math.abs(b[1].z0 - 7) < 0.01, #b .. " bridge(s) " .. (b[1] and string.format("from x %.0f to %.0f at %.1f", b[1].x0, b[1].x1, b[1].z0) or "")
     ''')
-    check(res[0], f"a river across its way: crossed on a bridge 8 m over the water ({res[1]})")
+    check(res[0], f"a river across its way: crossed on a bridge 7 m over the water ({res[1]})")
     res = run('''
       E.groundZ = function(x, y, z) if x > 1200 and x < 1700 then return -3 end return 10 end
       local sp, len, why = WAY({ edges = {}, houses = {}, cons = {}, segmap = {} })

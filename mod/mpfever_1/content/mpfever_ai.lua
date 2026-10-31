@@ -47,8 +47,8 @@ local LV = LEVELS[2]
 -- (0.6.4) the computer companies' railways, see "trains" below
 local RL = { MIN = 2500, MAX = 15000, LEN = 3, STEP = 60, GRADE = 0.03, STATION = "::/stations/rail/modular_station/modular_station.con",
 	DEPOT = "::/depots/rail/rail_depot.con", DEPOT_EXIT = { x = -12.2, y = -90 }, POWER = 400, WAGONS = 6,
-	OFFSETS = { 0, 0.12, -0.12, 0.25, -0.25, 0.4, -0.4 }, CELL = 100, CROSS = 300, ALONG = 150, LEG = 600, LEAD = 500, RADIUS = 80, TRIES = 3, SPAN = 50, CLEAR = 8, WATER = 300, WET = 400, IDLE_TRIES = 20,
-	RAMP = 0.06 }
+	OFFSETS = { 0, 0.12, -0.12, 0.25, -0.25, 0.4, -0.4 }, CELL = 100, CROSS = 300, ALONG = 150, LEG = 600, LEAD = 500, RADIUS = 80, TRIES = 3, SPAN = 50, CLEAR = 7, WATER = 300, WET = 400, IDLE_TRIES = 20,
+	RAMP = 0.07 }
 
 local function L(E, s) E.log("AI" .. (AINUM ~= 1 and tostring(AINUM) or "") .. " " .. s) end
 
