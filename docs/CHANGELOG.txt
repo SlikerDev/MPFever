@@ -1,6 +1,13 @@
 MPFever - Changelog
 ===================
 
+0.6.4 - the host's company ranks with its own work
+  - FIX: one company per player, the host's company (the savegame's, number 1) rose fast while the others barely moved (a
+    player: the host supervisor, himself near junior). Since #63 it followed the game's own experience while that one was
+    higher, and the game's own experience is the world's population: it grows with what every company carries. It now keeps
+    where it began and adds its own score only, as the other companies; its bar still moves (#63) and a rank already reached
+    is never taken back. Test: tests/test_ranks.py (two companies, only one carries). MPFEVER_RANK1BASE=0: as before.
+
 0.6.3 - a game MPFever does not find itself (GOG, a folder of its own)
   - NEW: MPFever looked for Transport Fever 3 in the Steam libraries only, and stopped there with "Transport Fever 3 was not
     found" for a GOG copy. It now also looks where GOG installs it (the folders GOG's installer writes in the registry, then

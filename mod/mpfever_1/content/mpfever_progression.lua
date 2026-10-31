@@ -324,11 +324,20 @@ function PG.tally(prog, reg, towns, game, say, now)
 		-- the savegame's company began with the game's own experience (the highest world population), far above its score:
 		-- it then stood still (issue #63: 9332, the bar stuck at 3332 of 3600) while the game's own progression went on and
 		-- announced a new headquarters level that the company could not take. It follows the game's own experience while
-		-- that one is higher (MPFEVER_RANK1OWN=0: as before)
+		-- that one is higher (MPFEVER_RANK1OWN=0: as before).
+		-- (0.6.3) But the game's own experience grows with what EVERY company carries (the world's population): the host's
+		-- company rose with the others' work (supervisor while the others stayed near junior). It now keeps where it began
+		-- (r.base: its experience less its score, taken once, saved with the game) and adds its own score only, so its bar
+		-- still moves (#63) and its rank never goes down. MPFEVER_RANK1BASE=0: follows the game's own experience, as 0.6.2.
 		if id == 1 and os.getenv("MPFEVER_RANK1OWN") ~= "0" then
-			local okO, own = pcall(game.own, entry.company.ent)
-			local x = okO and type(own) == "table" and tonumber(own.experience) or nil
-			if x and math.floor(x) > r.experience then r.experience = math.floor(x) end
+			if os.getenv("MPFEVER_RANK1BASE") == "0" then
+				local okO, own = pcall(game.own, entry.company.ent)
+				local x = okO and type(own) == "table" and tonumber(own.experience) or nil
+				if x and math.floor(x) > r.experience then r.experience = math.floor(x) end
+			else
+				if type(r.base) ~= "number" then r.base = math.max(0, r.experience - experience) end
+				if r.base + experience > r.experience then r.experience = r.base + experience end
+			end
 		end
 		local ok, level = pcall(game.levelFor, r.experience)
 		if ok and type(level) == "number" then r.potential = level end
