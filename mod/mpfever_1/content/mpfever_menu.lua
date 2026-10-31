@@ -924,6 +924,305 @@ local function setup()
 
 	local busyPhase = function(phase) return phase ~= nil and phase ~= "" and phase ~= "idle" and phase ~= "error" end
 
+	-- (0.6.3) A new multiplayer game without a savegame. The host's « New game » button (« Host » tab) writes newgame.txt (state
+	-- "wait", the company mode and the player's name chosen on the tab) and opens the game's own New Game page: map, climate,
+	-- settings and mods as for a game alone. When that page starts a game (app.startGame2; or app.loadGame of a saved map, the
+	-- page's custom maps), the menu marks the file "started". The application script mpfever_auto.lua (newGameTick) then starts
+	-- the loaded game, saves it as "MPFever <date>", marks the file "saved" and goes back to the main menu; there the main page
+	-- (take, when it shows) opens the MPFever page and asks MPFever.exe to host that savegame, as its tile's « Host » button
+	-- does: the lobby opens with it, the players join, the host starts the game for everybody. Back on the main page in any other
+	-- state (the player left the New Game page, or loaded a savegame), the file is forgotten: only a game started from that page
+	-- is saved and hosted. When the menu cannot watch the game's start (app's functions cannot be wrapped), the file says "any"
+	-- and the next game loaded counts. MPFEVER_NEWGAME=0: no button, nothing of it.
+	-- newgame.txt: "state TAB time TAB company mode TAB player name TAB savegame name" (see mpfever_auto.lua)
+	local newGame = { on = os.getenv("MPFEVER_NEWGAME") ~= "0", file = "newgame.txt" }
+	function newGame.read()
+		local s = readFile(newGame.file) or ""
+		local t = {}
+		for v in (s:gsub("[" .. NL .. string.char(13) .. "]+$", "") .. TAB):gmatch("([^" .. TAB .. "]*)" .. TAB) do t[#t + 1] = v end
+		if (t[1] or "") == "" then return nil end
+		return { state = t[1], at = tonumber(t[2]) or 0, mode = t[3] or "", player = t[4] or "", save = t[5] or "" }
+	end
+	function newGame.write(m)
+		writeFile(newGame.file, table.concat({ m.state, tostring(m.at), m.mode or "", m.player or "", m.save or "" }, TAB) .. NL)
+	end
+	-- the game's New Game page starts a game: the file asked for it says so (a map editor's start does not count)
+	function newGame.started(editor)
+		if editor then return end
+		local m = newGame.read()
+		if m and m.state == "wait" then
+			m.state = "started"
+			newGame.write(m)
+			log("new game: started from the game's New Game page")
+		end
+	end
+	-- app.startGame2 and app.loadGame (a saved map) watched once in this menu; false when they cannot be
+	function newGame.watch()
+		if newGame.watching ~= nil then return newGame.watching end
+		local ok, err = pcall(function()
+			local start, load = app.startGame2, app.loadGame
+			assert(type(start) == "function" and type(load) == "function", "no app.startGame2 / app.loadGame")
+			app.startGame2 = function(map, seed, date, tod, clouds, editor, ...)
+				pcall(newGame.started, editor)
+				return start(map, seed, date, tod, clouds, editor, ...)
+			end
+			app.loadGame = function(id, editor, ...)
+				pcall(function()
+					if id and id.saveGameNamespace == app.SaveGameNamespace.getSavemap() then newGame.started(editor) end
+				end)
+				return load(id, editor, ...)
+			end
+		end)
+		newGame.watching = ok
+		if not ok then log("new game: the game's start cannot be watched (" .. tostring(err) .. "): the next game loaded counts") end
+		return ok
+	end
+	-- the « New game » button: the file, then the game's New Game page (commonParams: the menu's, to change its page)
+	function newGame.ask(mode, player, commonParams)
+		newGame.write({ state = newGame.watch() and "wait" or "any", at = os.time(), mode = mode, player = player })
+		log("new game asked (" .. tostring(mode) .. "): the game's New Game page")
+		local ok, err = pcall(function() commonParams.setPage("NewGame", { map = false }) end)
+		if not ok then
+			log("new game: the game's New Game page did not open: " .. tostring(err))
+			writeFile(newGame.file, "")
+			return false
+		end
+		return true
+	end
+	-- the main page shows: the new game saved, to host now (and the file emptied); nil else (any other state forgotten)
+	function newGame.take()
+		local m = newGame.read()
+		if not m then return nil end
+		writeFile(newGame.file, "")
+		if m.state == "saved" and m.save ~= "" and os.time() - m.at <= 7200 then return m end
+		log("new game: '" .. m.state .. "' forgotten (no game was started and saved from the game's New Game page)")
+		return nil
+	end
+	-- host it: its mods for the players of the lobby, then the « host » request, as the savegame tiles' « Host » button
+	function newGame.host(m)
+		local mods
+		pcall(function()
+			for _, s in ipairs(listSaves()) do
+				if s.saveName == m.save then
+					local id = api.type.SavegameId.new()
+					id.path = s.path
+					id.saveGameName = s.saveName
+					id.saveGameNamespace = app.SaveGameNamespace.getSavegame()
+					local a = app.getSavegameInfo(id)
+					local d = a and a:get()
+					if d and d.info then mods = modsOf(d.info) end
+				end
+			end
+		end)
+		writeFile("host_mods.txt", encodeMods(mods))
+		log("new game '" .. m.save .. "': hosted (" .. #(mods or {}) .. " mods)")
+		request("host", m.save, m.player, m.mode)
+	end
+
+	-- (0.6.3) The left column of a lobby with one company per player, in sections. Up to 0.6.2 it all followed in one small
+	-- scroll area: beside the picture the colour, the rules' line and two buttons; under it, once the host opened its settings,
+	-- a panel of the rules and of the computer companies' start money, then the computer companies again (level, colour), then
+	-- the mods. The settings of a computer company were in two places, the labels of every width, a line could be cut at the
+	-- edge (« fouillis », said the players). Now: the picture with the player's colour and a short view of the game beside it
+	-- (rules, number of game options on), then a row of tabs (Rules, Computers, Game options, Mods) and the chosen one under it,
+	-- in a scroll area of its own. Each section is a table: the labels in a column of one width (LOBBY_LABEL_W), the value or the
+	-- host's buttons beside, each text wrapped to its column. The players see the same, read only. Same requests as before.
+	-- MPFEVER_LOBBYOLD=1: the lobby of 0.6.2.
+	local LOBBYOLD = os.getenv("MPFEVER_LOBBYOLD") == "1"
+	local LOBBY_LABEL_W, LOBBY_TABS_H = 270, 40
+	-- c: host, st, ais, players, mine, taken, pickColor, playerName, lobbySave, modsBox, mods = { n, blocking }, modsFirst, rules =
+	-- { start, share, months, fmt, summary }, section (the tab chosen; nil: Rules, or Mods for a player who lacks some), setSection,
+	-- openOpts (opens the page of the game options). Returns the column's children.
+	local function lobbyColumn(c)
+		local w = SIDE_W - 24
+		local r = c.rules
+		local fv = featView(c.st)
+		local LEVELS = { T("Facile", "Easy"), T("Normal", "Normal"), T("Difficile", "Hard") }
+		local function aiMoney(v) return v < 0 and T("Comme les joueurs", "As the players") or r.fmt(v) end
+		local function aiName(a) return a.name ~= "" and a.name or (T("Ordinateur %s", "Computer %s"):gsub("%%s", tostring(a.n))) end
+		-- a row of a section (rw wide): the label in its column, then the value (a text, or the host's buttons) and a note under it
+		local function row(label, value, note, rw)
+			rw = rw or w
+			local right = { value }
+			if note then right[#right + 1] = gap(1, 4); right[#right + 1] = text(note, "font-scale-body", rw - LOBBY_LABEL_W) end
+			return box(H, {
+				box(V, { text(label, "font-scale-title-4", LOBBY_LABEL_W - 16) }, nil, { size = { LOBBY_LABEL_W, -1 } }),
+				box(V, right, nil, { size = { rw - LOBBY_LABEL_W, -1 } }),
+			}, nil, { size = { rw, -1 } })
+		end
+		-- the host's buttons of one setting (rows that fit in the value's column), the current value lit
+		local function picks(values, cur, show, send, rw)
+			local list = {}
+			for _, v in ipairs(values) do
+				local pick = v
+				list[#list + 1] = { label = show(v), on = cur == v, pick = function() send(pick) end }
+			end
+			return featChoices(list, (rw or w) - LOBBY_LABEL_W)
+		end
+		local function value(s, rw) return text(s, "font-scale-title-4", (rw or w) - LOBBY_LABEL_W) end
+		local sections = {}
+		sections.rules = function()
+			local s = {
+				text(T("Règles de la partie", "Game rules"), "font-scale-title-3", w),
+				text(c.host and T("Pour tous les joueurs ; gardés dans la sauvegarde.", "For every player; kept in the savegame.")
+					or T("Choisies par l'hôte, pour tous les joueurs.", "Chosen by the host, for every player."), "font-scale-body", w),
+				gap(1, 12),
+			}
+			local months = function(m) return m == 0 and T("Jamais", "Never") or (T("%s mois", "%s months"):gsub("%%s", tostring(m))) end
+			local onOff = function(v) return v == 1 and T("Activées", "On") or T("Désactivées", "Off") end
+			local startLabel = T("Argent de départ d'une entreprise :", "Start money of a company:")
+			local startNote = T("Celui de chaque nouvelle entreprise : un joueur qui arrive, une entreprise repartie après une faillite, et celle de l'hôte au début d'une nouvelle partie.",
+				"That of every new company: a player who arrives, a company started again after a bankruptcy, and the host's at the start of a new game.")
+			local shareLabel = T("Règles de partage :", "Sharing rules:")
+			local shareNote = r.share and T("Chaque entreprise décide si ses voies, gares, arrêts et dépôts sont privés, ouverts ou payants.", "Each company decides whether its tracks, stations, stops and depots are private, open or paying.")
+				or T("Tout est ouvert et gratuit pour toutes les entreprises : voies, gares, arrêts et dépôts.", "Everything is open and free for every company: tracks, stations, stops and depots.")
+			local bankLabel = T("Faillite d'une entreprise endettée après :", "A company in debt goes bankrupt after:")
+			if c.host then
+				s[#s + 1] = row(startLabel, picks({ 0, 500000, 1000000, 2000000, 5000000, 10000000, 20000000 }, r.start, r.fmt,
+					function(v) request("startmoney", tostring(v), c.playerName()) end), startNote)
+				s[#s + 1] = gap(1, 12)
+				s[#s + 1] = row(shareLabel, picks({ 1, 0 }, r.share and 1 or 0, onOff, function(v) request("share", tostring(v), c.playerName()) end), shareNote)
+				s[#s + 1] = gap(1, 12)
+				s[#s + 1] = row(bankLabel, picks({ 0, 3, 6, 12, 24 }, r.months, months, function(m) request("bankrupt", tostring(m), c.playerName()) end))
+			else
+				s[#s + 1] = row(startLabel, value(r.fmt(r.start)), startNote)
+				s[#s + 1] = gap(1, 12)
+				s[#s + 1] = row(shareLabel, value(onOff(r.share and 1 or 0)), shareNote)
+				s[#s + 1] = gap(1, 12)
+				s[#s + 1] = row(bankLabel, value(months(r.months)))
+			end
+			return s
+		end
+		-- the computer companies: each in a frame of its own, its name, then (the host) its level, colour and start money as rows
+		sections.ai = function()
+			local head = { text(T("Entreprises de l'ordinateur (expérimental)", "Computer companies (experimental)"), "font-scale-title-3", w - 340), hfill() }
+			if c.host and #c.ais < 8 then
+				head[#head + 1] = button(T("Ajouter une entreprise de l'ordinateur", "Add a computer company"), function() request("aiadd", "", c.playerName()) end, { font = "font-scale-body" })
+			end
+			local s = {
+				box(H, head, nil, { size = { w, -1 } }),
+				text(T("Gérées par le jeu de l'hôte : bus, camions de marchandises et livraisons des villes. Plus le niveau est élevé, plus elles grandissent vite.", "Run by the host's game: buses, freight trucks and deliveries to the towns. The higher the level, the faster they grow."), "font-scale-body", w),
+			}
+			local iw = w - 16
+			for i, a in ipairs(c.ais) do
+				local n = a.n
+				local pc = PALETTE[a.ix]
+				local top = {
+					pc and builtin.Component{ meta = { styleSheet = style{ size = { 22, 22 }, background = { pc[1], pc[2], pc[3], 1 } } } } or icon("::/gui/menu/icons/profile.tga"),
+					gap(10, 1),
+					text(aiName(a), "font-scale-title-4", iw - 90),
+					hfill(),
+				}
+				if c.host then
+					top[#top + 1] = builtin.Button{
+						meta = { class = "secondary", tooltip = T("Retirer", "Remove"), styleSheet = style{ size = { 34, 30 }, padding = { 5, 5, 5, 5 } } },
+						content = icon("::/gui/menu/icons/symbol_x.tga", 20),
+						onClick = function() request("aidel", tostring(n), c.playerName()) end,
+					}
+				end
+				local rows = { box(H, top, nil, { size = { iw, -1 } }) }
+				if c.host then
+					rows[#rows + 1] = gap(1, 6)
+					rows[#rows + 1] = row(T("Niveau : ", "Level: "), picks({ 1, 2, 3 }, a.lv, function(lv) return LEVELS[lv] end,
+						function(lv) request("ailevel", tostring(n) .. ":" .. tostring(lv), c.playerName()) end, iw), nil, iw)
+					-- (its colour; those of the players and of the other computer companies greyed)
+					local sw = {}
+					for ix, col in ipairs(PALETTE) do
+						local sel = a.ix == ix
+						local busyC = c.taken[ix] and not sel
+						local pickC = ix
+						sw[#sw + 1] = builtin.Button{
+							meta = { class = sel and "primary" or "secondary", enabled = not busyC, styleSheet = style{ size = { 28, 26 }, padding = { 3, 3, 3, 3 } } },
+							content = builtin.Component{ meta = { styleSheet = style{ size = { sel and 20 or 14, sel and 18 or 12 }, background = { col[1], col[2], col[3], busyC and 0.25 or 1 } } } },
+							onClick = function() request("aicolor", tostring(n) .. ":" .. tostring(pickC), c.playerName()) end,
+						}
+						sw[#sw + 1] = gap(3, 1)
+					end
+					rows[#rows + 1] = gap(1, 4)
+					rows[#rows + 1] = row(T("Couleur", "Colour"), box(H, sw), nil, iw)
+					rows[#rows + 1] = gap(1, 4)
+					rows[#rows + 1] = row(T("Argent de départ", "Start money"), picks({ -1, 1000000, 2000000, 5000000, 10000000, 20000000 }, a.money, aiMoney,
+						function(v) request("aimoney", tostring(n) .. ":" .. tostring(v), c.playerName()) end, iw), nil, iw)
+				else
+					rows[#rows + 1] = text(T("Niveau : ", "Level: ") .. (LEVELS[a.lv] or LEVELS[2]) .. "   ·   " .. (T("Départ : %s", "Start: %s"):gsub("%%s", (aiMoney(a.money):gsub("%%", "%%%%")))), "font-scale-body", iw)
+				end
+				s[#s + 1] = gap(1, 8)
+				s[#s + 1] = box(V, rows, nil, { padding = { 8, 8, 8, 8 }, background = { 1, 1, 1, i % 2 == 1 and 0.06 or 0.03 }, size = { w, -1 } })
+			end
+			return s
+		end
+		-- the game options: how many are on, the button of their page, then those on, one row each with their parameters
+		sections.opts = function()
+			local on = FEAT.summary(fv.map, fv.mode, T)
+			local s = {
+				text(T("Options de partie", "Game options"), "font-scale-title-3", w),
+				text((featCount(fv) or T("Aucune option de partie activée.", "No game option on.")) .. "   ·   " .. (c.host and T("Désactivées par défaut. Pour tous les joueurs ; gardées dans la sauvegarde.", "Off by default. For every player; kept in the savegame.")
+					or T("Choisies par l'hôte, pour tous les joueurs.", "Chosen by the host, for every player.")), "font-scale-body", w),
+				gap(1, 10),
+			}
+			-- (MPFEVER_LOBBYOPTSPAGE=0, no page: the host's switches here, as in its settings panel of 0.6.2)
+			if not OPTSPAGE and c.host then
+				featSection(s, w, fv, c.playerName, c.players)
+				return s
+			end
+			if OPTSPAGE then
+				s[#s + 1] = button(c.host and (T("Options de partie (%s activées)", "Game options (%s on)"):gsub("%%s", tostring(#on))) or T("Voir les options", "See the options"),
+					c.openOpts, { font = "font-scale-body", primary = c.host, icon = "::/gui/menu/icons/settings.tga" })
+				s[#s + 1] = gap(1, 10)
+			end
+			for _, o in ipairs(on) do
+				s[#s + 1] = row(o.title, text(#o.params > 0 and table.concat(o.params, "   ·   ") or T("Activée", "On"), "font-scale-body", w - LOBBY_LABEL_W))
+				s[#s + 1] = gap(1, 6)
+			end
+			return s
+		end
+		sections.mods = function() return { c.modsBox } end
+
+		-- the tabs: Rules always, Computers for the host or when there are some, Game options when the mode offers some, Mods when
+		-- the savegame has some (with the alert icon when some are to fix)
+		local tabs = { { id = "rules", label = T("Règles", "Rules") } }
+		if c.host or #c.ais > 0 then tabs[#tabs + 1] = { id = "ai", label = T("Ordinateurs", "Computers") .. " (" .. #c.ais .. ")" } end
+		if fv then tabs[#tabs + 1] = { id = "opts", label = T("Options de partie", "Game options") .. " (" .. #FEAT.summary(fv.map, fv.mode, T) .. ")" } end
+		if c.modsBox then tabs[#tabs + 1] = { id = "mods", label = T("Mods", "Mods") .. " (" .. tostring(c.mods and c.mods.n or 0) .. ")", alert = c.mods and c.mods.blocking > 0 } end
+		local cur = c.section
+		local found = false
+		for _, tb in ipairs(tabs) do if tb.id == cur then found = true end end
+		if not found then cur = (c.modsFirst and c.modsBox) and "mods" or "rules" end
+		local tabRow = {}
+		for i, tb in ipairs(tabs) do
+			if i > 1 then tabRow[#tabRow + 1] = gap(6, 1) end
+			local id = tb.id
+			tabRow[#tabRow + 1] = button(tb.label, function() c.setSection(id) end, { primary = cur == id, font = "font-scale-title-4", icon = tb.alert and "::/gui/menu/icons/alert.tga" or nil })
+		end
+
+		-- beside the picture: the player's colour, the rules in one line, the number of game options on
+		local sw = SIDE_W - PIC_W - 32
+		local side = {
+			colorRow(c.mine, c.pickColor, nil, true, c.taken),
+			gap(1, 14),
+			text(T("Règles de la partie", "Game rules"), "font-scale-title-4", sw),
+			text(r.summary, "font-scale-body", sw),
+		}
+		local fc = fv and featCount(fv)
+		if fc then side[#side + 1] = text(fc, "font-scale-body", sw) end
+		return {
+			box(H, {
+				SavePicture{ save = c.lobbySave, size = { PIC_W, PIC_H }, fallback = "::/gui/menu/images/main.tga" },
+				gap(16, 1),
+				box(V, side, nil, { size = { SIDE_W - PIC_W - 16, PIC_H } }),
+			}),
+			gap(1, 12),
+			box(H, tabRow, nil, { size = { SIDE_W, LOBBY_TABS_H } }),
+			gap(1, 8),
+			builtin.ScrollArea{
+				meta = { styleSheet = style{ size = { SIDE_W, LOBBY_H - PIC_H - 12 - LOBBY_TABS_H - 8 } } },
+				content = box(V, sections[cur](), nil, { size = { SIDE_W - 20, -1 } }),
+				horizontalPolicy = builtin.type.ScrollBarPolicy.AlwaysOff,
+				verticalPolicy = builtin.type.ScrollBarPolicy.AsNeeded,
+			},
+		}
+	end
+
 	local MPFeverPage = react.RegisterRecipe("MPFeverPage", function(pp)
 		local st0 = readState()
 		-- The page opens from the main menu only: a session still "in game" (or hosting) is the one the player left by going back
@@ -970,6 +1269,8 @@ local function setup()
 		-- (0.6, the lobby's page of the game options shown in place of the lobby; MPFEVER_MENU_OPTSPAGE=1: shown at first, tests and
 		-- screenshots. Closed when the lobby ends: the next lobby opens on the lobby itself)
 		local optsPage = react.useState(os.getenv("MPFEVER_MENU_OPTSPAGE") == "1")
+		-- (0.6.3, the lobby's tab chosen, see lobbyColumn; nil: its first. Forgotten when the lobby ends, as the page of the options)
+		local section = react.useState(nil)
 		local wasLobby = react.useRef(false)
 		-- (0.6, the host's public game) its name as the host types it, nil while it shows the name MPFever.exe has
 		local pubEdit = react.useState(nil)
@@ -986,6 +1287,7 @@ local function setup()
 			state:set(s)
 			local inLobby = s.lobby == "host" or s.lobby == "client"
 			if wasLobby:get() and not inLobby and optsPage:old() then optsPage:set(false) end
+			if wasLobby:get() and not inLobby and section:old() ~= nil then section:set(nil) end
 			wasLobby:set(inLobby)
 			-- the game is about to load (the host's own, or the host's game received by a player who joins) or is loaded: the
 			-- page has done its job, the main menu shows its main page again while the game loads
@@ -1312,6 +1614,8 @@ local function setup()
 			-- again with a new company). Beside the picture, one line for every player of the lobby; the host opens them with a
 			-- button under it, in place of the list under the picture (the lobby stays in view without scrolling). MPFever.exe
 			-- sends them with the session ("rules" = "start|share|months"), the host's game keeps them in the savegame.
+			-- (0.6.3: what is read here, for the lobby in sections, see lobbyColumn)
+			local rulesView
 			if separate then
 				local rStart, rShare, rMonths = (st.rules or ""):match("^(%d+)|(%d)|(%d+)$")
 				rStart, rMonths = tonumber(rStart) or 2000000, tonumber(rMonths) or tonumber(st.bankrupt) or 12
@@ -1325,6 +1629,7 @@ local function setup()
 				local summary = T("Départ : %s", "Start: %s"):gsub("%%s", fmt(rStart)) .. "  ·  "
 					.. (shareOn and T("Partage activé", "Sharing on") or T("Partage désactivé", "Sharing off")) .. "  ·  "
 					.. (rMonths == 0 and T("Pas de faillite", "No bankruptcy") or (T("Faillite : %s mois", "Bankruptcy: %s months"):gsub("%%s", tostring(rMonths))))
+				rulesView = { start = rStart, share = shareOn, months = rMonths, fmt = fmt, summary = summary }
 				side[#side + 1] = gap(1, 12)
 				side[#side + 1] = text(T("Règles de la partie", "Game rules"), "font-scale-title-4", sw)
 				side[#side + 1] = text(summary, "font-scale-body", sw)
@@ -1521,7 +1826,7 @@ local function setup()
 
 			-- the mods of the host's savegame, under its picture: the player who joins sees at once which ones are missing here
 			-- (the host's game cannot be loaded without them, see mpfever_auto.lua)
-			local modsBox, modsFirst
+			local modsBox, modsFirst, modsInfo
 			local mods = decodeMods(st.hostMods)
 			if #mods > 0 then
 				-- each mod with what is wrong first: missing here, another version than the host's, known to break a session,
@@ -1655,11 +1960,17 @@ local function setup()
 				modsBox = box(V, rows, nil, { padding = { 8, 12, 8, 12 }, background = { 1, 1, 1, 0.07 }, size = { SIDE_W - 20, -1 } })
 				-- (a player who joins: its missing mods first, before the computer companies)
 				modsFirst = blocking > 0 and not isHost
+				modsInfo = { n = #mods, blocking = blocking }
 			end
 			-- the left column: the savegame's picture; with one company per player (0.5.13) a smaller one with the options beside it,
 			-- the computer companies and the mods under it in one scroll area; else the big picture, the mods under a smaller one
 			local leftCol
-			if separate then
+			if separate and rulesView and not LOBBYOLD then
+				-- (0.6.3) in sections, see lobbyColumn
+				leftCol = lobbyColumn{ host = isHost, st = st, ais = ais, players = players, mine = mine, taken = taken, pickColor = pickColor,
+					playerName = playerName, lobbySave = lobbySave, modsBox = modsBox, mods = modsInfo, modsFirst = modsFirst, rules = rulesView,
+					section = section:old(), setSection = function(id) section:set(id) end, openOpts = function() optsPage:set(true) end }
+			elseif separate then
 				local list = {}
 				if modsBox and modsFirst then list[#list + 1] = modsBox; list[#list + 1] = gap(1, 12) end
 				for _, c in ipairs(below) do list[#list + 1] = c end
@@ -1774,6 +2085,11 @@ local function setup()
 			body[#body + 1] = box(H, {
 				text(T("Choisissez la sauvegarde à partager", "Choose the savegame to share"), "font-scale-title-3"),
 				hfill(),
+				-- (0.6.3) or a new game made on the game's New Game page, saved and hosted by MPFever (see newGame)
+				newGame.on and button(T("Nouvelle partie…", "New game…"), function() newGame.ask(companies:old(), playerName(), pp.commonParams) end,
+					{ enabled = not busy, icon = "::/gui/line_vehicle_mgmt/icons/add.tga", tooltip = T("Créez la carte sur la page « Nouvelle partie » du jeu : dès qu'elle est prête, MPFever l'enregistre (« MPFever » et la date) et ouvre son salon ici.",
+						"Make the map on the game's « New Game » page: as soon as it is ready, MPFever saves it (« MPFever » and the date) and opens its lobby here.") }) or gap(1, 1),
+				gap(12, 1),
 				builtin.TextInputField{
 					meta = { class = "search-field, font-scale-body", styleSheet = style{ size = { 360, 30 } } },
 					placeholderText = T("Filtrer les sauvegardes...", "Filter savegames..."),
@@ -1783,7 +2099,8 @@ local function setup()
 			})
 			body[#body + 1] = gap(1, 6)
 			if #list == 0 then
-				body[#body + 1] = box(H, { text(#saves:old() == 0 and T("Aucune sauvegarde trouvée. Lancez une partie en solo et sauvegardez-la pour pouvoir l'héberger.", "No savegame found. Start a single-player game and save it to host it.")
+				body[#body + 1] = box(H, { text(#saves:old() == 0 and (newGame.on and T("Aucune sauvegarde trouvée : créez une nouvelle partie avec le bouton « Nouvelle partie… », MPFever l'enregistre et ouvre son salon.", "No savegame found: create a new game with the « New game… » button, MPFever saves it and opens its lobby.")
+						or T("Aucune sauvegarde trouvée. Lancez une partie en solo et sauvegardez-la pour pouvoir l'héberger.", "No savegame found. Start a single-player game and save it to host it."))
 					or T("Aucune sauvegarde ne correspond au filtre.", "No savegame matches the filter."), "font-scale-title-4", PAGE_W - 40) }, nil, { padding = { 24, 12, 24, 12 } })
 			else
 				body[#body + 1] = builtin.ScrollArea{
@@ -1933,6 +2250,10 @@ local function setup()
 			local st0 = readState()
 			log("main page shown (phase " .. tostring(st0.phase) .. ")")
 			if st0.phase ~= nil and st0.phase ~= "" and st0.phase ~= "idle" then request("menu", "", st0.name or "") end
+			-- (0.6.3) back from a new game saved for multiplayer: its lobby, on the MPFever page (see newGame)
+			local ng = newGame.on and newGame.take() or nil
+			if ng and busyPhase(st0.phase) then log("new game '" .. ng.save .. "' not hosted: a session runs (" .. tostring(st0.phase) .. ")")
+			elseif ng then newGame.host(ng); showMP:set(true) end
 		end)
 		-- MPFever starts something from here (a lobby, a join, the host's game received): the release notes window is
 		-- closed now, while the main page it calls back into still exists (see NOTICE_WINDOWS). Done here and not by the

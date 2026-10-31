@@ -18291,6 +18291,84 @@
       "ko": "작은 창: 세션과 채팅",
       "zh-CN": "小窗口：会话和聊天",
       "zh-TW": "小視窗：工作階段和聊天"
+    },
+    "Colour": {
+      "de": "Farbe",
+      "es": "Color",
+      "it": "Colore",
+      "nl": "Kleur",
+      "pl": "Kolor",
+      "pt-BR": "Cor",
+      "ru": "Цвет",
+      "ja": "色",
+      "ko": "색상",
+      "zh-CN": "颜色",
+      "zh-TW": "顏色"
+    },
+    "Computers": {
+      "de": "Computer",
+      "es": "Ordenador",
+      "it": "Computer",
+      "nl": "Computer",
+      "pl": "Komputer",
+      "pt-BR": "Computador",
+      "ru": "Компьютер",
+      "ja": "コンピューター",
+      "ko": "컴퓨터",
+      "zh-CN": "电脑",
+      "zh-TW": "電腦"
+    },
+    "Mods": {
+      "de": "Mods",
+      "es": "Mods",
+      "it": "Mod",
+      "nl": "Mods",
+      "pl": "Mody",
+      "pt-BR": "Mods",
+      "ru": "Моды",
+      "ja": "MOD",
+      "ko": "모드",
+      "zh-CN": "模组",
+      "zh-TW": "模組"
+    },
+    "New game…": {
+      "de": "Neues Spiel…",
+      "es": "Nueva partida…",
+      "it": "Nuova partita…",
+      "nl": "Nieuw spel…",
+      "pl": "Nowa gra…",
+      "pt-BR": "Novo jogo…",
+      "ru": "Новая игра…",
+      "ja": "新しいゲーム…",
+      "ko": "새 게임…",
+      "zh-CN": "新游戏…",
+      "zh-TW": "新遊戲…"
+    },
+    "Make the map on the game's « New Game » page: as soon as it is ready, MPFever saves it (« MPFever » and the date) and opens its lobby here.": {
+      "de": "Erstelle die Karte auf der Seite « Neues Spiel » des Spiels: Sobald sie fertig ist, speichert MPFever sie (« MPFever » und das Datum) und öffnet hier ihre Lobby.",
+      "es": "Crea el mapa en la página « Nueva partida » del juego: en cuanto esté listo, MPFever lo guarda (« MPFever » y la fecha) y abre aquí su sala.",
+      "it": "Crea la mappa nella pagina « Nuova partita » del gioco: appena è pronta, MPFever la salva (« MPFever » e la data) e apre qui la sua lobby.",
+      "nl": "Maak de kaart op de pagina « Nieuw spel » van het spel: zodra hij klaar is, slaat MPFever hem op (« MPFever » en de datum) en opent hier de lobby.",
+      "pl": "Utwórz mapę na stronie « Nowa gra » w grze: gdy tylko będzie gotowa, MPFever zapisze ją (« MPFever » i data) i otworzy tutaj jej poczekalnię.",
+      "pt-BR": "Crie o mapa na página « Novo jogo » do jogo: assim que estiver pronto, o MPFever o salva (« MPFever » e a data) e abre o lobby aqui.",
+      "ru": "Создайте карту на странице « Новая игра » в игре: как только она будет готова, MPFever сохранит её (« MPFever » и дата) и откроет здесь её лобби.",
+      "ja": "ゲームの « 新しいゲーム » ページでマップを作成してください。準備ができ次第、MPFever が保存し（« MPFever » と日付）、ここでロビーを開きます。",
+      "ko": "게임의 « 새 게임 » 페이지에서 맵을 만드세요. 준비되는 즉시 MPFever가 저장하고(« MPFever »와 날짜) 여기서 로비를 엽니다.",
+      "zh-CN": "在游戏的 « 新游戏 » 页面创建地图：一旦准备好，MPFever 会保存它（« MPFever » 加日期）并在这里打开它的大厅。",
+      "zh-TW": "在遊戲的 « 新遊戲 » 頁面建立地圖：一旦準備好，MPFever 會儲存它（« MPFever » 加日期）並在這裡開啟它的大廳。"
+    },
+    "No savegame found: create a new game with the « New game… » button, MPFever saves it and opens its lobby.": {
+      "de": "Kein Spielstand gefunden: Erstelle ein neues Spiel mit der Schaltfläche « Neues Spiel… », MPFever speichert es und öffnet seine Lobby.",
+      "es": "No se encontró ninguna partida: crea una nueva con el botón « Nueva partida… », MPFever la guarda y abre su sala.",
+      "it": "Nessun salvataggio trovato: crea una nuova partita con il pulsante « Nuova partita… », MPFever la salva e apre la sua lobby.",
+      "nl": "Geen opgeslagen spel gevonden: maak een nieuw spel met de knop « Nieuw spel… », MPFever slaat het op en opent de lobby.",
+      "pl": "Nie znaleziono zapisu: utwórz nową grę przyciskiem « Nowa gra… », MPFever ją zapisze i otworzy jej poczekalnię.",
+      "pt-BR": "Nenhum jogo salvo encontrado: crie um novo jogo com o botão « Novo jogo… », o MPFever o salva e abre o lobby.",
+      "ru": "Сохранения не найдены: создайте новую игру кнопкой « Новая игра… », MPFever сохранит её и откроет её лобби.",
+      "ja": "セーブデータがありません。« 新しいゲーム… » ボタンで新しいゲームを作成すると、MPFever が保存してロビーを開きます。",
+      "ko": "저장 파일이 없습니다. « 새 게임… » 버튼으로 새 게임을 만들면 MPFever가 저장하고 로비를 엽니다.",
+      "zh-CN": "未找到存档：用 « 新游戏… » 按钮创建一局新游戏，MPFever 会保存它并打开它的大厅。",
+      "zh-TW": "找不到存檔：用 « 新遊戲… » 按鈕建立一局新遊戲，MPFever 會儲存它並開啟它的大廳。"
     }
   }
 }
