@@ -12,6 +12,11 @@ MPFever - Changelog
     left after three tries. Each build is a build of the company, held and replayed by every game as a player's. The
     company's trains and lines of trains are kept apart from its buses and trucks. Test: tests/test_ai_rail.py.
     MPFEVER_AIRAIL=0: no railways, as before.
+  - FIX: an action that reached a game with a margin of one step could be applied there a few steps late: the host's next
+    clock moved the native stop point on before the game's simulation had taken the action. In a 45-minute test at 4x a
+    vehicle was sent to its line 4 steps late on one game, then vehicles, money and towns drifted apart. A queued action
+    now holds the stop point a step before its time until the simulation has it (with the usual margin it has it long
+    before: nothing slows down). Test: tests/test_qhold.py. MPFEVER_QHOLD=0: as before.
   - FIX (computer companies): a line a computer company gives up is destroyed only once no person or cargo travels on it or
     waits at its stops (after 20 looks all the same). In a 90-minute test the two games handed out different entity ids
     from one such destroy on, and the vehicles with those ids then drifted apart: the cargo still waiting for the line is the

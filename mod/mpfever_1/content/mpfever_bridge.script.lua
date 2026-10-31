@@ -3336,11 +3336,20 @@ local function pausedStamp(now)
 	return t
 end
 
+-- (0.6.4) A queued action holds the native stop point a step before its time until the simulation has taken it (the command's
+-- answer, see pacing): it came with a margin of one step in a 45-minute test at 4x, the host's next clock moved the stop point
+-- on before the simulation had it, and this game applied it 4 steps late (a vehicle sent to its line late, then vehicles,
+-- money and towns apart, t1 of 2026-10-31). With the usual margin the answer comes long before. MPFEVER_QHOLD=0: as before
 local function queueLocal(a)
 	if a.paused then
 		-- (its turn among the paused builds, given by the host: see G.actTurn)
 		if G.actTurns and a.fn ~= "mpfCoJoin" and a.kind ~= "hash" then G.ptIssue(a.origin, G.actTurnId(a)) end
 		G.pendingPaused[#G.pendingPaused + 1] = a
+	elseif os.getenv("MPFEVER_QHOLD") ~= "0" and type(a.at) == "number" then
+		local h = { at = a.at, frame = G.frames, uid = a.uid }
+		G.qHold = G.qHold or {}
+		G.qHold[#G.qHold + 1] = h
+		O.sendCommand(O.event("mpfever", "mpfever", "queue", a), function() h.done = true end)
 	else
 		toSim("queue", a)
 	end
@@ -3552,6 +3561,23 @@ local function pacing()
 	local catchUp = s.pauseAt ~= nil and G.holdAt ~= nil and G.holdAt > s.pauseAt and now < G.holdAt
 	if catchUp then stopAt = G.holdAt
 	elseif G.holdAt and (stopAt == nil or G.holdAt < stopAt) then stopAt = G.holdAt end
+	-- (0.6.4) a queued action the simulation has not taken yet: a step before its time (see queueLocal; 600 frames at most)
+	if G.qHold and #G.qHold > 0 then
+		local keep, q = {}, nil
+		for _, h in ipairs(G.qHold) do
+			if not h.done and G.frames - h.frame < 600 then
+				keep[#keep + 1] = h
+				if q == nil or h.at - STEP < q then q = h.at - STEP end
+			elseif not h.done then
+				log("queued action " .. tostring(h.uid) .. ": no answer of the simulation within 600 frames, no longer held")
+			end
+		end
+		G.qHold = keep
+		if q and (stopAt == nil or q < stopAt) then
+			stopAt = q
+			if now >= q and G.qHoldLogged ~= q then G.qHoldLogged = q; log("queued action held at t=" .. q .. " until the simulation has it (now " .. now .. ") [frame " .. G.frames .. "]") end
+		end
+	end
 	local barrier, exactBarrier = nil, nil
 	local mine = leadLevel()
 	for _, pc in pairs(G.peers) do
