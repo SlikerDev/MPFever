@@ -106,8 +106,10 @@ MPFever-Server, its MPFever.exe opens the server's window) and read SERVER.txt i
 
 TROUBLESHOOTING
 ---------------
-- "Transport Fever 3 not found": Steam must be installed normally and the game
-  installed in one of its libraries.
+- "Transport Fever 3 not found": MPFever looks in the Steam libraries and where GOG
+  installs the game. Elsewhere, it asks for the game's TransportFever3.exe once and
+  keeps that folder. A copy not installed by Steam (GOG) is supported experimentally:
+  join with the host's address (not through Steam).
 - "Cannot connect": check the address, the port, the host's firewall / port
   forwarding, or use a virtual LAN.
 - No "Multiplayer" card in the main menu: the game was not started by

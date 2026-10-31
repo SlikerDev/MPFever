@@ -1,6 +1,16 @@
 MPFever - Changelog
 ===================
 
+0.6.3 - a game MPFever does not find itself (GOG, a folder of its own)
+  - NEW: MPFever looked for Transport Fever 3 in the Steam libraries only, and stopped there with "Transport Fever 3 was not
+    found" for a GOG copy. It now also looks where GOG installs it (the folders GOG's installer writes in the registry, then
+    GOG's usual folders), and when the game is still not found, it asks for the game's TransportFever3.exe and keeps that
+    folder in its settings (gamedir). The Steam copies are found as before, and before these.
+  - NEW: for a copy Steam did not install, the mod goes into the game's mods\release folder, where the game finds it (as
+    under Wine/Proton), and no steam_appid.txt is written. Experimental: joining through Steam is not possible there (the
+    host's address works), and the native module recognises the game build by itself or stays off.
+    MPFEVER_GOG=0: as before.
+
 0.6.2 - the host's game loads even after a change of the game's language, a sturdier self-update
   - FIX (#103): the host's game received is loaded by MPFever's application script, started with the game. A change of the
     game's language in its settings starts the game's interface again, and that script runs no more: the player stayed on

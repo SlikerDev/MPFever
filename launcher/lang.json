@@ -846,19 +846,6 @@
       "zh-CN": "不同步",
       "zh-TW": "不同步"
     },
-    "Transport Fever 3 was not found. Check that the game is installed through Steam.": {
-      "de": "Transport Fever 3 wurde nicht gefunden. Prüfe, ob das Spiel über Steam installiert ist.",
-      "es": "No se encontró Transport Fever 3. Comprueba que el juego esté instalado a través de Steam.",
-      "it": "Transport Fever 3 non trovato. Verifica che il gioco sia installato tramite Steam.",
-      "nl": "Transport Fever 3 is niet gevonden. Controleer of het spel via Steam is geïnstalleerd.",
-      "pl": "Nie znaleziono Transport Fever 3. Sprawdź, czy gra jest zainstalowana przez Steam.",
-      "pt-BR": "O Transport Fever 3 não foi encontrado. Verifique se o jogo está instalado pela Steam.",
-      "ru": "Transport Fever 3 не найдена. Проверьте, что игра установлена через Steam.",
-      "ja": "Transport Fever 3 が見つかりませんでした。ゲームが Steam でインストールされているか確認してください。",
-      "ko": "Transport Fever 3를 찾을 수 없습니다. 게임이 Steam으로 설치되어 있는지 확인하세요.",
-      "zh-CN": "未找到 Transport Fever 3。请确认游戏已通过 Steam 安装。",
-      "zh-TW": "找不到 Transport Fever 3。請確認遊戲已透過 Steam 安裝。"
-    },
     "The game is starting. Choose « Multiplayer (MPFever) » in its main menu to host or join a game.": {
       "de": "Das Spiel startet. Wähle « Mehrspieler (MPFever) » im Hauptmenü, um ein Spiel zu hosten oder beizutreten.",
       "es": "El juego se está iniciando. Elige « Multijugador (MPFever) » en su menú principal para crear una partida o unirte a una.",
@@ -18434,6 +18421,58 @@
       "ko": "저장 파일이 없습니다. « 새 게임… » 버튼으로 새 게임을 만들면 MPFever가 저장하고 로비를 엽니다.",
       "zh-CN": "未找到存档：用 « 新游戏… » 按钮创建一局新游戏，MPFever 会保存它并打开它的大厅。",
       "zh-TW": "找不到存檔：用 « 新遊戲… » 按鈕建立一局新遊戲，MPFever 會儲存它並開啟它的大廳。"
+    },
+    "Transport Fever 3 was not found. Start MPFever again to choose the game's TransportFever3.exe file.": {
+      "de": "Transport Fever 3 wurde nicht gefunden. Starte MPFever erneut, um die Datei TransportFever3.exe des Spiels auszuwählen.",
+      "es": "No se encontró Transport Fever 3. Vuelve a iniciar MPFever para elegir el archivo TransportFever3.exe del juego.",
+      "it": "Transport Fever 3 non trovato. Riavvia MPFever per scegliere il file TransportFever3.exe del gioco.",
+      "nl": "Transport Fever 3 is niet gevonden. Start MPFever opnieuw om het bestand TransportFever3.exe van het spel te kiezen.",
+      "pl": "Nie znaleziono Transport Fever 3. Uruchom ponownie MPFever, aby wybrać plik TransportFever3.exe gry.",
+      "pt-BR": "O Transport Fever 3 não foi encontrado. Inicie o MPFever novamente para escolher o arquivo TransportFever3.exe do jogo.",
+      "ru": "Transport Fever 3 не найдена. Перезапустите MPFever, чтобы выбрать файл TransportFever3.exe игры.",
+      "ja": "Transport Fever 3 が見つかりませんでした。MPFever を再起動して、ゲームの TransportFever3.exe ファイルを選んでください。",
+      "ko": "Transport Fever 3를 찾을 수 없습니다. MPFever를 다시 시작해 게임의 TransportFever3.exe 파일을 선택하세요.",
+      "zh-CN": "未找到 Transport Fever 3。请重新启动 MPFever，选择游戏的 TransportFever3.exe 文件。",
+      "zh-TW": "找不到 Transport Fever 3。請重新啟動 MPFever，選擇遊戲的 TransportFever3.exe 檔案。"
+    },
+    "A copy of the game not installed by Steam (GOG?): experimental support. Joining through Steam is not possible there, use the host's address.": {
+      "de": "Eine nicht über Steam installierte Kopie des Spiels (GOG?): experimentelle Unterstützung. Beitreten über Steam ist dort nicht möglich, nutze die Adresse des Hosts.",
+      "es": "Una copia del juego no instalada por Steam (¿GOG?): compatibilidad experimental. No es posible unirse a través de Steam, usa la dirección del anfitrión.",
+      "it": "Una copia del gioco non installata da Steam (GOG?): supporto sperimentale. Non è possibile unirsi tramite Steam, usa l'indirizzo dell'host.",
+      "nl": "Een kopie van het spel die niet via Steam is geïnstalleerd (GOG?): experimentele ondersteuning. Meedoen via Steam is daar niet mogelijk, gebruik het adres van de host.",
+      "pl": "Kopia gry niezainstalowana przez Steam (GOG?): obsługa eksperymentalna. Dołączanie przez Steam nie jest tam możliwe, użyj adresu hosta.",
+      "pt-BR": "Uma cópia do jogo não instalada pela Steam (GOG?): suporte experimental. Não é possível entrar pela Steam, use o endereço do anfitrião.",
+      "ru": "Копия игры, установленная не через Steam (GOG?): экспериментальная поддержка. Подключиться через Steam нельзя, используйте адрес хоста.",
+      "ja": "Steam 以外でインストールされたゲーム（GOG？）：試験的なサポートです。Steam 経由での参加はできません。ホストのアドレスを使ってください。",
+      "ko": "Steam으로 설치되지 않은 게임(GOG?): 실험적 지원입니다. Steam으로 참가할 수 없으니 호스트의 주소를 사용하세요.",
+      "zh-CN": "非 Steam 安装的游戏副本（GOG？）：实验性支持。无法通过 Steam 加入，请使用主机的地址。",
+      "zh-TW": "非 Steam 安裝的遊戲副本（GOG？）：實驗性支援。無法透過 Steam 加入，請使用主機的位址。"
+    },
+    "Transport Fever 3 was not found in Steam or GOG.\n\nIf the game is installed elsewhere, show MPFever the TransportFever3.exe file of its folder. Choose that file now?": {
+      "de": "Transport Fever 3 wurde weder in Steam noch in GOG gefunden.\n\nWenn das Spiel woanders installiert ist, zeige MPFever die Datei TransportFever3.exe in seinem Ordner. Diese Datei jetzt auswählen?",
+      "es": "No se encontró Transport Fever 3 en Steam ni en GOG.\n\nSi el juego está instalado en otro lugar, indica a MPFever el archivo TransportFever3.exe de su carpeta. ¿Elegir ese archivo ahora?",
+      "it": "Transport Fever 3 non trovato in Steam né in GOG.\n\nSe il gioco è installato altrove, indica a MPFever il file TransportFever3.exe della sua cartella. Scegliere ora quel file?",
+      "nl": "Transport Fever 3 is niet gevonden in Steam of GOG.\n\nAls het spel ergens anders is geïnstalleerd, wijs MPFever dan het bestand TransportFever3.exe in de map van het spel aan. Dat bestand nu kiezen?",
+      "pl": "Nie znaleziono Transport Fever 3 w Steam ani w GOG.\n\nJeśli gra jest zainstalowana gdzie indziej, wskaż MPFever plik TransportFever3.exe w jej folderze. Wybrać ten plik teraz?",
+      "pt-BR": "O Transport Fever 3 não foi encontrado na Steam nem na GOG.\n\nSe o jogo estiver instalado em outro lugar, mostre ao MPFever o arquivo TransportFever3.exe da pasta dele. Escolher esse arquivo agora?",
+      "ru": "Transport Fever 3 не найдена ни в Steam, ни в GOG.\n\nЕсли игра установлена в другом месте, укажите MPFever файл TransportFever3.exe в её папке. Выбрать этот файл сейчас?",
+      "ja": "Steam と GOG のどちらにも Transport Fever 3 が見つかりませんでした。\n\nゲームが別の場所にインストールされている場合は、そのフォルダーの TransportFever3.exe を MPFever に指定してください。今このファイルを選びますか？",
+      "ko": "Steam이나 GOG에서 Transport Fever 3를 찾을 수 없습니다.\n\n게임이 다른 곳에 설치되어 있다면 해당 폴더의 TransportFever3.exe 파일을 MPFever에 알려 주세요. 지금 이 파일을 선택할까요?",
+      "zh-CN": "在 Steam 和 GOG 中都未找到 Transport Fever 3。\n\n如果游戏安装在其他位置，请为 MPFever 指定其文件夹中的 TransportFever3.exe 文件。现在选择该文件吗？",
+      "zh-TW": "在 Steam 和 GOG 中都找不到 Transport Fever 3。\n\n如果遊戲安裝在其他位置，請為 MPFever 指定其資料夾中的 TransportFever3.exe 檔案。現在選擇該檔案嗎？"
+    },
+    "Choose TransportFever3.exe": {
+      "de": "TransportFever3.exe auswählen",
+      "es": "Elige TransportFever3.exe",
+      "it": "Scegli TransportFever3.exe",
+      "nl": "Kies TransportFever3.exe",
+      "pl": "Wybierz TransportFever3.exe",
+      "pt-BR": "Escolha o TransportFever3.exe",
+      "ru": "Выберите TransportFever3.exe",
+      "ja": "TransportFever3.exe を選択",
+      "ko": "TransportFever3.exe 선택",
+      "zh-CN": "选择 TransportFever3.exe",
+      "zh-TW": "選擇 TransportFever3.exe"
     }
   }
 }

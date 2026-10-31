@@ -74,7 +74,7 @@ namespace MPFever
 
     sealed partial class MainForm : Form
     {
-        public const string Version = "0.6.2";
+        public const string Version = "0.6.3";
         /// <summary>Developer mode (MPFever.exe --dev): local two-game test and determinism test buttons.</summary>
         public static bool Dev;
         public static bool MenuModeDefault;
@@ -723,7 +723,7 @@ namespace MPFever
             string h;
             if (ServerMode) UpdateServerCard();
             if (gameMissing)
-                h = T("Transport Fever 3 est introuvable. Vérifiez que le jeu est installé via Steam.", "Transport Fever 3 was not found. Check that the game is installed through Steam.");
+                h = T("Transport Fever 3 est introuvable. Relancez MPFever pour choisir le fichier TransportFever3.exe du jeu.", "Transport Fever 3 was not found. Start MPFever again to choose the game's TransportFever3.exe file.");
             else if (ServerMode && st) h = F("Le serveur héberge son monde. Les joueurs le rejoignent depuis la fenêtre MPFever de leur jeu avec l'adresse de ce PC, port {0}.\n\nTapez help sous le journal pour les commandes du serveur.",
                                              "The server hosts its world. Players join it from the MPFever window of their game with this PC's address, port {0}.\n\nType help under the log for the server commands.", server?.Port ?? 28090);
             else if (ServerMode) h = (menuText ?? "") + T("\n\nTapez help sous le journal pour les commandes du serveur.", "\n\nType help under the log for the server commands.");
@@ -967,10 +967,16 @@ namespace MPFever
 
         void Init()
         {
+            // (0.6.3) the folder the player chose for a game MPFever does not find itself (GOG, a folder of its own)
+            try { if (LoadSettings().TryGetValue("gamedir", out var gd)) GameInstall.ChosenDir = gd; } catch { }
             gameDir = GameInstall.FindGameDir();
+            if (gameDir == null && !autotest && !ServerMode) gameDir = AskGameDir();
             if (gameDir == null) { gameMissing = true; Log.Err(T("Transport Fever 3 introuvable.", "Transport Fever 3 not found.")); status.Text = T("Jeu introuvable", "Game not found"); return; }
             Log.W(T("Jeu : ", "Game: ") + gameDir);
-            try { GameInstall.EnsureSteamAppId(gameDir); } catch (Exception e) { Log.W("steam_appid.txt : " + e.Message); }
+            if (GameInstall.NotSteamCopy(gameDir))
+                Log.Warn(T("Copie du jeu hors Steam (GOG ?) : prise en charge expérimentale. Rejoindre par Steam n'y est pas possible, utilisez l'adresse de l'hôte.",
+                           "A copy of the game not installed by Steam (GOG?): experimental support. Joining through Steam is not possible there, use the host's address."));
+            else try { GameInstall.EnsureSteamAppId(gameDir); } catch (Exception e) { Log.W("steam_appid.txt : " + e.Message); }
             try { GameInstall.InstallNative(gameDir); } catch (Exception e) { Log.W("winhttp.dll: " + e.Message); }
             try { GameInstall.EnsureModActive(); } catch (Exception e) { Log.W("settings.lua: " + e.Message); }
             try { GameInstall.InstallMod(); } catch (Exception e) { Log.Warn(T("Installation du mod : ", "Mod installation: ") + e.Message); }
@@ -990,6 +996,26 @@ namespace MPFever
             {
                 Guard(StartLocalTest);
                 new Thread(AutoTest) { IsBackground = true, Name = "Autotest" }.Start();
+            }
+        }
+
+        /// <summary>(0.6.3) The game not found (a GOG copy, a folder of its own): the player shows MPFever the game's
+        /// TransportFever3.exe, kept in the settings (gamedir). Null when cancelled. MPFEVER_GOG=0: not asked.</summary>
+        string AskGameDir()
+        {
+            if (Environment.GetEnvironmentVariable("MPFEVER_GOG") == "0") return null;
+            var answer = MessageBox.Show(this, T("Transport Fever 3 est introuvable dans Steam et GOG.\n\nSi le jeu est installé ailleurs, montrez à MPFever le fichier TransportFever3.exe de son dossier. Choisir ce fichier maintenant ?",
+                                                 "Transport Fever 3 was not found in Steam or GOG.\n\nIf the game is installed elsewhere, show MPFever the TransportFever3.exe file of its folder. Choose that file now?"),
+                                         "MPFever", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            if (answer != DialogResult.Yes) return null;
+            using (var dlg = new OpenFileDialog { Title = T("Choisissez TransportFever3.exe", "Choose TransportFever3.exe"), Filter = "TransportFever3.exe|TransportFever3.exe", CheckFileExists = true })
+            {
+                if (dlg.ShowDialog(this) != DialogResult.OK) return null;
+                var dir = Path.GetDirectoryName(dlg.FileName);
+                if (!GameInstall.IsGameDir(dir)) return null;
+                GameInstall.ChosenDir = dir;
+                SaveSetting("gamedir", dir);
+                return dir;
             }
         }
 

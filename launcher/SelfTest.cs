@@ -55,6 +55,7 @@ namespace MPFever
             ok &= RunUpdater();
             ok &= RunPortMap();
             ok &= RunRedact();
+            ok &= RunGameDir();
             Log.W(ok ? "SELFTEST OK" : "SELFTEST FAILED");
             return ok ? 0 : 1;
         }
@@ -207,6 +208,47 @@ namespace MPFever
             }
             catch (Exception e) { Check(false, "update: " + e.Message); }
             finally { try { Directory.Delete(root, true); } catch { } }
+            return ok;
+        }
+
+        /// <summary>(0.6.3) A game MPFever does not find itself (GOG, a folder of its own): the folder chosen by hand, GOG's
+        /// folders, a copy Steam did not install; MPFEVER_GOG=0: as before.</summary>
+        static bool RunGameDir()
+        {
+            bool ok = true;
+            void Check(bool cond, string what) { Log.W((cond ? "  ok    " : "  FAIL  ") + what); ok &= cond; }
+            var root = Path.Combine(Path.GetTempPath(), "mpfever_gamedir_" + Guid.NewGuid().ToString("N"));
+            var keptChosen = GameInstall.ChosenDir;
+            try
+            {
+                var game = Path.Combine(root, "GOG Games", "Transport Fever 3");
+                Directory.CreateDirectory(game);
+                Check(!GameInstall.IsGameDir(game), "game folder: a folder without TransportFever3.exe is not one");
+                File.WriteAllText(Path.Combine(game, "TransportFever3.exe"), "");
+                Check(GameInstall.IsGameDir(game), "game folder: a folder with TransportFever3.exe is one");
+                Check(!GameInstall.NotSteamCopy(@"E:\SteamLibrary\steamapps\common\Transport Fever 3"), "game folder: a Steam library's copy is Steam's");
+                Check(!GameInstall.NotSteamCopy(@"C:\Program Files (x86)\Steam\steamapps\common\Transport Fever 3\"), "game folder: Steam's own library too");
+                Check(GameInstall.NotSteamCopy(game), "game folder: a GOG folder is not Steam's");
+                Check(GameInstall.GogDirs().Any(d => d.EndsWith(Path.Combine("GOG Games", "Transport Fever 3"))), "game folder: GOG's usual folder looked at");
+                Environment.SetEnvironmentVariable("MPFEVER_GAMEDIR", game);
+                Check(GameInstall.FindGameDir() == game, "game folder: MPFEVER_GAMEDIR used");
+                Environment.SetEnvironmentVariable("MPFEVER_GAMEDIR", null);
+                // the chosen folder after the usual places only: here when the game is found nowhere else, never before Steam's copy
+                GameInstall.ChosenDir = game;
+                var found = GameInstall.FindGameDir();
+                Check(found == game || (found != null && !GameInstall.NotSteamCopy(found)), "game folder: the chosen one, after Steam's (" + found + ")");
+                Environment.SetEnvironmentVariable("MPFEVER_GOG", "0");
+                Check(GameInstall.FindGameDir() != game, "game folder: MPFEVER_GOG=0, the chosen one not looked at");
+                Check(!GameInstall.NotSteamCopy(game), "game folder: MPFEVER_GOG=0, any copy taken for Steam's, as before");
+            }
+            catch (Exception e) { Check(false, "game folder: " + e.Message); }
+            finally
+            {
+                Environment.SetEnvironmentVariable("MPFEVER_GAMEDIR", null);
+                Environment.SetEnvironmentVariable("MPFEVER_GOG", null);
+                GameInstall.ChosenDir = keptChosen;
+                try { Directory.Delete(root, true); } catch { }
+            }
             return ok;
         }
 

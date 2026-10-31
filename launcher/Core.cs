@@ -2015,8 +2015,60 @@ namespace MPFever
     {
         public const string AppId = "3493540";
 
+        /// <summary>(0.6.3) The game folder the player chose by hand (setting "gamedir"), for a game MPFever does not find itself (a
+        /// GOG copy, a folder of its own): looked at after the usual places only. MPFEVER_GOG=0: not.</summary>
+        public static string ChosenDir;
+
+        public static bool IsGameDir(string d)
+        {
+            try { return !string.IsNullOrEmpty(d) && File.Exists(Path.Combine(d, "TransportFever3.exe")); } catch { return false; }
+        }
+
+        /// <summary>A copy of the game that Steam did not install (GOG, a folder of its own): not in a Steam library's
+        /// steamapps\common. Its mods folder is not Steam's userdata, MPFever puts its mod into the game's mods\release.</summary>
+        public static bool NotSteamCopy(string gameDir)
+        {
+            if (string.IsNullOrEmpty(gameDir) || Environment.GetEnvironmentVariable("MPFEVER_GOG") == "0") return false;
+            var d = gameDir.Replace('/', '\\').TrimEnd('\\') + "\\";
+            return d.IndexOf(@"\steamapps\common\", StringComparison.OrdinalIgnoreCase) < 0;
+        }
+
+        /// <summary>(0.6.3) Where GOG installs the game: the folders its installer writes in the registry, then GOG's usual folders.</summary>
+        public static IEnumerable<string> GogDirs()
+        {
+            var found = new List<string>();
+            foreach (var root in new[] { @"SOFTWARE\WOW6432Node\GOG.com\Games", @"SOFTWARE\GOG.com\Games" })
+            {
+                try
+                {
+                    using (var k = Registry.LocalMachine.OpenSubKey(root))
+                        if (k != null)
+                            foreach (var id in k.GetSubKeyNames())
+                                try { using (var g = k.OpenSubKey(id)) if (g?.GetValue("path") is string p) found.Add(p); } catch { }
+                }
+                catch { }
+            }
+            try
+            {
+                foreach (var drive in DriveInfo.GetDrives())
+                {
+                    if (drive.DriveType != DriveType.Fixed) continue;
+                    var r = drive.RootDirectory.FullName;
+                    found.Add(Path.Combine(r, "GOG Games", "Transport Fever 3"));
+                    found.Add(Path.Combine(r, "Program Files (x86)", "GOG Galaxy", "Games", "Transport Fever 3"));
+                    found.Add(Path.Combine(r, "Program Files", "GOG Galaxy", "Games", "Transport Fever 3"));
+                    found.Add(Path.Combine(r, "Games", "Transport Fever 3"));
+                }
+            }
+            catch { }
+            return found;
+        }
+
         public static string FindGameDir()
         {
+            // 0. tests: the folder given (MPFEVER_GAMEDIR)
+            var envDir = Environment.GetEnvironmentVariable("MPFEVER_GAMEDIR");
+            if (IsGameDir(envDir)) return envDir;
             // 1. launcher placed inside the game folder (MPFever\...)
             var d = new DirectoryInfo(AppDomain.CurrentDomain.BaseDirectory);
             while (d != null)
@@ -2030,6 +2082,11 @@ namespace MPFever
                 var p = Path.Combine(lib, "steamapps", "common", "Transport Fever 3");
                 if (File.Exists(Path.Combine(p, "TransportFever3.exe"))) return p;
             }
+            if (Environment.GetEnvironmentVariable("MPFEVER_GOG") == "0") return null;
+            // 3. (0.6.3) the folder the player chose, 4. GOG
+            if (IsGameDir(ChosenDir)) return ChosenDir;
+            foreach (var p in GogDirs())
+                if (IsGameDir(p)) return p;
             return null;
         }
 
@@ -2149,11 +2206,15 @@ namespace MPFever
         {
             var src = FindModSource();
             int w = 0;
-            if (src != null && UnderWine() && Environment.GetEnvironmentVariable("MPFEVER_WINEMODS") != "0")
+            string game = null;
+            try { game = FindGameDir(); } catch { }
+            // (0.6.3) a copy Steam did not install (GOG): the same folder, where the game finds it too
+            bool notSteam = NotSteamCopy(game);
+            if (src != null && ((UnderWine() && Environment.GetEnvironmentVariable("MPFEVER_WINEMODS") != "0") || notSteam))
             {
                 try
                 {
-                    var g = FindGameDir();
+                    var g = game;
                     var rel = g == null ? null : Path.Combine(g, "mods", "release");
                     if (rel != null && Directory.Exists(rel))
                     {
@@ -2161,7 +2222,7 @@ namespace MPFever
                         if (Directory.Exists(dst)) Directory.Delete(dst, true);
                         CopyDir(src, dst);
                         w = 1;
-                        Log.Ok(L.T("Mod installé dans ", "Mod installed in ") + dst + " (Wine/Proton)");
+                        Log.Ok(L.T("Mod installé dans ", "Mod installed in ") + dst + (notSteam ? "" : " (Wine/Proton)"));
                     }
                 }
                 catch (Exception e) { Log.W("mods\\release: " + e.Message); }
