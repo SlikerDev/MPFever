@@ -12,6 +12,10 @@ MPFever - Changelog
     left after three tries. Each build is a build of the company, held and replayed by every game as a player's. The
     company's trains and lines of trains are kept apart from its buses and trucks. Test: tests/test_ai_rail.py.
     MPFEVER_AIRAIL=0: no railways, as before.
+  - FIX (computer companies): a line a computer company gives up is destroyed only once no person or cargo travels on it or
+    waits at its stops (after 20 looks all the same). In a 90-minute test the two games handed out different entity ids
+    from one such destroy on, and the vehicles with those ids then drifted apart: the cargo still waiting for the line is the
+    suspect. MPFEVER_AIDESTROYIDLE=0: at once, as before.
   - FIX: one company per player, the host's company (the savegame's, number 1) rose fast while the others barely moved (a
     player: the host supervisor, himself near junior). Since #63 it followed the game's own experience while that one was
     higher, and the game's own experience is the world's population: it grows with what every company carries. It now keeps

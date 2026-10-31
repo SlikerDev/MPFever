@@ -13,6 +13,8 @@ tests/ai_mock.py:
     the most of the cargo, as many wagons as the platforms take;
   - the route: a producer and an industry that takes its cargo 4 km apart (not 1 km: the trucks' reach);
   - the lines and vehicles of trains are kept from the buses and trucks' rules (myLines, myVehicles), all lines with all;
+  - a line given up is destroyed only once no person or cargo travels on it or waits at its stops (after 20 looks all the
+    same; MPFEVER_AIDESTROYIDLE=0: at once, as before);
   - MPFEVER_AIRAIL=0: no railway, every line and vehicle as before.
 Needs lupa (pip install lupa). Run: python tests/test_ai_rail.py
 """
@@ -239,6 +241,29 @@ def main():
     r = run('return M.f.RL.route(E, { ent = 700 }, {}, {})')
     check(r is not None and r["from"].e == 1001 and r.to.e == 1101 and r.cargo == 2, "the farm to the mill 4 km away, not the one 1 km away")
     check(run('return M.f.RL.route(E, { ent = 700 }, {}, { { pos = { x = 100, y = 0 } } }) == nil'), "not a producer one of its train stations serves")
+
+    print("a line given up is destroyed only once nothing waits")
+    res = run('''
+      local l = { e = 777, groups = { 1, 2 } }
+      local out = {}
+      out[#out + 1] = tostring(M.f.lineIdle(E, l))                        -- the engine cannot tell (no person system here): as before
+      api.engine.system.simPersonSystem = { getSimPersonsForLine = function() return {} end }
+      WAIT[777] = 0
+      out[#out + 1] = tostring(M.f.lineIdle(E, l))                        -- nothing waits, nobody travels
+      WAIT[777] = 3
+      out[#out + 1] = tostring(M.f.lineIdle(E, l))                        -- cargo waits at its stops
+      WAIT[777] = 0
+      api.engine.system.simPersonSystem = { getSimPersonsForLine = function() return { 5, 6 } end }
+      out[#out + 1] = tostring(M.f.lineIdle(E, l))                        -- persons travel on it
+      for i = 1, 25 do M.f.lineIdle(E, l) end
+      out[#out + 1] = tostring(M.f.lineIdle(E, l))                        -- after 20 looks: destroyed all the same
+      G.AI.idleTries = nil
+      os.getenv = (function(g) return function(k) if k == "MPFEVER_AIDESTROYIDLE" then return "0" end return g(k) end end)(os.getenv)
+      out[#out + 1] = tostring(M.f.lineIdle(E, l))                        -- MPFEVER_AIDESTROYIDLE=0: at once, as before
+      api.engine.system.simPersonSystem = nil
+      return table.concat(out, " ")
+    ''')
+    check(res == "true true false false true true", f"cannot tell: yes; nothing waits: yes; cargo waits: no; persons on it: no; after 20 looks: yes; switch at 0: yes ({res})")
 
     print("lines and vehicles of trains kept apart")
     run('''

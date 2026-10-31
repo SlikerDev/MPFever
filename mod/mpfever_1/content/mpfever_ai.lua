@@ -47,7 +47,7 @@ local LV = LEVELS[2]
 -- (0.6.4) the computer companies' railways, see "trains" below
 local RL = { MIN = 2500, MAX = 15000, LEN = 3, STEP = 60, GRADE = 0.03, STATION = "::/stations/rail/modular_station/modular_station.con",
 	DEPOT = "::/depots/rail/rail_depot.con", DEPOT_EXIT = { x = -12.2, y = -90 }, POWER = 400, WAGONS = 6,
-	OFFSETS = { 0, 0.12, -0.12, 0.25, -0.25, 0.4, -0.4 }, CELL = 100, CROSS = 300, ALONG = 150, LEG = 600, LEAD = 500, RADIUS = 80, TRIES = 3, SPAN = 50, CLEAR = 8, WATER = 300, WET = 400,
+	OFFSETS = { 0, 0.12, -0.12, 0.25, -0.25, 0.4, -0.4 }, CELL = 100, CROSS = 300, ALONG = 150, LEG = 600, LEAD = 500, RADIUS = 80, TRIES = 3, SPAN = 50, CLEAR = 8, WATER = 300, WET = 400, IDLE_TRIES = 20,
 	RAMP = 0.06 }
 
 local function L(E, s) E.log("AI" .. (AINUM ~= 1 and tostring(AINUM) or "") .. " " .. s) end
@@ -1250,6 +1250,32 @@ local function cargoName(E, id)
 	return n
 end
 
+-- (0.6.4) Whether a line may be destroyed now: no person or cargo travels on it and none waits at its stops (each stop, each
+-- cargo type). A destroy that dropped cargo still waiting is the suspect of a test's split of entity ids between two games (the
+-- engine re-routes or frees that cargo, the free ids followed another order on each game, 2026-10-31 g1). True when it cannot be
+-- read (the engine as before), and after RL.IDLE_TRIES looks that found something (an empty line is not kept for ever).
+-- MPFEVER_AIDESTROYIDLE=0: at once, as before
+local function lineIdle(E, l)
+	if os.getenv("MPFEVER_AIDESTROYIDLE") == "0" then return true end
+	local A = E.G.AI
+	local api = E.api
+	local busy = 0
+	local ok = pcall(function()
+		busy = busy + #api.engine.system.simPersonSystem.getSimPersonsForLine(l.e)
+		local ids = {}
+		for id in pairs(api.res.cargoTypeRep.getAll()) do ids[#ids + 1] = id end
+		for k = 0, #l.groups - 1 do
+			for _, c in ipairs(ids) do busy = busy + (api.engine.system.simEntityAtTerminalSystem.getLineStopSimEntitiesCount(l.e, k, c) or 0) end
+		end
+	end)
+	if not ok or busy == 0 then return true end
+	A.idleTries = A.idleTries or {}
+	A.idleTries[l.e] = (A.idleTries[l.e] or 0) + 1
+	if A.idleTries[l.e] > RL.IDLE_TRIES then return true end
+	if A.idleTries[l.e] == 1 or A.idleTries[l.e] % 5 == 0 then L(E, "line " .. l.e .. " to give up: " .. busy .. " person(s) or cargo still on it or waiting, destroyed once none is left") end
+	return false
+end
+
 local function manageLines(E, co, lines, vehicles, money)
 	local G = E.G
 	local A = G.AI
@@ -1355,7 +1381,7 @@ local function manageLines(E, co, lines, vehicles, money)
 			return true
 		end
 		-- (the line itself goes once its last bus is sold: the engine keeps a line that still has a vehicle)
-		if A.emptyRuns[l.e] >= emptyLooks and n == 0 and period == 7200 then
+		if A.emptyRuns[l.e] >= emptyLooks and n == 0 and period == 7200 and lineIdle(E, l) then
 			L(E, "line " .. l.e .. " given up (empty)")
 			local ln = tostring(l.e)
 			pcall(function() ln = E.api.engine.getComponent(l.e, E.api.type.ComponentType.NAME).name end)
@@ -1509,7 +1535,7 @@ local function manageLines(E, co, lines, vehicles, money)
 			sellVehicle(E, co, last, "line " .. l.e .. " with a problem", l.e)
 			return true
 		end
-		if probs[l.e] and n > 0 and (A.problemSeen or {})[l.e] then
+		if probs[l.e] and n > 0 and (A.problemSeen or {})[l.e] and lineIdle(E, l) then
 			-- (a problem seen twice in a row: the line is given up, its buses go to the company's other lines)
 			L(E, "line " .. l.e .. " given up (problem " .. tostring(probs[l.e]) .. ")")
 			local ln = tostring(l.e)
@@ -4600,7 +4626,7 @@ M.f = { aiCompany = aiCompany, myStops = myStops, myDepots = myDepots, myLines =
 	bestTruck = bestTruck, bestFreight = bestFreight, freightOf = freightOf, roadPath = roadPath, cargoName = cargoName,
 	bestTownFreight = bestTownFreight, townWants = townWants, townName = townName,
 	-- (0.6)
-	manageLines = manageLines, mayExpand = mayExpand, spendOk = spendOk, ltSync = ltSync, ltProject = ltProject, connectIndustry = connectIndustry, roadProject = roadProject,
+	manageLines = manageLines, lineIdle = lineIdle, mayExpand = mayExpand, spendOk = spendOk, ltSync = ltSync, ltProject = ltProject, connectIndustry = connectIndustry, roadProject = roadProject,
 	townFreightProject = townFreightProject, industryProject = industryProject, freightProject = freightProject,
 	buildingsHit = buildingsHit, stockTakes = stockTakes, stopReaches = stopReaches, townDropPoint = townDropPoint, townGood = townGood,
 	step = step, RL = RL }
