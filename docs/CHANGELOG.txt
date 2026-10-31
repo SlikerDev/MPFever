@@ -9,6 +9,14 @@ MPFever - Changelog
   - FIX (#103): an MPFever that had just updated itself and found a newer version at once lost its download ("a part of the
     path ... update.zip could not be found"): the cleanup of the last update deleted the whole download folder for 10 s. It
     now leaves the running MPFever's download alone. MPFEVER_UPDATECLEANALL=1: as before.
+  - FIX (#104): one company per player, a player who upgraded another company's street (or a street of nobody's into one
+    with an owner) had it owned otherwise on his game than on the others: the replays start from the engine's upgrade
+    proposal, which keeps the old owner, while the tool's segment has an owner of its own, or none. The replay now gives the
+    new segment the tool's owner, or none (owners out of sync, then a reload, twice in the report's session). Checked with a
+    new autotest (upgowner: out of sync before, in sync after). MPFEVER_UPGOWNER=0: as before.
+  - NEW: a rule for each company's ROADS in the sharing rules (Hub "Sharing rules", the company tab): open (the other
+    companies' street tools connect to them, the default) or private. Before, only tracks could be opened: another
+    company's roads stayed closed to every street tool, with no setting to change it. MPFEVER_ROADRULE=0: private, as before.
   - Not ours: the crash in the same report came when the game closed, in the graphics driver (D3D12, NVIDIA), right after
     the change of language.
   - Test: tests/test_menuload.py; MPFever.exe --selftest (the update's cleanup).

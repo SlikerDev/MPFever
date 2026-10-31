@@ -244,7 +244,7 @@ U.pollEco = function()
 	if txt == U.ecoTxt then return end
 	U.ecoTxt = txt
 	-- (stops, depotco: each company's rule for its stops and stations, and for its depots, shown in the window's Rules tab)
-	local e = { members = {}, chief = {}, gone = {}, debt = {}, track = {}, fees = {}, requests = {}, merges = {}, depots = {}, stops = {}, depotco = {}, ai = {} }
+	local e = { members = {}, chief = {}, gone = {}, debt = {}, track = {}, fees = {}, requests = {}, merges = {}, depots = {}, stops = {}, depotco = {}, ai = {}, road = {} }
 	local TAB = C.TAB
 	for line in txt:gmatch("[^" .. C.NL .. "]+") do
 		local f1 = {}
@@ -260,6 +260,7 @@ U.pollEco = function()
 		elseif k == "ai" then e.ai[tonumber(f1[2]) or -1] = true
 		elseif k == "debt" then e.debt[tonumber(f1[2])] = tonumber(f1[3])
 		elseif k == "track" then e.track[tonumber(f1[2])] = { rule = f1[3], toll = tonumber(f1[4]) or 0 }
+		elseif k == "road" then e.road[tonumber(f1[2]) or -1] = { rule = f1[3] }
 		elseif k == "fees" then e.fees[tonumber(f1[2])] = { si = tonumber(f1[3]) or 0, se = tonumber(f1[4]) or 0, ti = tonumber(f1[5]) or 0, te = tonumber(f1[6]) or 0 }
 		elseif k == "req" then e.requests[#e.requests + 1] = { key = f1[2], name = f1[3], to = tonumber(f1[4]) }
 		elseif k == "merge" then e.merges[#e.merges + 1] = { from = tonumber(f1[2]), to = tonumber(f1[3]) }
@@ -1468,7 +1469,7 @@ end
 
 -- an empty view of eco.txt, before the bridge has written it
 U.ECO_EMPTY = function()
-	return { members = {}, chief = {}, gone = {}, debt = {}, track = {}, fees = {}, requests = {}, merges = {}, depots = {}, stops = {}, depotco = {}, ai = {} }
+	return { members = {}, chief = {}, gone = {}, debt = {}, track = {}, fees = {}, requests = {}, merges = {}, depots = {}, stops = {}, depotco = {}, ai = {}, road = {} }
 end
 
 -- mpfever_co.lua (palette, colours), loaded once
@@ -2874,7 +2875,7 @@ U.ruleBlock = function(K, rows, b)
 	rows[#rows + 1] = K.gap(1, 12)
 	rows[#rows + 1] = K.section(b.icon, b.title)
 	local r = {}
-	for i, rule in ipairs({ "private", "open", "toll" }) do
+	for i, rule in ipairs(b.rules or { "private", "open", "toll" }) do
 		if i > 1 then r[#r + 1] = K.gap(6, 1) end
 		r[#r + 1] = K.btn(b.labels[rule], b.texts[rule], function() if rule ~= shown then pick(rule, amount) end end, rule == shown)
 	end
@@ -2958,6 +2959,18 @@ U.TABS.rules = function(K, st, ctx)
 			},
 			send = function(rule, amt) U.coSend("co_track_rule", { rule = rule, toll = amt }) end,
 		})
+		-- (0.6.2) its roads: open or private, no toll (see mpfever_eco.lua's roadRule)
+		local rd = (eco.road or {})[my] or { rule = "open" }
+		U.ruleBlock(K, rows, {
+			kind = "roads", icon = K.ICON_TRACKS, title = T("Vos routes", "Your roads"), rules = { "private", "open" },
+			rule = rd.rule, amount = 0, amounts = {}, amountLabel = "",
+			labels = { private = T("Privées", "Private"), open = T("Ouvertes", "Open") },
+			texts = {
+				private = T("Les autres entreprises ne peuvent pas raccorder leurs routes aux vôtres ni les modifier.", "The other companies cannot connect their roads to yours or change them."),
+				open = T("Les autres entreprises peuvent raccorder leurs routes aux vôtres, gratuitement. Tous les véhicules y roulent toujours.", "The other companies may connect their roads to yours, for free. Every vehicle always drives on them."),
+			},
+			send = function(rule) U.coSend("co_road_rule", { rule = rule }) end,
+		})
 		local sp = eco.stops[my] or { rule = "open", fee = 0, own = 0 }
 		local spFee = (sp.fee or 0) > 0 and sp.fee or C.SHARE_DEFAULT
 		U.ruleBlock(K, rows, {
@@ -3006,13 +3019,14 @@ U.TABS.rules = function(K, st, ctx)
 		rows[#rows + 1] = K.section(K.ICON_PLAYERS, T("Règles des autres entreprises", "The other companies' rules"))
 		for _, o in ipairs(others) do
 			local tr = eco.track[o.id] or { rule = "open", toll = 0 }
+			local rd = (eco.road or {})[o.id] or { rule = "open" }
 			local sp = eco.stops[o.id] or { rule = "open", fee = 0 }
 			local dp = eco.depotco[o.id] or { rule = "open", toll = 0 }
 			rows[#rows + 1] = K.gap(1, 4)
 			rows[#rows + 1] = K.card {
 				K.row { U.swatch(K, o.id, 14), K.gap(8, 1), K.text(companyName(o.ent), nil, nil, K.CARD_TEXT_W - 22) },
-				K.muted(C.Tf("Voies : %s  ·  arrêts : %s  ·  dépôts : %s", "Tracks: %s  ·  stops: %s  ·  depots: %s",
-					U.ruleWords(tr.rule, tr.toll), U.ruleWords(sp.rule, sp.fee), U.ruleWords(dp.rule, dp.toll)), K.CARD_TEXT_W),
+				K.muted(C.Tf("Voies : %s  ·  routes : %s  ·  arrêts : %s  ·  dépôts : %s", "Tracks: %s  ·  roads: %s  ·  stops: %s  ·  depots: %s",
+					U.ruleWords(tr.rule, tr.toll), U.ruleWords(rd.rule), U.ruleWords(sp.rule, sp.fee), U.ruleWords(dp.rule, dp.toll)), K.CARD_TEXT_W),
 			}
 		end
 	end

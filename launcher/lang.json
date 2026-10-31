@@ -9439,19 +9439,6 @@
       "zh-CN": "其他公司的规则",
       "zh-TW": "其他公司的規則"
     },
-    "Tracks: %s  ·  stops: %s  ·  depots: %s": {
-      "de": "Gleise: %s  ·  Haltestellen: %s  ·  Depots: %s",
-      "es": "Vías: %s  ·  paradas: %s  ·  depósitos: %s",
-      "it": "Binari: %s  ·  fermate: %s  ·  depositi: %s",
-      "nl": "Sporen: %s  ·  haltes: %s  ·  depots: %s",
-      "pl": "Tory: %s  ·  przystanki: %s  ·  zajezdnie: %s",
-      "pt-BR": "Trilhos: %s  ·  paradas: %s  ·  depósitos: %s",
-      "ru": "Пути: %s  ·  остановки: %s  ·  депо: %s",
-      "ja": "線路：%s  ·  停留所：%s  ·  車庫：%s",
-      "ko": "선로: %s  ·  정류장: %s  ·  차고: %s",
-      "zh-CN": "轨道：%s  ·  站点：%s  ·  车库：%s",
-      "zh-TW": "軌道：%s  ·  站點：%s  ·  車庫：%s"
-    },
     "Earnings and fees": {
       "de": "Einnahmen und Gebühren",
       "es": "Ingresos y tarifas",
@@ -18291,6 +18278,84 @@
       "ko": "작은 창: 세션과 채팅",
       "zh-CN": "小窗口：会话和聊天",
       "zh-TW": "小視窗：工作階段和聊天"
+    },
+    "%s's roads: open to all.": {
+      "de": "Straßen von %s: für alle offen.",
+      "es": "Carreteras de %s: abiertas a todos.",
+      "it": "Strade di %s: aperte a tutti.",
+      "nl": "Wegen van %s: open voor iedereen.",
+      "pl": "Drogi %s: otwarte dla wszystkich.",
+      "pt-BR": "Estradas de %s: abertas a todos.",
+      "ru": "Дороги %s: открыты для всех.",
+      "ja": "%sの道路：全員に開放。",
+      "ko": "%s의 도로: 모두에게 개방.",
+      "zh-CN": "%s 的道路：对所有人开放。",
+      "zh-TW": "%s 的道路：對所有人開放。"
+    },
+    "%s's roads: private.": {
+      "de": "Straßen von %s: privat.",
+      "es": "Carreteras de %s: privadas.",
+      "it": "Strade di %s: private.",
+      "nl": "Wegen van %s: privé.",
+      "pl": "Drogi %s: prywatne.",
+      "pt-BR": "Estradas de %s: privadas.",
+      "ru": "Дороги %s: частные.",
+      "ja": "%sの道路：非公開。",
+      "ko": "%s의 도로: 비공개.",
+      "zh-CN": "%s 的道路：私有。",
+      "zh-TW": "%s 的道路：私有。"
+    },
+    "Your roads": {
+      "de": "Deine Straßen",
+      "es": "Tus carreteras",
+      "it": "Le tue strade",
+      "nl": "Jouw wegen",
+      "pl": "Twoje drogi",
+      "pt-BR": "Suas estradas",
+      "ru": "Ваши дороги",
+      "ja": "あなたの道路",
+      "ko": "내 도로",
+      "zh-CN": "你的道路",
+      "zh-TW": "你的道路"
+    },
+    "The other companies cannot connect their roads to yours or change them.": {
+      "de": "Die anderen Unternehmen können ihre Straßen nicht an deine anschließen und sie nicht ändern.",
+      "es": "Las demás empresas no pueden conectar sus carreteras a las tuyas ni modificarlas.",
+      "it": "Le altre aziende non possono collegare le loro strade alle tue né modificarle.",
+      "nl": "De andere bedrijven kunnen hun wegen niet op de jouwe aansluiten en ze niet wijzigen.",
+      "pl": "Inne firmy nie mogą podłączać swoich dróg do twoich ani ich zmieniać.",
+      "pt-BR": "As outras empresas não podem conectar suas estradas às suas nem alterá-las.",
+      "ru": "Другие компании не могут подключать свои дороги к вашим или изменять их.",
+      "ja": "他の会社はあなたの道路に自分の道路を接続したり、変更したりできません。",
+      "ko": "다른 회사는 자기 도로를 내 도로에 연결하거나 변경할 수 없습니다.",
+      "zh-CN": "其他公司不能把他们的道路连接到你的道路，也不能修改它们。",
+      "zh-TW": "其他公司不能把他們的道路連接到你的道路，也不能修改它們。"
+    },
+    "The other companies may connect their roads to yours, for free. Every vehicle always drives on them.": {
+      "de": "Die anderen Unternehmen dürfen ihre Straßen kostenlos an deine anschließen. Alle Fahrzeuge fahren immer darauf.",
+      "es": "Las demás empresas pueden conectar sus carreteras a las tuyas, gratis. Todos los vehículos circulan siempre por ellas.",
+      "it": "Le altre aziende possono collegare le loro strade alle tue, gratis. Tutti i veicoli ci circolano sempre.",
+      "nl": "De andere bedrijven mogen hun wegen gratis op de jouwe aansluiten. Alle voertuigen rijden er altijd over.",
+      "pl": "Inne firmy mogą bezpłatnie podłączać swoje drogi do twoich. Wszystkie pojazdy zawsze po nich jeżdżą.",
+      "pt-BR": "As outras empresas podem conectar suas estradas às suas, de graça. Todos os veículos sempre circulam nelas.",
+      "ru": "Другие компании могут бесплатно подключать свои дороги к вашим. Все транспортные средства всегда ездят по ним.",
+      "ja": "他の会社は無料であなたの道路に自分の道路を接続できます。すべての車両は常にその上を走ります。",
+      "ko": "다른 회사는 무료로 자기 도로를 내 도로에 연결할 수 있습니다. 모든 차량은 항상 그 위를 달립니다.",
+      "zh-CN": "其他公司可以免费把他们的道路连接到你的道路。所有车辆始终可以在上面行驶。",
+      "zh-TW": "其他公司可以免費把他們的道路連接到你的道路。所有車輛始終可以在上面行駛。"
+    },
+    "Tracks: %s  ·  roads: %s  ·  stops: %s  ·  depots: %s": {
+      "de": "Gleise: %s  ·  Straßen: %s  ·  Haltestellen: %s  ·  Depots: %s",
+      "es": "Vías: %s  ·  carreteras: %s  ·  paradas: %s  ·  depósitos: %s",
+      "it": "Binari: %s  ·  strade: %s  ·  fermate: %s  ·  depositi: %s",
+      "nl": "Sporen: %s  ·  wegen: %s  ·  haltes: %s  ·  depots: %s",
+      "pl": "Tory: %s  ·  drogi: %s  ·  przystanki: %s  ·  zajezdnie: %s",
+      "pt-BR": "Trilhos: %s  ·  estradas: %s  ·  paradas: %s  ·  depósitos: %s",
+      "ru": "Пути: %s  ·  дороги: %s  ·  остановки: %s  ·  депо: %s",
+      "ja": "線路：%s  ·  道路：%s  ·  停留所：%s  ·  車庫：%s",
+      "ko": "선로: %s  ·  도로: %s  ·  정류장: %s  ·  차고: %s",
+      "zh-CN": "轨道：%s  ·  道路：%s  ·  站点：%s  ·  车库：%s",
+      "zh-TW": "軌道：%s  ·  道路：%s  ·  站點：%s  ·  車庫：%s"
     }
   }
 }

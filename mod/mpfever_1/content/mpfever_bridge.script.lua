@@ -121,7 +121,8 @@ end
 -- (one table: the main chunk is close to the game's limit of local variables, 0.3.16 went over it and did not load)
 -- (MPFEVER_SDUMP_PERSONS=1: every person too, where it is and where it goes: the first person that differs between two
 -- games' files shows where a drift of the towns' happiness started)
-local SDUMP = { on = os.getenv("MPFEVER_SDUMP") ~= "0", all = os.getenv("MPFEVER_SDUMP") == "1", n = 0,
+-- (MPFEVER_SDUMP=all, tests: every check in its own file, no limit, to find the first check of a drift in a long autotest)
+local SDUMP = { on = os.getenv("MPFEVER_SDUMP") ~= "0", all = os.getenv("MPFEVER_SDUMP") == "1" or os.getenv("MPFEVER_SDUMP") == "all", n = 0,
 	persons = os.getenv("MPFEVER_SDUMP_PERSONS") == "1" }
 local function flatten(v, path, out, d)
 	if type(v) == "table" and d < 16 then
@@ -132,7 +133,7 @@ local function flatten(v, path, out, d)
 end
 
 local function extendedParts(parts)
-	local dump = SDUMP.on and (not SDUMP.all or SDUMP.n < 40) and {}
+	local dump = SDUMP.on and (not SDUMP.all or SDUMP.n < 40 or os.getenv("MPFEVER_SDUMP") == "all") and {}
 	for name, res in pairs(GAME_SCRIPTS) do
 		local ok, v = pcall(function()
 			local e = api.engine.system.gameScriptSystem.getEntityForGameScript(res)
@@ -3969,7 +3970,9 @@ local function upgradePlan(margs, townAuto)
 			end
 		end
 		if type(match) ~= "number" or match < 0 then return no("no old segment between the same nodes") end
-		plan[#plan + 1] = { edge = match, template = c.roadTemplate, decorations = decorations, lanes = customLanes, n0 = c.node0 }
+		-- (who the tool gave the new segment to, nobody included: see G.stepOwner)
+		local owner = type(ad.playerOwned) == "table" and type(ad.playerOwned.player) == "number" and ad.playerOwned.player or false
+		plan[#plan + 1] = { edge = match, template = c.roadTemplate, decorations = decorations, lanes = customLanes, n0 = c.node0, owner = owner }
 	end
 	-- the junctions at both ends as the tool set them (lane connections, crosswalks, traffic lights): replaceSegment lets the
 	-- engine work them out again, which almost always gives the same, but not always (a manual test: nodeConfigs differed from
@@ -4015,6 +4018,34 @@ G.stepExtras = function(a, step, seg)
 	return seg
 end
 
+-- The engine's upgrade segment owned as the tool's: replaceSegment keeps the old segment's owner, while the tool's segment has
+-- its own owner, or none (the engine then makes it nobody's). One company per player, a player who upgraded another company's
+-- road had it his or nobody's on his game and still the other company's on the others (owners out of sync, a reload: #104;
+-- the autotest upgowner, "none": nobody's on the builder's game, the old owner's here). step.owner: the tool's owner, false for
+-- none. MPFEVER_UPGOWNER=0: as before (replaceSegment's owner)
+G.stepOwner = function(a, step, seg)
+	if os.getenv("MPFEVER_UPGOWNER") == "0" or step.owner == nil then return seg end
+	local have = nil
+	pcall(function() have = seg.playerOwned and seg.playerOwned.player end)
+	if type(have) == "number" and have < 0 then have = nil end
+	local want = (type(step.owner) == "number" and step.owner >= 0) and step.owner or nil
+	if have == want then return seg end
+	if want then
+		local po = C.newOf("PlayerOwned")
+		po.player = want
+		seg.playerOwned = po
+	else
+		-- (a segment without an owner: a new one with everything but the owner)
+		local n = C.newOf("SegmentAndEntity")
+		for _, f in ipairs({ "entity", "type", "comp", "streetEdge", "trackEdge", "params", "emissionEmitter" }) do
+			pcall(function() local v = seg[f]; if v ~= nil then n[f] = v end end)
+		end
+		seg = n
+	end
+	log("NATIVE REPLAY " .. tostring(a.uid) .. " segment " .. tostring(step.edge) .. ": owner " .. tostring(have) .. " -> " .. tostring(want) .. " (the tool's)")
+	return seg
+end
+
 local function replayUpgrade(a, plan, i)
 	local step = plan[i]
 	if not step then return end
@@ -4041,6 +4072,16 @@ local function replayUpgrade(a, plan, i)
 			P.proposal = sp
 		end)
 		if not okd then log("NATIVE REPLAY " .. tostring(a.uid) .. " upgrade of " .. tostring(step.edge) .. ": decorations/lanes not applied (" .. shortErr(errd) .. ")") end
+	end
+	do
+		local oko, erro = pcall(function()
+			local sp = P.proposal
+			local list = sp.addedSegments
+			for k = 1, #list do list[k] = G.stepOwner(a, step, list[k]) end
+			sp.addedSegments = list
+			P.proposal = sp
+		end)
+		if not oko then log("NATIVE REPLAY " .. tostring(a.uid) .. " upgrade of " .. tostring(step.edge) .. ": the tool's owner not applied (" .. shortErr(erro) .. ")") end
 	end
 	local ctx = api.type.Context.new()
 	ctx.checkTerrainAlignment = true
@@ -4084,6 +4125,7 @@ G.replayMergedUpgrade = function(a, plan, probe)
 			for j = 1, #spk.addedSegments do
 				local seg = spk.addedSegments[j]
 				if (step.decorations or step.lanes) and os.getenv("MPFEVER_MERGEDECO") ~= "0" then seg = G.stepExtras(a, step, seg) end
+				seg = G.stepOwner(a, step, seg)
 				seg.entity = -(#added + 1)
 				added[#added + 1] = seg
 			end
@@ -14917,6 +14959,100 @@ H.upgrade = function(from, p)
 	end
 end
 
+-- Upgrade of another company's street (MPFEVER_SCENARIO=upgowner, one company per player, issue #104): the client's company
+-- upgrades two street segments of the host's company, as the street upgrade tool does with the sharing rules on: the first with
+-- the engine's upgrade proposal as it is (its new segment keeps the old owner), the second with the new segment's owner left out,
+-- as in the tool's proposals of #104 (the engine then decides). The sync check after it compares the owners of both games; each
+-- game logs who owns the new segments ("AUTOTEST upgowner ... owner").
+G.runUpgOwner = function(p)
+	AUTO.running = true
+	AUTO.results = {}
+	AUTO.points = {}
+	if C.ROLE == "host" then
+		AUTO.results[#AUTO.results + 1] = "upgowner: the client upgrades"
+		return autoFinish()
+	end
+	local me = api.engine.util.getPlayer()
+	local list, templates = {}, {}
+	for _, e in ipairs(R.allEdges()) do
+		local c = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
+		local st = c and api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE_STREET)
+		local own = R.ownerOf(e)
+		if st and c.type == 0 and #c.objects == 0 and c.roadTemplate and c.roadTemplate ~= "" then templates[c.roadTemplate] = true end
+		if st and c.type == 0 and #c.objects == 0 and own and own ~= me and c.roadTemplate and c.roadTemplate ~= "" then list[#list + 1] = { e = e, c = c, own = own } end
+	end
+	table.sort(list, function(x, y) return x.e < y.e end)
+	local names = {}
+	for t, _ in pairs(templates) do names[#names + 1] = t end
+	table.sort(names)
+	log("AUTOTEST upgowner: " .. #list .. " street segment(s) of other companies, this company " .. tostring(me))
+	if #list < 2 then
+		AUTO.results[#AUTO.results + 1] = "upgowner: fewer than 2 street segments of another company"
+		return autoFinish()
+	end
+	local picks = { list[1], list[math.floor(#list / 2) + 1] }
+	local function ownersAt(c)
+		local out = {}
+		for _, e in ipairs(R.allEdges()) do
+			local b = api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE)
+			if b and ((b.node0 == c.node0 and b.node1 == c.node1) or (b.node0 == c.node1 and b.node1 == c.node0)) then
+				out[#out + 1] = e .. ":" .. tostring(R.ownerOf(e))
+			end
+		end
+		return table.concat(out, ",")
+	end
+	local function one(k)
+		local pick = picks[k]
+		if not pick then return autoFinish() end
+		local target = nil
+		for _, t in ipairs(names) do if t ~= pick.c.roadTemplate and not t:find("entrance", 1, true) then target = t; break end end
+		local okp, P = pcall(function() return api.engine.util.proposal.replaceSegment(pick.e, target) end)
+		if not okp or not P then
+			AUTO.results[#AUTO.results + 1] = "upgowner " .. k .. ": no proposal " .. tostring(P)
+			return one(k + 1)
+		end
+		local variant = (k == 1) and "explicit" or "none"
+		if k == 2 then
+			local okn, errn = pcall(function()
+				local sp = P.proposal
+				local list2 = sp.addedSegments
+				local seg = list2[1]
+				local n = C.newOf("SegmentAndEntity")
+				for _, f in ipairs({ "entity", "type", "comp", "streetEdge", "trackEdge", "params", "emissionEmitter" }) do
+					pcall(function() local v = seg[f]; if v ~= nil then n[f] = v end end)
+				end
+				list2[1] = n
+				sp.addedSegments = list2
+				P.proposal = sp
+			end)
+			if not okn then variant = "none failed (" .. shortErr(errn) .. ")" end
+		end
+		log("AUTOTEST upgowner " .. k .. " (" .. variant .. "): segment " .. pick.e .. " of " .. tostring(pick.own) .. " to " .. tostring(target))
+		local ctx = playerContext()
+		deferredSend(api.cmd.makeWorldBuildProposalCmd(P, ctx, false, true), function(res, success)
+			local why = ""
+			if not success then pcall(function() why = C.ser(C.marshal(res.resultProposalData.errorState.messages)) end) end
+			G.waits[#G.waits + 1] = { at = G.frames + 60, fn = function()
+				local line = "upgowner " .. k .. " (" .. variant .. "): " .. (success and "built" or ("refused " .. why)) .. ", owner " .. ownersAt(pick.c)
+				log("AUTOTEST " .. line)
+				AUTO.results[#AUTO.results + 1] = line
+				one(k + 1)
+			end }
+		end)
+	end
+	one(1)
+end
+
+H.upgowner = function(from, p)
+	if p.role ~= C.ROLE or AUTO.running then return end
+	local ok, err = pcall(G.runUpgOwner, p)
+	if not ok then
+		log("AUTOTEST upgowner failed: " .. tostring(err))
+		AUTO.results[#AUTO.results + 1] = "upgowner error " .. tostring(err)
+		autoFinish()
+	end
+end
+
 H.autotest_done = function(from, p)
 	G.autoPoints = G.autoPoints or {}
 	for _, q in ipairs(p.points or {}) do G.autoPoints[#G.autoPoints + 1] = q end
@@ -15390,6 +15526,8 @@ G.coEco = function(st, reg, c)
 		if co.debt then L[#L + 1] = "debt\t" .. co.id .. "\t" .. co.debt end
 		local r = E.trackRule(reg, co)
 		L[#L + 1] = "track\t" .. co.id .. "\t" .. tostring(r.rule) .. "\t" .. tostring(r.toll or 0)
+		-- (0.6.2: its rule for its roads)
+		if E.roadRule then L[#L + 1] = "road\t" .. co.id .. "\t" .. tostring(E.roadRule(reg, co).rule) end
 		-- (0.5.2: the company's rule for its stations and stops, with the number of its stations that have a setting of their
 		-- own, counted by G.hudShare; its rule for its depots without a setting of their own)
 		local s = E.stopRule(reg, co)
@@ -15573,6 +15711,10 @@ G.coNewsText = function(reg, n)
 		local what = n.rule == "open" and C.T("ouvertes à tous", "open to all") or n.rule == "toll" and C.Tf("ouvertes avec un péage de %s par passage", "open with a toll of %s per passage", G.coMoney(n.toll)) or C.T("privées", "private")
 		return C.Tf("Voies de %s : %s.", "%s's tracks: %s.", nm(n.co), what)
 	end
+	if k == "road_rule" then
+		return n.rule == "open" and C.Tf("Routes de %s : ouvertes à tous.", "%s's roads: open to all.", nm(n.co))
+			or C.Tf("Routes de %s : privées.", "%s's roads: private.", nm(n.co))
+	end
 	-- (whole sentences: the words for open and private take the gender of stations or depots in other languages)
 	if k == "stop_rule" then
 		local t = n.rule == "open" and C.Tf("Gares et arrêts de %s : ouverts à tous.", "%s's stations and stops: open to all.", nm(n.co))
@@ -15658,16 +15800,19 @@ G.openNet = function(reg, me)
 	local E = C.eco()
 	if not E then return end
 	local open, sig = {}, {}
+	-- (0.6.2: the roads of the companies whose road rule is open, see E.roadRule; roads[ent] = true)
+	local roads = {}
 	for _, co in ipairs(reg.list) do
 		if co.ent and co.id ~= me.id then
 			local r = E.trackRule(reg, co)
 			if r.rule == "open" or r.rule == "toll" then open[co.ent] = true; sig[#sig + 1] = co.ent end
+			if E.roadRule and E.roadRule(reg, co).rule == "open" then roads[co.ent] = true; sig[#sig + 1] = "r" .. co.ent end
 		end
 	end
 	local ids, seen = {}, {}
 	local function add(e) if type(e) == "number" and e >= 0 and not seen[e] then seen[e] = true; ids[#ids + 1] = e end end
 	if os.getenv("MPFEVER_TRACKTYPE") ~= "0" then
-		G.openTracks(open, sig, me, add)
+		G.openTracks(open, sig, me, add, roads)
 	else
 		local fast = os.getenv("MPFEVER_OPENNETFAST") ~= "0" and not G.openNetAll
 		local edges = {}
@@ -15735,7 +15880,8 @@ end
 -- another segment has other nodes); every owner is read again when the open companies change and every 1800 frames (a sale or a
 -- merger changes owners without changing the segments). Whether a segment is a track (no street component) is read only for the
 -- segments of an open company, once. The whole look is timed: over 100 ms, G.openNet runs every 1800 frames instead of 300.
-G.openTracks = function(open, sig, me, add)
+G.openTracks = function(open, sig, me, add, roads)
+	roads = roads or {}
 	local t0 = os.clock()
 	if #sig == 0 then G.openNetCache = nil; return end
 	local key = me.id .. "|" .. table.concat(sig, " ")
@@ -15771,12 +15917,13 @@ G.openTracks = function(open, sig, me, add)
 			c = { a = a, b = b, o = (okc and po and po.player) or false }
 			cache[e] = c
 		end
-		if c.o and open[c.o] then
+		if c.o and (open[c.o] or roads[c.o]) then
 			if c.t == nil then
 				local okS, s = pcall(api.engine.getComponent, e, ST)
 				c.t = okS and s == nil
 			end
-			if c.t then
+			-- (a track of a company with open tracks, a street of a company with open roads)
+			if (c.t and open[c.o]) or (not c.t and roads[c.o]) then
 				tracks = tracks + 1
 				add(e)
 				for _, n in ipairs(p) do add(n) end
@@ -15788,7 +15935,7 @@ G.openTracks = function(open, sig, me, add)
 	G.openNetEvery = ms > 100 and 1800 or 300
 	G.openNetLogs = (G.openNetLogs or 0) + 1
 	if G.openNetLogs <= 5 then
-		log("companies: open tracks: " .. tracks .. " track segment(s) of the open companies, " .. #list .. " segment(s) looked at, " .. reads .. " owner(s) read, " .. ms .. " ms")
+		log("companies: open tracks: " .. tracks .. " track or road segment(s) of the open companies, " .. #list .. " segment(s) looked at, " .. reads .. " owner(s) read, " .. ms .. " ms")
 	end
 end
 

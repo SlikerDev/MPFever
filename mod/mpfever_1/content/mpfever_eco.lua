@@ -17,6 +17,7 @@
 --   co_month        {month, debt}        the host's look at a new month: the companies in debt (their money below zero on the
 --                                        host's game, which every game's money follows: a game's own balance may lag a step)
 --   co_track_rule   {rule, toll}         a company's rule for its tracks: "private", "open", "toll"
+--   co_road_rule    {rule}               a company's rule for its roads (0.6.2): "private", "open"
 --   co_depot_rule   {key, rule, toll}    a company's rule for one of its depots (its own setting; "co": its company's rule)
 --   co_depot_default {rule, toll}        a company's rule for its depots, the depots without a setting of their own (0.5.2)
 --   co_stop_rule    {rule, fee, reset}   a company's rule for its stations and stops (0.5.2); reset: its stations' own settings
@@ -38,7 +39,7 @@ local E = {}
 E.EVENTS = {
 	co_rules = true, co_join_ask = true, co_join_answer = true, co_leave = true, co_cancel = true, co_merge_ask = true,
 	co_merge_answer = true, co_bid = true, co_lot_close = true, co_track_rule = true, co_depot_rule = true, co_test = true, co_month = true,
-	co_stop_rule = true, co_depot_default = true,
+	co_stop_rule = true, co_depot_default = true, co_road_rule = true,
 }
 E.BANKRUPT_DEFAULT = 12        -- months in debt
 E.BANKRUPT_CHOICES = { 0, 3, 6, 12, 24 }
@@ -529,6 +530,20 @@ function E.trackRule(reg, c)
 	if c.gone then return { rule = "open", toll = E.TOLL_DEFAULT } end
 	local r = reg.track and reg.track[tostring(c.id)]
 	return r or default
+end
+
+-- the rule of a company for its roads (0.6.2, co_road_rule): { rule = "private" | "open" }. The other companies' street tools
+-- connect to its open roads (the open network, see the bridge's G.openNet) as to its open tracks. Before, only tracks were ever
+-- open: another company's roads stayed closed to every street tool, and no rule could open them. Open when nothing was set (as
+-- the tracks, MPFEVER_OPENDEFAULT=0: private), a gone company's roads are open. MPFEVER_ROADRULE=0: private, as before
+E.ROAD_RULE = os.getenv("MPFEVER_ROADRULE") ~= "0"
+function E.roadRule(reg, c)
+	if not E.ROAD_RULE then return { rule = "private" } end
+	if E.sharingOff(reg) then return { rule = "open" } end
+	if c and c.gone then return { rule = "open" } end
+	local r = c and reg and reg.road and reg.road[tostring(c.id)]
+	if r then return r end
+	return E.OPEN_DEFAULT and { rule = "open" } or { rule = "private" }
 end
 
 -- the rule of a company for its depots without a setting of their own (co_depot_default): { rule, toll }; open when nothing
@@ -1076,6 +1091,14 @@ function E.event(st, name, param, env)
 		reg.track[tostring(mine.id)] = { rule = rule, toll = math.max(0, math.floor(tonumber(param.toll) or E.TOLL_DEFAULT)) }
 		news(reg, { kind = "track_rule", co = mine.id, rule = rule, toll = reg.track[tostring(mine.id)].toll })
 		env.log("companies: company " .. mine.id .. " tracks: " .. rule)
+	elseif name == "co_road_rule" then
+		if not live(mine) then return refuse("no company") end
+		local rule = tostring(param.rule)
+		if rule ~= "private" and rule ~= "open" then return refuse("rule " .. rule) end
+		reg.road = reg.road or {}
+		reg.road[tostring(mine.id)] = { rule = rule }
+		news(reg, { kind = "road_rule", co = mine.id, rule = rule })
+		env.log("companies: company " .. mine.id .. " roads: " .. rule)
 	elseif name == "co_month" then
 		-- the host's look at a new month: each playing company in debt there one month more, the others none
 		if not fromHost(param.mpfFrom) then return refuse("not the host") end

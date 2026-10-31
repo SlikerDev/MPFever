@@ -1932,6 +1932,15 @@ local function setup()
 		-- language in its settings starts the game's interface again and that script runs no more: the player stayed on the
 		-- main menu, "loading" for good. When the script has not taken the request within 6 s (menu_loaded.txt), the main page
 		-- runs the same loader (mpfever_auto.lua's menuTick). MPFEVER_MENULOAD=0: never.
+		-- (tests, MPFEVER_MENU_LANGTEST=<language code>: the game's language changed once from here, as a player does in the game's
+		-- settings, to check the load from the main page after it; menu_langtest.txt marks it done)
+		react.onStepTimer(function()
+			if not os.getenv("MPFEVER_MENU_LANGTEST") or not (DIR and IO) or readFile("menu_langtest.txt") then return end
+			writeFile("menu_langtest.txt", "1")
+			log("test: the game's language changed to " .. os.getenv("MPFEVER_MENU_LANGTEST"))
+			local ok, err = pcall(function() app.getUserProfile():changeLanguage(os.getenv("MPFEVER_MENU_LANGTEST")) end)
+			if not ok then log("test: the language change failed: " .. tostring(err)) end
+		end, 3)
 		local autoWait = react.useRef(nil)
 		react.onStepTimer(function()
 			if os.getenv("MPFEVER_MENULOAD") == "0" or not (DIR and IO) then return end

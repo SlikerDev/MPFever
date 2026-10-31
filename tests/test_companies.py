@@ -379,6 +379,26 @@ check(run('return E.trackRule(st.co, CO.find(st.co, EVE)).rule') == "private", "
 check(run('return E.depotRule(st.co, "D:y", EVE).rule') == "private", "MPFEVER_OPENDEFAULT=0: depots private, as before")
 run('E.OPEN_DEFAULT = true')
 
+# (0.6.2) the roads: open or private (co_road_rule), open when nothing is set, a gone company's open, everything open with the
+# sharing rules off; MPFEVER_ROADRULE=0: private, as before (no other company could ever connect to a company's roads)
+print("roads")
+check(run('return E.roadRule(st.co, CO.find(st.co, DAVE)).rule') == "open", "a company that set nothing has open roads")
+run('E.event(st, "co_road_rule", { rule = "private", mpfCo = DAVE, mpfFrom = "Dave#3" }, ENV)')
+check(run('return E.roadRule(st.co, CO.find(st.co, DAVE)).rule') == "private", "co_road_rule private: the company's roads are private")
+run('E.event(st, "co_road_rule", { rule = "toll", mpfCo = DAVE, mpfFrom = "Dave#3" }, ENV)')
+check(run('return E.roadRule(st.co, CO.find(st.co, DAVE)).rule') == "private", "a road toll is refused (open or private only)")
+check(run('return E.roadRule(st.co, CO.find(st.co, 4)).rule') == "open", "a gone company's roads are open")
+run('E.event(st, "co_road_rule", { rule = "private", mpfCo = 4, mpfFrom = "Carl#2" }, ENV)')
+check(run('return st.co.road["4"]') is None, "a gone company cannot change its road rule")
+run('KEEPRULES = st.co.rules; st.co.rules = { share = false }')
+check(run('return E.roadRule(st.co, CO.find(st.co, DAVE)).rule') == "open", "the sharing rules off: every road open")
+run('st.co.rules = KEEPRULES')
+run('E.ROAD_RULE = false')
+check(run('return E.roadRule(st.co, CO.find(st.co, EVE)).rule') == "private", "MPFEVER_ROADRULE=0: roads private, as before")
+run('E.ROAD_RULE = true')
+run('E.event(st, "co_road_rule", { rule = "open", mpfCo = DAVE, mpfFrom = "Dave#3" }, ENV)')
+check(run('return E.roadRule(st.co, CO.find(st.co, DAVE)).rule') == "open", "co_road_rule open again")
+
 print("rules: reset, merge, auction")
 # Dave's stations: 8001, 8003, 8004, 8005 (entity 400); 8006 is Eve's, with its own setting too
 run('''
